@@ -35,6 +35,13 @@
 \ --- Goal helpers ---
 : STATUS  ( -- ) MESH-STATUS GOALS TASKS ;
 
-\ --- Boot banner ---
-." unit v0.2.0 — seed online" CR
+\ --- Built-in executable goals (test patterns) ---
+: PING-GOAL   ( -- id ) 5 GOAL{ ." pong" } ;
+: MATH-GOAL   ( -- id ) 5 GOAL{ 2 3 + 4 * } ;
+: STRESS-GOAL ( -- id ) 3 GOAL{ 1000000 0 DO LOOP ." done" } ;
+: WORDS-GOAL  ( -- id ) 5 GOAL{ WORDS } ;
+
+\ --- Boot ---
+." unit v0.3.0 — seed online" CR
 MESH-HELLO
+AUTO-CLAIM

@@ -4,9 +4,9 @@
 // work items derived from goals. The GoalRegistry is shared across the
 // mesh via gossip so all units maintain a consistent view of current work.
 //
-// Lifecycle:
-//   human submits goal → goal broadcast → task created → unit claims task
-//   → unit works → unit reports result → goal completed
+// Goals can carry Forth code payloads. When a unit claims such a task,
+// it compiles and executes the Forth code in a sandbox, captures the
+// resulting stack and output, and propagates the result through the mesh.
 //
 // Humans set direction, the mesh navigates.
 
@@ -98,6 +98,47 @@ impl TaskStatus {
 }
 
 // ---------------------------------------------------------------------------
+// TaskResult — captured output from executing a Forth code payload
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct TaskResult {
+    /// Stack contents after execution.
+    pub stack_snapshot: Vec<Cell>,
+    /// Captured printed output (from ., .S, EMIT, .", TYPE, etc.).
+    pub output: String,
+    /// Whether execution completed without error.
+    pub success: bool,
+    /// Error message if execution failed (timeout, stack underflow, etc.).
+    pub error: Option<String>,
+}
+
+impl TaskResult {
+    pub fn format(&self) -> String {
+        let mut out = String::new();
+        if self.success {
+            out.push_str("  status: ok\n");
+        } else {
+            out.push_str(&format!(
+                "  status: FAILED — {}\n",
+                self.error.as_deref().unwrap_or("unknown error")
+            ));
+        }
+        if !self.stack_snapshot.is_empty() {
+            out.push_str("  stack: ");
+            for val in &self.stack_snapshot {
+                out.push_str(&format!("{} ", val));
+            }
+            out.push('\n');
+        }
+        if !self.output.is_empty() {
+            out.push_str(&format!("  output: {}\n", self.output.trim_end()));
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Goal
 // ---------------------------------------------------------------------------
 
@@ -105,6 +146,8 @@ impl TaskStatus {
 pub struct Goal {
     pub id: GoalId,
     pub description: String,
+    /// Forth code payload — if Some, this goal is executable.
+    pub code: Option<String>,
     pub priority: Cell,
     pub status: GoalStatus,
     pub created_at: u64,
@@ -123,7 +166,7 @@ pub struct Task {
     pub description: String,
     pub assigned_to: Option<NodeId>,
     pub status: TaskStatus,
-    pub result: Option<String>,
+    pub result: Option<TaskResult>,
     pub created_at: u64,
 }
 
@@ -142,7 +185,6 @@ impl GoalRegistry {
     /// Create a new registry. The counter is seeded from the node ID to
     /// avoid collisions between nodes generating IDs concurrently.
     pub fn new(node_id: &NodeId) -> Self {
-        // Seed from node ID to avoid collisions. Keep IDs small and typeable.
         let base = ((node_id[6] as u64) << 4 | (node_id[7] as u64 >> 4)) * 10 + 1;
         GoalRegistry {
             goals: HashMap::new(),
@@ -178,11 +220,13 @@ impl GoalRegistry {
     // -------------------------------------------------------------------
 
     /// Create a new goal with one initial task. Returns the goal ID.
+    /// If `code` is Some, the goal carries executable Forth code.
     pub fn create_goal(
         &mut self,
         description: String,
         priority: Cell,
         creator: NodeId,
+        code: Option<String>,
     ) -> GoalId {
         let goal_id = self.next_id();
         let task_id = self.next_id();
@@ -201,6 +245,7 @@ impl GoalRegistry {
         let goal = Goal {
             id: goal_id,
             description,
+            code,
             priority,
             status: GoalStatus::Pending,
             created_at: now,
@@ -216,7 +261,6 @@ impl GoalRegistry {
     /// Claim the highest-priority unclaimed task.
     /// Returns (task_id, goal_id, description) or None if nothing available.
     pub fn claim_task(&mut self, node_id: NodeId) -> Option<(TaskId, GoalId, String)> {
-        // Gather unclaimed tasks with their parent goal priority.
         let mut candidates: Vec<(TaskId, Cell)> = self
             .tasks
             .iter()
@@ -226,7 +270,6 @@ impl GoalRegistry {
             })
             .collect();
 
-        // Highest priority first.
         candidates.sort_by(|a, b| b.1.cmp(&a.1));
 
         if let Some(&(task_id, _)) = candidates.first() {
@@ -236,7 +279,6 @@ impl GoalRegistry {
                 let goal_id = task.goal_id;
                 let desc = task.description.clone();
 
-                // Transition goal to Active.
                 if let Some(goal) = self.goals.get_mut(&goal_id) {
                     if goal.status == GoalStatus::Pending {
                         goal.status = GoalStatus::Active;
@@ -248,10 +290,62 @@ impl GoalRegistry {
         None
     }
 
-    /// Mark a task as done. Completes the parent goal if all tasks are done.
-    pub fn complete_task(&mut self, task_id: TaskId, result: Option<String>) -> bool {
+    /// Claim the highest-priority unclaimed *executable* task.
+    /// Returns (task_id, goal_id, description, code).
+    pub fn claim_executable_task(
+        &mut self,
+        node_id: NodeId,
+    ) -> Option<(TaskId, GoalId, String, String)> {
+        let mut candidates: Vec<(TaskId, Cell)> = self
+            .tasks
+            .iter()
+            .filter(|(_, t)| t.status == TaskStatus::Waiting)
+            .filter_map(|(tid, t)| {
+                self.goals.get(&t.goal_id).and_then(|g| {
+                    if g.code.is_some() {
+                        Some((*tid, g.priority))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+        if let Some(&(task_id, _)) = candidates.first() {
+            if let Some(task) = self.tasks.get_mut(&task_id) {
+                task.assigned_to = Some(node_id);
+                task.status = TaskStatus::Running;
+                let goal_id = task.goal_id;
+                let desc = task.description.clone();
+                let code = self
+                    .goals
+                    .get(&goal_id)
+                    .and_then(|g| g.code.clone())
+                    .unwrap_or_default();
+
+                if let Some(goal) = self.goals.get_mut(&goal_id) {
+                    if goal.status == GoalStatus::Pending {
+                        goal.status = GoalStatus::Active;
+                    }
+                }
+                return Some((task_id, goal_id, desc, code));
+            }
+        }
+        None
+    }
+
+    /// Mark a task as done with a full result. Completes the parent goal
+    /// if all tasks are done.
+    pub fn complete_task(&mut self, task_id: TaskId, result: Option<TaskResult>) -> bool {
         let goal_id = if let Some(task) = self.tasks.get_mut(&task_id) {
-            task.status = TaskStatus::Done;
+            let success = result.as_ref().map(|r| r.success).unwrap_or(true);
+            task.status = if success {
+                TaskStatus::Done
+            } else {
+                TaskStatus::Failed
+            };
             task.result = result;
             task.goal_id
         } else {
@@ -260,18 +354,25 @@ impl GoalRegistry {
 
         // Check if all tasks for this goal are now done.
         if let Some(goal) = self.goals.get(&goal_id) {
-            let all_done = goal
-                .task_ids
-                .iter()
-                .all(|tid| {
+            let all_done = goal.task_ids.iter().all(|tid| {
+                self.tasks
+                    .get(tid)
+                    .map(|t| t.status == TaskStatus::Done || t.status == TaskStatus::Failed)
+                    .unwrap_or(true)
+            });
+            if all_done {
+                let all_success = goal.task_ids.iter().all(|tid| {
                     self.tasks
                         .get(tid)
                         .map(|t| t.status == TaskStatus::Done)
                         .unwrap_or(true)
                 });
-            if all_done {
                 if let Some(g) = self.goals.get_mut(&goal_id) {
-                    g.status = GoalStatus::Completed;
+                    g.status = if all_success {
+                        GoalStatus::Completed
+                    } else {
+                        GoalStatus::Failed
+                    };
                 }
             }
         }
@@ -307,17 +408,14 @@ impl GoalRegistry {
     }
 
     // -------------------------------------------------------------------
-    // Gossip convergence — merge remote state into local registry
+    // Gossip convergence
     // -------------------------------------------------------------------
 
-    /// Merge a received goal. Only updates if the incoming state is newer
-    /// (status further along the lifecycle, or priority changed).
     pub fn merge_goal(&mut self, goal: Goal) {
         if let Some(existing) = self.goals.get(&goal.id) {
             if goal.status.as_u8() > existing.status.as_u8()
                 || goal.priority != existing.priority
             {
-                // Preserve local task IDs, merge any new ones.
                 let mut merged_tasks = existing.task_ids.clone();
                 for tid in &goal.task_ids {
                     if !merged_tasks.contains(tid) {
@@ -329,7 +427,6 @@ impl GoalRegistry {
                 self.goals.insert(merged.id, merged);
             }
         } else {
-            // Ensure counter stays ahead of received IDs.
             if goal.id >= self.id_counter {
                 self.id_counter = goal.id + 1;
             }
@@ -337,7 +434,6 @@ impl GoalRegistry {
         }
     }
 
-    /// Merge a received task.
     pub fn merge_task(&mut self, task: Task) {
         if let Some(existing) = self.tasks.get(&task.id) {
             if task.status.as_u8() > existing.status.as_u8() {
@@ -355,7 +451,6 @@ impl GoalRegistry {
     // Queries
     // -------------------------------------------------------------------
 
-    /// Count of tasks in Waiting status.
     pub fn pending_task_count(&self) -> usize {
         self.tasks
             .values()
@@ -363,7 +458,6 @@ impl GoalRegistry {
             .count()
     }
 
-    /// Count of active (non-completed, non-failed) goals.
     pub fn active_goal_count(&self) -> usize {
         self.goals
             .values()
@@ -371,11 +465,15 @@ impl GoalRegistry {
             .count()
     }
 
+    /// Get the code payload for a goal, if it's executable.
+    pub fn goal_code(&self, goal_id: GoalId) -> Option<String> {
+        self.goals.get(&goal_id).and_then(|g| g.code.clone())
+    }
+
     // -------------------------------------------------------------------
-    // Formatting for Forth display
+    // Formatting
     // -------------------------------------------------------------------
 
-    /// Format all goals for the GOALS word.
     pub fn format_goals(&self) -> String {
         if self.goals.is_empty() {
             return "  (no goals)\n".to_string();
@@ -396,10 +494,12 @@ impl GoalRegistry {
                         .unwrap_or(false)
                 })
                 .count();
+            let exec_marker = if g.code.is_some() { " [exec]" } else { "" };
             out.push_str(&format!(
-                "  #{} [{}] p={} ({}/{} tasks): {}\n",
+                "  #{} [{}]{} p={} ({}/{} tasks): {}\n",
                 g.id,
                 g.status.label(),
+                exec_marker,
                 g.priority,
                 done,
                 total,
@@ -409,7 +509,6 @@ impl GoalRegistry {
         out
     }
 
-    /// Format this unit's task queue for the TASKS word.
     pub fn format_my_tasks(&self, node_id: &NodeId) -> String {
         let mut my_tasks: Vec<&Task> = self
             .tasks
@@ -432,11 +531,13 @@ impl GoalRegistry {
                 t.goal_id,
                 t.description
             ));
+            if let Some(ref result) = t.result {
+                out.push_str(&result.format());
+            }
         }
         out
     }
 
-    /// Format task breakdown for a specific goal (TASK-STATUS word).
     pub fn format_goal_tasks(&self, goal_id: GoalId) -> String {
         if let Some(goal) = self.goals.get(&goal_id) {
             let mut out = format!(
@@ -446,10 +547,10 @@ impl GoalRegistry {
                 goal.priority,
                 goal.description
             );
-            out.push_str(&format!(
-                "  creator: {}\n",
-                id_to_hex(&goal.creator)
-            ));
+            if let Some(ref code) = goal.code {
+                out.push_str(&format!("  code: {}\n", code));
+            }
+            out.push_str(&format!("  creator: {}\n", id_to_hex(&goal.creator)));
             for tid in &goal.task_ids {
                 if let Some(task) = self.tasks.get(tid) {
                     let assignee = task
@@ -458,14 +559,13 @@ impl GoalRegistry {
                         .map(id_to_hex)
                         .unwrap_or_else(|| "unassigned".to_string());
                     out.push_str(&format!(
-                        "  task #{} [{}] -> {}: {}\n",
+                        "  task #{} [{}] -> {}\n",
                         task.id,
                         task.status.label(),
                         assignee,
-                        task.description,
                     ));
                     if let Some(ref result) = task.result {
-                        out.push_str(&format!("    result: {}\n", result));
+                        out.push_str(&result.format());
                     }
                 }
             }
@@ -475,53 +575,64 @@ impl GoalRegistry {
         }
     }
 
-    /// Format mesh-wide progress report (REPORT word).
+    /// Format result for a specific task.
+    pub fn format_task_result(&self, task_id: TaskId) -> String {
+        if let Some(task) = self.tasks.get(&task_id) {
+            let mut out = format!(
+                "task #{} [{}] goal #{}:\n",
+                task.id,
+                task.status.label(),
+                task.goal_id,
+            );
+            if let Some(ref result) = task.result {
+                out.push_str(&result.format());
+            } else {
+                out.push_str("  (no result yet)\n");
+            }
+            out
+        } else {
+            format!("task #{} not found\n", task_id)
+        }
+    }
+
+    /// Format combined results for all tasks of a goal.
+    pub fn format_goal_result(&self, goal_id: GoalId) -> String {
+        if let Some(goal) = self.goals.get(&goal_id) {
+            let mut out = format!(
+                "goal #{} [{}]: {}\n",
+                goal.id,
+                goal.status.label(),
+                goal.description,
+            );
+            for tid in &goal.task_ids {
+                if let Some(task) = self.tasks.get(tid) {
+                    out.push_str(&format!("  task #{}:\n", task.id));
+                    if let Some(ref result) = task.result {
+                        out.push_str(&result.format());
+                    } else {
+                        out.push_str("    (pending)\n");
+                    }
+                }
+            }
+            out
+        } else {
+            format!("goal #{} not found\n", goal_id)
+        }
+    }
+
     pub fn format_report(&self) -> String {
         let total_goals = self.goals.len();
-        let g_pending = self
-            .goals
-            .values()
-            .filter(|g| g.status == GoalStatus::Pending)
-            .count();
-        let g_active = self
-            .goals
-            .values()
-            .filter(|g| g.status == GoalStatus::Active)
-            .count();
-        let g_done = self
-            .goals
-            .values()
-            .filter(|g| g.status == GoalStatus::Completed)
-            .count();
-        let g_failed = self
-            .goals
-            .values()
-            .filter(|g| g.status == GoalStatus::Failed)
-            .count();
+        let g_pending = self.goals.values().filter(|g| g.status == GoalStatus::Pending).count();
+        let g_active = self.goals.values().filter(|g| g.status == GoalStatus::Active).count();
+        let g_done = self.goals.values().filter(|g| g.status == GoalStatus::Completed).count();
+        let g_failed = self.goals.values().filter(|g| g.status == GoalStatus::Failed).count();
 
         let total_tasks = self.tasks.len();
-        let t_waiting = self
-            .tasks
-            .values()
-            .filter(|t| t.status == TaskStatus::Waiting)
-            .count();
-        let t_running = self
-            .tasks
-            .values()
-            .filter(|t| t.status == TaskStatus::Running)
-            .count();
-        let t_done = self
-            .tasks
-            .values()
-            .filter(|t| t.status == TaskStatus::Done)
-            .count();
-        let t_failed = self
-            .tasks
-            .values()
-            .filter(|t| t.status == TaskStatus::Failed)
-            .count();
+        let t_waiting = self.tasks.values().filter(|t| t.status == TaskStatus::Waiting).count();
+        let t_running = self.tasks.values().filter(|t| t.status == TaskStatus::Running).count();
+        let t_done = self.tasks.values().filter(|t| t.status == TaskStatus::Done).count();
+        let t_failed = self.tasks.values().filter(|t| t.status == TaskStatus::Failed).count();
 
-        // Collect unique assignees.
         let mut workers: Vec<NodeId> = self
             .tasks
             .values()
@@ -531,10 +642,12 @@ impl GoalRegistry {
         workers.sort();
         workers.dedup();
 
+        let exec_goals = self.goals.values().filter(|g| g.code.is_some()).count();
+
         let mut out = String::from("--- mesh progress report ---\n");
         out.push_str(&format!(
-            "goals: {} total ({} pending, {} active, {} completed, {} failed)\n",
-            total_goals, g_pending, g_active, g_done, g_failed
+            "goals: {} total ({} pending, {} active, {} completed, {} failed, {} executable)\n",
+            total_goals, g_pending, g_active, g_done, g_failed, exec_goals
         ));
         out.push_str(&format!(
             "tasks: {} total ({} waiting, {} running, {} done, {} failed)\n",

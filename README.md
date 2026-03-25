@@ -22,15 +22,11 @@ definitions at runtime.
 seed → dictionary → full system
 ```
 
-1. **Seed**: The Rust binary boots with a minimal set of kernel primitives
-   hardcoded in native code (stack ops, arithmetic, memory, I/O, control flow).
-
-2. **Dictionary**: The prelude (`src/prelude.fs`) is compiled at startup,
-   extending the dictionary with higher-level words defined in Forth itself.
-
-3. **Full system**: The REPL drops the user (or a remote peer) into an
-   interactive session where arbitrary new words can be defined, and mesh
-   primitives enable communication, replication, and mutation.
+1. **Seed**: The Rust binary boots with kernel primitives in native code.
+2. **Dictionary**: The prelude (`src/prelude.fs`) extends the dictionary at startup.
+3. **Full system**: The REPL accepts new definitions, mesh primitives enable
+   communication, and executable goals turn the mesh into a distributed
+   computation engine.
 
 ## Build and Run
 
@@ -39,17 +35,12 @@ cargo build --release
 cargo run
 ```
 
-Or directly:
-
-```sh
-./target/release/unit
-```
-
 You'll see:
 
 ```
-unit v0.1.0 — seed online
+unit v0.3.0 — seed online
 Mesh node a1b2c3d4e5f67890 online with 0 peers
+auto-claim: ON
 > 2 3 + .
 5 ok
 >
@@ -59,8 +50,7 @@ Type `BYE` to exit.
 
 ## Mesh Networking
 
-Units discover and communicate with each other over UDP. Configure via
-environment variables:
+Units discover and communicate over UDP. Configure via environment variables:
 
 | Variable     | Description                                    | Default     |
 |--------------|------------------------------------------------|-------------|
@@ -76,11 +66,11 @@ UNIT_PORT=4201 cargo run
 # Terminal 2 — joins the mesh
 UNIT_PORT=4202 UNIT_PEERS=127.0.0.1:4201 cargo run
 
-# Terminal 3 — also joins (discovers terminal 2 via gossip)
+# Terminal 3 — discovers terminal 2 via gossip
 UNIT_PORT=4203 UNIT_PEERS=127.0.0.1:4201 cargo run
 ```
 
-### Mesh Forth words
+### Mesh words
 
 | Word           | Stack effect         | Description                                 |
 |----------------|----------------------|---------------------------------------------|
@@ -90,102 +80,124 @@ UNIT_PORT=4203 UNIT_PEERS=127.0.0.1:4201 cargo run
 | `REPLICATE`    | `( -- )`             | Serialize state and broadcast to peers      |
 | `PROPOSE`      | `( -- )`             | Start a consensus vote for replication      |
 | `MESH-STATUS`  | `( -- )`             | Print mesh state, peers, and event log      |
-| `LOAD`         | `( -- n )`           | Current load metric                         |
-| `CAPACITY`     | `( -- n )`           | Capacity threshold                          |
 | `ID`           | `( -- addr n )`      | This unit's hex ID as a string              |
 | `TYPE`         | `( addr n -- )`      | Print n characters from memory              |
 
 ### Consensus Protocol
 
-Any unit can propose replication when it observes high mesh load:
-
-1. Proposer broadcasts `PROPOSE` with its serialized state
-2. Each peer evaluates and votes `YES` or `NO`
-3. Simple majority quorum (>50% of peers) required
-4. If quorum reached within 5 seconds → `COMMIT` (state broadcast)
-5. Otherwise → `REJECT`
-6. 10-second cooldown between proposals per node
-7. One active proposal per node at a time
+1. Proposer broadcasts `PROPOSE` with serialized state
+2. Peers vote `YES` or `NO` (majority quorum required)
+3. Quorum reached within 5s → `COMMIT`, otherwise → `REJECT`
+4. 10s cooldown between proposals; one active proposal per node
 
 ## Human Guidance
 
-Humans set direction, the mesh navigates. The goal system lets a human
-operator submit high-level objectives and watch the mesh organize around them.
+Humans set direction, the mesh navigates.
 
-### Philosophy
+### Goal words
 
-A goal is a human-provided intention — a thing that needs to happen. When
-submitted, the goal is broadcast to every unit in the mesh. Each goal
-spawns one or more tasks. Units claim tasks, work on them, and report
-results. When all tasks for a goal are done, the goal is complete.
+| Word                        | Stack effect              | Description                              |
+|-----------------------------|---------------------------|------------------------------------------|
+| `GOAL" <desc>"`            | `( priority -- goal-id )` | Submit a description-only goal           |
+| `GOAL{ <code> }`           | `( priority -- goal-id )` | Submit an executable Forth goal          |
+| `GOALS`                     | `( -- )`                  | List all known goals                     |
+| `TASKS`                     | `( -- )`                  | List this unit's claimed tasks           |
+| `TASK-STATUS`               | `( goal-id -- )`          | Show task breakdown for a goal           |
+| `CLAIM`                     | `( -- task-id )`          | Claim the next available task            |
+| `COMPLETE`                  | `( task-id -- )`          | Mark a task as done                      |
+| `CANCEL`                    | `( goal-id -- )`          | Cancel a goal and its tasks              |
+| `STEER`                     | `( goal-id priority -- )` | Change a goal's priority                 |
+| `REPORT`                    | `( -- )`                  | Mesh-wide progress summary               |
+| `STATUS`                    | `( -- )`                  | Combined mesh + goals + tasks view       |
 
-The mesh self-scales: when there are more pending tasks than units, the
-system automatically proposes replication via consensus.
+## Executable Goals
 
-### Goal Forth words
+Goals can carry Forth code as a payload. When a unit claims such a task,
+it executes the code in a **sandbox** — a fresh stack isolated from the
+unit's own state — and captures the result.
 
-| Word                        | Stack effect           | Description                              |
-|-----------------------------|------------------------|------------------------------------------|
-| `GOAL" <desc>"`            | `( priority -- )`      | Submit a goal with a priority (1-10)     |
-| `GOALS`                     | `( -- )`               | List all known goals and their status    |
-| `TASKS`                     | `( -- )`               | List this unit's claimed tasks           |
-| `TASK-STATUS`               | `( goal-id -- )`       | Show task breakdown for a goal           |
-| `CLAIM`                     | `( -- task-id )`       | Claim the next available task            |
-| `COMPLETE`                  | `( task-id -- )`       | Mark a task as done                      |
-| `CANCEL`                    | `( goal-id -- )`       | Cancel a goal and its tasks              |
-| `STEER`                     | `( goal-id priority -- )` | Change a goal's priority              |
-| `REPORT`                    | `( -- )`               | Mesh-wide progress summary               |
-| `STATUS`                    | `( -- )`               | Combined mesh + goals + tasks view       |
-
-### Example session
+### How it works
 
 ```
-> 5 GOAL" analyze incoming sensor data"
-goal #4201 created
- ok
+> 5 GOAL{ 2 3 + 4 * }
+goal #4201 created [exec]: 2 3 + 4 *
+```
 
-> 8 GOAL" optimize replication protocol"
-goal #4202 created
- ok
+When a unit (this one or a peer) claims the task, it:
 
+1. Saves its current stack
+2. Creates a fresh execution context (empty stack, shared dictionary)
+3. Compiles and runs the Forth payload
+4. Captures the resulting stack and any printed output
+5. Restores the original stack
+6. Broadcasts the result to the mesh
+
+### Execution words
+
+| Word           | Stack effect         | Description                                   |
+|----------------|----------------------|-----------------------------------------------|
+| `GOAL{ <code> }` | `( priority -- id )` | Submit Forth code as a distributed goal     |
+| `EVAL" <code>"`  | `( -- )`            | Evaluate a Forth string immediately           |
+| `RESULT`       | `( task-id -- )`     | Display a completed task's result             |
+| `GOAL-RESULT`  | `( goal-id -- )`     | Display combined results for all tasks        |
+| `AUTO-CLAIM`   | `( -- )`             | Toggle automatic task claiming (on by default)|
+| `TIMEOUT`      | `( seconds -- )`     | Set execution timeout (default: 10s)          |
+
+### Sandboxed execution
+
+- **Isolation**: task code runs on a fresh stack; the unit's own stack
+  is saved and restored
+- **Timeout**: execution is limited (default 10 seconds) — infinite loops
+  fail the task, they don't crash the unit
+- **Error handling**: any error marks the task as failed with a message;
+  the unit continues running normally
+- **Output capture**: all printed output (`.`, `."`, `EMIT`, etc.) is
+  captured into the task result, not printed to the REPL
+
+### Built-in test goals
+
+```
+> PING-GOAL DROP       \ sends ." pong" to the mesh
+> MATH-GOAL DROP       \ sends 2 3 + 4 * — result: stack [20]
+> STRESS-GOAL DROP     \ loop 1M times, print "done"
+> WORDS-GOAL DROP      \ list the dictionary
+```
+
+### Example: distributed computation
+
+```sh
+# Terminal 1 — submit work
+UNIT_PORT=4201 cargo run
+> 5 GOAL{ 100 0 DO I LOOP DEPTH }
+goal #4201 created [exec]: 100 0 DO I LOOP DEPTH
+
+# Terminal 2 — auto-claims and executes
+UNIT_PORT=4202 UNIT_PEERS=127.0.0.1:4201 cargo run
+[auto] claimed task #4202 (goal #4201): 100 0 DO I LOOP DEPTH
+[auto] stack: 0 1 2 3 ... 99 100
+[auto] task #4202 done
+```
+
+Back on terminal 1:
+
+```
 > GOALS
-  #4201 [pending] p=5 (0/1 tasks): analyze incoming sensor data
-  #4202 [pending] p=8 (0/1 tasks): optimize replication protocol
- ok
-
-> CLAIM
-claimed task #4203 (goal #4202): optimize replication protocol
- ok
-
-> TASKS
-  task #4203 [running] goal #4202: optimize replication protocol
- ok
-
-> 4203 COMPLETE
-task #4203 completed
- ok
-
-> REPORT
---- mesh progress report ---
-goals: 2 total (1 pending, 0 active, 1 completed, 0 failed)
-tasks: 2 total (1 waiting, 0 running, 1 done, 0 failed)
-workers: 0 active units
----
- ok
+  #4201 [completed] [exec] p=5 (1/1 tasks): 100 0 DO I LOOP DEPTH
+> 4201 GOAL-RESULT
+goal #4201 [completed]: 100 0 DO I LOOP DEPTH
+  task #4202:
+  status: ok
+  stack: 0 1 2 ... 99 100
 ```
 
-### Goal distribution
+### Auto-claim
 
-Goals propagate through the mesh via gossip:
+Auto-claim is **on by default**. When enabled, each unit automatically
+grabs and executes the highest-priority unclaimed executable task after
+each REPL command. Toggle with `AUTO-CLAIM`.
 
-- **On creation**: the goal is broadcast to all peers immediately
-- **On peer join**: active goals are sent to newly discovered peers
-- **Conflict resolution**: status transitions are monotonic
-  (pending → active → completed/failed), so stale updates are ignored
-- **Task claiming**: units claim the highest-priority unclaimed task;
-  claims are broadcast to prevent double-assignment
-- **Auto-replication**: when pending tasks outnumber units, the mesh
-  proposes replication through the consensus protocol
+The mesh self-scales: when pending tasks outnumber available units,
+auto-replication is proposed through consensus.
 
 ## License
 

@@ -12,6 +12,7 @@ mod mesh;
 
 use std::io::{self, BufRead, Read, Write};
 use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Cell: the fundamental unit of data
@@ -121,9 +122,16 @@ const P_STEER: usize = 62;
 const P_REPORT: usize = 63;
 const P_CLAIM: usize = 64;
 const P_COMPLETE: usize = 65;
+const P_GOAL_EXEC: usize = 66;
+const P_EVAL: usize = 67;
+const P_RESULT: usize = 68;
+const P_AUTO_CLAIM: usize = 69;
+const P_TIMEOUT: usize = 70;
+const P_GOAL_RESULT: usize = 71;
 // Internal runtime primitives (not directly user-visible).
 const P_DO_RT: usize = 100;
 const P_LOOP_RT: usize = 101;
+const P_GOAL_EXEC_RT: usize = 102;
 
 // ---------------------------------------------------------------------------
 // VM: the Forth virtual machine
@@ -148,6 +156,18 @@ struct VM {
     silent: bool,
     /// Mesh networking node (None if offline).
     mesh: Option<mesh::MeshNode>,
+    /// When set, output goes here instead of stdout (sandbox mode).
+    output_buffer: Option<String>,
+    /// Execution deadline for sandboxed task execution.
+    deadline: Option<Instant>,
+    /// Set when execution exceeds the deadline.
+    timed_out: bool,
+    /// Configurable execution timeout in seconds.
+    execution_timeout: u64,
+    /// When true, automatically claim and execute incoming tasks.
+    auto_claim: bool,
+    /// Stored code strings for compiled GOAL{ ... } (indexed by Literal).
+    code_strings: Vec<String>,
 }
 
 impl VM {
@@ -166,6 +186,12 @@ impl VM {
             running: true,
             silent: false,
             mesh: None,
+            output_buffer: None,
+            deadline: None,
+            timed_out: false,
+            execution_timeout: 10,
+            auto_claim: false,
+            code_strings: Vec::new(),
         };
         vm.register_primitives();
         vm
@@ -243,6 +269,12 @@ impl VM {
             ("REPORT", P_REPORT, false),
             ("CLAIM", P_CLAIM, false),
             ("COMPLETE", P_COMPLETE, false),
+            ("GOAL{", P_GOAL_EXEC, true),
+            ("EVAL\"", P_EVAL, true),
+            ("RESULT", P_RESULT, false),
+            ("AUTO-CLAIM", P_AUTO_CLAIM, false),
+            ("TIMEOUT", P_TIMEOUT, false),
+            ("GOAL-RESULT", P_GOAL_RESULT, false),
         ];
 
         for &(name, id, immediate) in prims {
@@ -376,10 +408,22 @@ impl VM {
     fn execute_body(&mut self, body: &[Instruction]) {
         let mut ip: usize = 0;
         while ip < body.len() {
+            // Check for timeout (sandbox execution).
+            if self.timed_out {
+                return;
+            }
+            if let Some(deadline) = self.deadline {
+                if Instant::now() > deadline {
+                    self.timed_out = true;
+                    return;
+                }
+            }
+
             match &body[ip] {
                 Instruction::Primitive(id) => match *id {
                     P_DO_RT => self.rt_do(),
                     P_LOOP_RT => self.rt_loop(),
+                    P_GOAL_EXEC_RT => self.rt_goal_exec(),
                     _ => self.execute_primitive(*id),
                 },
                 Instruction::Literal(val) => {
@@ -390,8 +434,7 @@ impl VM {
                     self.execute_body(&callee);
                 }
                 Instruction::StringLit(s) => {
-                    print!("{}", s);
-                    let _ = io::stdout().flush();
+                    self.emit_str(s);
                 }
                 Instruction::Branch(offset) => {
                     ip = (ip as i64 + offset) as usize;
@@ -481,6 +524,12 @@ impl VM {
             P_REPORT => self.prim_report(),
             P_CLAIM => self.prim_claim(),
             P_COMPLETE => self.prim_complete(),
+            P_GOAL_EXEC => self.prim_goal_exec(),
+            P_EVAL => self.prim_eval(),
+            P_RESULT => self.prim_result(),
+            P_AUTO_CLAIM => self.prim_auto_claim(),
+            P_TIMEOUT => self.prim_timeout(),
+            P_GOAL_RESULT => self.prim_goal_result(),
             _ => eprintln!("unknown primitive {}", id),
         }
     }
@@ -501,6 +550,28 @@ impl VM {
             eprintln!("return stack underflow");
             0
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Output helpers — route output to buffer (sandbox) or stdout
+    // -----------------------------------------------------------------------
+
+    fn emit_char(&mut self, ch: char) {
+        if let Some(ref mut buf) = self.output_buffer {
+            buf.push(ch);
+        } else {
+            print!("{}", ch);
+            let _ = io::stdout().flush();
+        }
+    }
+
+    fn emit_str(&mut self, s: &str) {
+        if let Some(ref mut buf) = self.output_buffer {
+            buf.push_str(s);
+        } else {
+            print!("{}", s);
+            let _ = io::stdout().flush();
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -665,8 +736,7 @@ impl VM {
     fn prim_emit(&mut self) {
         let code = self.pop();
         if let Some(ch) = char::from_u32(code as u32) {
-            print!("{}", ch);
-            let _ = io::stdout().flush();
+            self.emit_char(ch);
         }
     }
 
@@ -681,21 +751,21 @@ impl VM {
     }
 
     fn prim_cr(&mut self) {
-        println!();
+        self.emit_str("\n");
     }
 
     fn prim_dot(&mut self) {
         let val = self.pop();
-        print!("{} ", val);
-        let _ = io::stdout().flush();
+        self.emit_str(&format!("{} ", val));
     }
 
     fn prim_dot_s(&mut self) {
-        print!("<{}> ", self.stack.len());
-        for val in &self.stack {
-            print!("{} ", val);
+        let s = format!("<{}> ", self.stack.len());
+        self.emit_str(&s);
+        let vals: Vec<String> = self.stack.iter().map(|v| format!("{} ", v)).collect();
+        for v in &vals {
+            self.emit_str(v);
         }
-        let _ = io::stdout().flush();
     }
 
     // -----------------------------------------------------------------------
@@ -905,8 +975,7 @@ impl VM {
                 def.body.push(Instruction::StringLit(s));
             }
         } else {
-            print!("{}", s);
-            let _ = io::stdout().flush();
+            self.emit_str(&s);
         }
     }
 
@@ -923,17 +992,22 @@ impl VM {
     // -----------------------------------------------------------------------
 
     fn prim_words(&mut self) {
+        let names: Vec<String> = self
+            .dictionary
+            .iter()
+            .rev()
+            .filter(|e| !e.hidden)
+            .map(|e| e.name.clone())
+            .collect();
         let mut count = 0;
-        for entry in self.dictionary.iter().rev() {
-            if !entry.hidden {
-                print!("{} ", entry.name);
-                count += 1;
-                if count % 12 == 0 {
-                    println!();
-                }
+        for name in &names {
+            self.emit_str(&format!("{} ", name));
+            count += 1;
+            if count % 12 == 0 {
+                self.emit_str("\n");
             }
         }
-        println!();
+        self.emit_str("\n");
     }
 
     fn prim_see(&mut self) {
@@ -1091,9 +1165,10 @@ impl VM {
     /// MESH-STATUS ( -- ) print mesh state.
     fn prim_mesh_status(&mut self) {
         if let Some(ref m) = self.mesh {
-            m.status();
+            let s = m.format_status();
+            self.emit_str(&s);
         } else {
-            println!("mesh: offline");
+            self.emit_str("mesh: offline\n");
         }
     }
 
@@ -1154,25 +1229,111 @@ impl VM {
         for i in 0..n {
             let a = addr + i;
             if a < self.memory.len() {
-                let ch = self.memory[a] as u8 as char;
-                print!("{}", ch);
+                self.emit_char(self.memory[a] as u8 as char);
             }
         }
-        let _ = io::stdout().flush();
+    }
+
+    // -----------------------------------------------------------------------
+    // Sandbox execution engine
+    // -----------------------------------------------------------------------
+
+    /// Parse balanced braces from the input buffer. Returns the content
+    /// between the opening { (already consumed) and the closing }.
+    fn parse_balanced_braces(&mut self) -> String {
+        let bytes = self.input_buffer.as_bytes();
+        if self.input_pos < bytes.len() && bytes[self.input_pos] == b' ' {
+            self.input_pos += 1;
+        }
+        let start = self.input_pos;
+        let mut depth = 1i32;
+        while self.input_pos < bytes.len() && depth > 0 {
+            match bytes[self.input_pos] as char {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let result = self.input_buffer[start..self.input_pos].to_string();
+                        self.input_pos += 1;
+                        return result;
+                    }
+                }
+                _ => {}
+            }
+            self.input_pos += 1;
+        }
+        self.input_buffer[start..self.input_pos].to_string()
+    }
+
+    /// Execute Forth code in a sandbox. Saves/restores VM state. Returns
+    /// a TaskResult with the captured stack, output, and success status.
+    fn execute_sandbox(&mut self, code: &str) -> goals::TaskResult {
+        // Save state.
+        let saved_stack = std::mem::take(&mut self.stack);
+        let saved_rstack = std::mem::take(&mut self.rstack);
+        let saved_silent = self.silent;
+        let saved_compiling = self.compiling;
+        let saved_current_def = self.current_def.take();
+        let saved_output_buffer = self.output_buffer.take();
+        let saved_deadline = self.deadline.take();
+        let saved_timed_out = self.timed_out;
+
+        // Set up sandbox.
+        self.stack = Vec::with_capacity(256);
+        self.rstack = Vec::with_capacity(256);
+        self.output_buffer = Some(String::new());
+        self.silent = true;
+        self.compiling = false;
+        self.timed_out = false;
+        self.deadline = Some(Instant::now() + Duration::from_secs(self.execution_timeout));
+
+        // Execute.
+        for line in code.lines() {
+            self.interpret_line(line);
+            if self.timed_out || !self.running {
+                break;
+            }
+        }
+
+        // Capture results.
+        let stack_snapshot = self.stack.clone();
+        let output = self.output_buffer.take().unwrap_or_default();
+        let success = !self.timed_out;
+        let error = if self.timed_out {
+            Some(format!("execution timeout ({}s)", self.execution_timeout))
+        } else {
+            None
+        };
+
+        // Restore state.
+        self.stack = saved_stack;
+        self.rstack = saved_rstack;
+        self.silent = saved_silent;
+        self.compiling = saved_compiling;
+        self.current_def = saved_current_def;
+        self.output_buffer = saved_output_buffer;
+        self.deadline = saved_deadline;
+        self.timed_out = saved_timed_out;
+        self.running = true; // task execution must not kill the unit
+
+        goals::TaskResult {
+            stack_snapshot,
+            output,
+            success,
+            error,
+        }
     }
 
     // -----------------------------------------------------------------------
     // Goal primitives
     // -----------------------------------------------------------------------
 
-    /// GOAL" <description>" ( priority -- goal-id ) submit a goal to the mesh.
-    /// Immediate: parses the description string like .", then acts.
-    /// Pushes the new goal ID onto the stack.
+    /// GOAL" <description>" ( priority -- goal-id ) submit a description-only goal.
     fn prim_goal(&mut self) {
         let desc = self.parse_until('"');
         let priority = self.pop();
         if let Some(ref m) = self.mesh {
-            let goal_id = m.create_goal(&desc, priority);
+            let goal_id = m.create_goal(&desc, priority, None);
             m.set_load(self.dictionary.len() as u32);
             self.stack.push(goal_id as Cell);
             if !self.silent {
@@ -1187,20 +1348,20 @@ impl VM {
     /// GOALS ( -- ) list all known goals.
     fn prim_goals(&mut self) {
         if let Some(ref m) = self.mesh {
-            print!("{}", m.format_goals());
-            let _ = io::stdout().flush();
+            let s = m.format_goals();
+            self.emit_str(&s);
         } else {
-            println!("  (mesh offline)");
+            self.emit_str("  (mesh offline)\n");
         }
     }
 
     /// TASKS ( -- ) list this unit's current task queue.
     fn prim_tasks(&mut self) {
         if let Some(ref m) = self.mesh {
-            print!("{}", m.format_tasks());
-            let _ = io::stdout().flush();
+            let s = m.format_tasks();
+            self.emit_str(&s);
         } else {
-            println!("  (mesh offline)");
+            self.emit_str("  (mesh offline)\n");
         }
     }
 
@@ -1255,17 +1416,40 @@ impl VM {
     }
 
     /// CLAIM ( -- task-id ) claim the next available task, or 0 if none.
+    /// CLAIM ( -- task-id ) claim and execute the next available task.
     fn prim_claim(&mut self) {
-        if let Some(ref m) = self.mesh {
-            if let Some((task_id, goal_id, desc)) = m.claim_task() {
-                println!("claimed task #{} (goal #{}): {}", task_id, goal_id, desc);
-                self.stack.push(task_id as Cell);
-            } else {
-                println!("no tasks available");
-                self.stack.push(0);
+        // Extract claimed task info (releases mesh borrow).
+        let claimed = self.mesh.as_ref().and_then(|m| m.claim_task());
+
+        if let Some((task_id, goal_id, desc)) = claimed {
+            println!("claimed task #{} (goal #{}): {}", task_id, goal_id, desc);
+            // Check if the parent goal has executable code.
+            let code = self.mesh.as_ref().and_then(|m| m.goal_code(goal_id));
+            if let Some(code) = code {
+                let result = self.execute_sandbox(&code);
+                if !result.output.is_empty() {
+                    println!("  output: {}", result.output.trim_end());
+                }
+                if !result.stack_snapshot.is_empty() {
+                    print!("  stack: ");
+                    for v in &result.stack_snapshot {
+                        print!("{} ", v);
+                    }
+                    println!();
+                }
+                if !result.success {
+                    println!(
+                        "  FAILED: {}",
+                        result.error.as_deref().unwrap_or("unknown")
+                    );
+                }
+                if let Some(ref m) = self.mesh {
+                    m.complete_task_with_result(task_id, result);
+                }
             }
+            self.stack.push(task_id as Cell);
         } else {
-            eprintln!("CLAIM: mesh offline");
+            println!("no tasks available");
             self.stack.push(0);
         }
     }
@@ -1274,10 +1458,159 @@ impl VM {
     fn prim_complete(&mut self) {
         let task_id = self.pop() as u64;
         if let Some(ref m) = self.mesh {
-            m.complete_task(task_id);
+            m.complete_task_with_result(task_id, goals::TaskResult {
+                stack_snapshot: vec![],
+                output: String::new(),
+                success: true,
+                error: None,
+            });
             println!("task #{} completed", task_id);
         } else {
             eprintln!("COMPLETE: mesh offline");
+        }
+    }
+
+    /// GOAL{ <forth code> } ( priority -- goal-id ) submit an executable goal.
+    /// Immediate: parses the code at compile time. In compile mode, stores
+    /// the code in a side table and compiles Literal(index) + Primitive(RT).
+    fn prim_goal_exec(&mut self) {
+        let code = self.parse_balanced_braces();
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(code);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Literal(idx as Cell));
+                def.body.push(Instruction::Primitive(P_GOAL_EXEC_RT));
+            }
+        } else {
+            self.create_exec_goal(&code);
+        }
+    }
+
+    /// Runtime primitive for compiled GOAL{. Pops code-string index from
+    /// stack, looks up the code, then creates the goal.
+    fn rt_goal_exec(&mut self) {
+        let idx = self.pop() as usize;
+        if idx < self.code_strings.len() {
+            let code = self.code_strings[idx].clone();
+            self.create_exec_goal(&code);
+        } else {
+            eprintln!("GOAL{{: invalid code index");
+            self.stack.push(0);
+        }
+    }
+
+    fn create_exec_goal(&mut self, code: &str) {
+        let priority = self.pop();
+        if let Some(ref m) = self.mesh {
+            let goal_id = m.create_goal(code, priority, Some(code.to_string()));
+            m.set_load(self.dictionary.len() as u32);
+            self.stack.push(goal_id as Cell);
+            if !self.silent {
+                println!(
+                    "goal #{} created [exec]: {}",
+                    goal_id,
+                    code.chars().take(60).collect::<String>()
+                );
+            }
+        } else {
+            eprintln!("GOAL: mesh offline");
+            self.stack.push(0);
+        }
+    }
+
+    /// EVAL" <forth code>" ( -- ) evaluate a string of Forth immediately.
+    fn prim_eval(&mut self) {
+        let code = self.parse_until('"');
+        self.interpret_line(&code);
+    }
+
+    /// RESULT ( task-id -- ) display the result of a completed task.
+    fn prim_result(&mut self) {
+        let task_id = self.pop() as u64;
+        if let Some(ref m) = self.mesh {
+            let s = m.format_task_result(task_id);
+            self.emit_str(&s);
+        } else {
+            eprintln!("RESULT: mesh offline");
+        }
+    }
+
+    /// AUTO-CLAIM ( -- ) toggle automatic task claiming and execution.
+    fn prim_auto_claim(&mut self) {
+        self.auto_claim = !self.auto_claim;
+        if !self.silent {
+            println!(
+                "auto-claim: {}",
+                if self.auto_claim { "ON" } else { "OFF" }
+            );
+        }
+    }
+
+    /// TIMEOUT ( seconds -- ) set execution timeout for sandboxed tasks.
+    fn prim_timeout(&mut self) {
+        let secs = self.pop();
+        if secs > 0 {
+            self.execution_timeout = secs as u64;
+            if !self.silent {
+                println!("execution timeout: {}s", self.execution_timeout);
+            }
+        } else {
+            eprintln!("TIMEOUT: must be > 0");
+        }
+    }
+
+    /// GOAL-RESULT ( goal-id -- ) show combined results from all tasks of a goal.
+    fn prim_goal_result(&mut self) {
+        let goal_id = self.pop() as u64;
+        if let Some(ref m) = self.mesh {
+            let s = m.format_goal_result(goal_id);
+            self.emit_str(&s);
+        } else {
+            eprintln!("GOAL-RESULT: mesh offline");
+        }
+    }
+
+    /// Check for and execute auto-claimed tasks.
+    fn check_auto_claim(&mut self) {
+        if !self.auto_claim {
+            return;
+        }
+        // Extract the claimed task info while borrowing mesh immutably.
+        let claimed = self
+            .mesh
+            .as_ref()
+            .and_then(|m| m.claim_executable_task());
+
+        if let Some((task_id, goal_id, desc, code)) = claimed {
+            println!(
+                "[auto] claimed task #{} (goal #{}): {}",
+                task_id, goal_id, desc.chars().take(50).collect::<String>()
+            );
+            // Execute in sandbox (borrows self mutably).
+            let result = self.execute_sandbox(&code);
+            let success = result.success;
+            if !result.output.is_empty() {
+                println!("[auto] output: {}", result.output.trim_end());
+            }
+            if !result.stack_snapshot.is_empty() {
+                print!("[auto] stack: ");
+                for v in &result.stack_snapshot {
+                    print!("{} ", v);
+                }
+                println!();
+            }
+            if !success {
+                println!(
+                    "[auto] FAILED: {}",
+                    result.error.as_deref().unwrap_or("unknown")
+                );
+            }
+            // Now borrow mesh again to broadcast result.
+            if let Some(ref m) = self.mesh {
+                m.complete_task_with_result(task_id, result);
+            }
+            println!("[auto] task #{} done", task_id);
         }
     }
 
@@ -1349,6 +1682,7 @@ impl VM {
                         break;
                     }
                     if !self.compiling {
+                        self.check_auto_claim();
                         self.check_auto_replicate();
                     }
                     if self.compiling {
