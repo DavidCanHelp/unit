@@ -1,0 +1,1194 @@
+// mesh.rs — Mesh networking and consensus for unit
+//
+// Gossip-based peer discovery over UDP unicast. Each unit has a unique ID,
+// sends periodic heartbeats, and maintains a peer table. Replication
+// decisions are made through a simple majority-vote consensus protocol.
+//
+// Architecture:
+//   - Main thread: runs the Forth REPL, calls MeshNode methods synchronously
+//   - Network thread: UDP recv loop, heartbeats, vote processing, timeouts
+//   - Shared state: Arc<Mutex<MeshState>> bridges the two threads
+//
+// Configuration via environment variables:
+//   UNIT_PORT  — UDP port to bind (default: 0 = OS-assigned)
+//   UNIT_PEERS — comma-separated seed peers, e.g. "127.0.0.1:4202"
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Read;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use super::{Cell, Entry, Instruction};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+const PEER_TIMEOUT: Duration = Duration::from_secs(15);
+const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(5);
+const PROPOSAL_COOLDOWN: Duration = Duration::from_secs(10);
+const RECV_TIMEOUT: Duration = Duration::from_millis(500);
+const MAX_GOSSIP_PEERS: usize = 8;
+const DEFAULT_CAPACITY: u32 = 100;
+
+// Message type tags.
+const MSG_HEARTBEAT: u8 = 1;
+const MSG_PROPOSE: u8 = 2;
+const MSG_VOTE: u8 = 3;
+const MSG_COMMIT: u8 = 4;
+const MSG_REJECT: u8 = 5;
+const MSG_DATA: u8 = 6;
+
+// Wire format magic.
+const MAGIC: &[u8; 4] = b"UNIT";
+
+// ---------------------------------------------------------------------------
+// Node identity
+// ---------------------------------------------------------------------------
+
+pub type NodeId = [u8; 8];
+
+/// Generate a random node ID from /dev/urandom (with time-based fallback).
+fn generate_id() -> NodeId {
+    let mut id = [0u8; 8];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut id);
+    } else {
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        id = t.to_ne_bytes();
+    }
+    id
+}
+
+pub fn id_to_hex(id: &NodeId) -> String {
+    id.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Wire format helpers — big-endian encoding/decoding
+// ---------------------------------------------------------------------------
+
+fn write_u8(buf: &mut Vec<u8>, v: u8) {
+    buf.push(v);
+}
+fn write_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
+fn write_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
+fn write_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
+fn write_i64(buf: &mut Vec<u8>, v: i64) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
+fn write_bytes(buf: &mut Vec<u8>, data: &[u8]) {
+    buf.extend_from_slice(data);
+}
+
+fn read_u8(data: &[u8], pos: &mut usize) -> Option<u8> {
+    if *pos >= data.len() {
+        return None;
+    }
+    let v = data[*pos];
+    *pos += 1;
+    Some(v)
+}
+fn read_u16(data: &[u8], pos: &mut usize) -> Option<u16> {
+    if *pos + 2 > data.len() {
+        return None;
+    }
+    let v = u16::from_be_bytes([data[*pos], data[*pos + 1]]);
+    *pos += 2;
+    Some(v)
+}
+fn read_u32(data: &[u8], pos: &mut usize) -> Option<u32> {
+    if *pos + 4 > data.len() {
+        return None;
+    }
+    let v = u32::from_be_bytes([
+        data[*pos],
+        data[*pos + 1],
+        data[*pos + 2],
+        data[*pos + 3],
+    ]);
+    *pos += 4;
+    Some(v)
+}
+fn read_u64(data: &[u8], pos: &mut usize) -> Option<u64> {
+    if *pos + 8 > data.len() {
+        return None;
+    }
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&data[*pos..*pos + 8]);
+    *pos += 8;
+    Some(u64::from_be_bytes(bytes))
+}
+fn read_i64(data: &[u8], pos: &mut usize) -> Option<i64> {
+    if *pos + 8 > data.len() {
+        return None;
+    }
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&data[*pos..*pos + 8]);
+    *pos += 8;
+    Some(i64::from_be_bytes(bytes))
+}
+fn read_bytes(data: &[u8], pos: &mut usize, len: usize) -> Option<Vec<u8>> {
+    if *pos + len > data.len() {
+        return None;
+    }
+    let v = data[*pos..*pos + len].to_vec();
+    *pos += len;
+    Some(v)
+}
+
+// ---------------------------------------------------------------------------
+// Message header: MAGIC(4) + type(1) + sender_id(8) + sender_port(2)
+// ---------------------------------------------------------------------------
+
+const HEADER_SIZE: usize = 4 + 1 + 8 + 2; // 15 bytes
+
+fn encode_header(buf: &mut Vec<u8>, msg_type: u8, id: &NodeId, port: u16) {
+    write_bytes(buf, MAGIC);
+    write_u8(buf, msg_type);
+    write_bytes(buf, id);
+    write_u16(buf, port);
+}
+
+/// Returns (msg_type, sender_id, sender_port) or None if invalid.
+fn decode_header(data: &[u8], pos: &mut usize) -> Option<(u8, NodeId, u16)> {
+    let magic = read_bytes(data, pos, 4)?;
+    if magic != MAGIC {
+        return None;
+    }
+    let msg_type = read_u8(data, pos)?;
+    let id_bytes = read_bytes(data, pos, 8)?;
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&id_bytes);
+    let port = read_u16(data, pos)?;
+    Some((msg_type, id, port))
+}
+
+// ---------------------------------------------------------------------------
+// Peer info
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+struct PeerInfo {
+    addr: SocketAddr,
+    id: NodeId,
+    load: u32,
+    capacity: u32,
+    peer_count: u16,
+    last_seen: Instant,
+}
+
+// ---------------------------------------------------------------------------
+// Proposal tracking
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+struct Proposal {
+    id: u64,
+    proposer: NodeId,
+    reason: String,
+    votes_yes: HashSet<NodeId>,
+    votes_no: HashSet<NodeId>,
+    started: Instant,
+    total_peers_at_start: usize,
+    committed: bool,
+    /// Serialized state to send on commit (only set on the proposer).
+    state_bytes: Option<Vec<u8>>,
+}
+
+// ---------------------------------------------------------------------------
+// Inbox message (for Forth SEND/RECV)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct InboxMessage {
+    pub from: NodeId,
+    pub data: Vec<u8>,
+}
+
+// ---------------------------------------------------------------------------
+// Shared state between VM thread and network thread
+// ---------------------------------------------------------------------------
+
+struct MeshState {
+    id: NodeId,
+    port: u16,
+    peers: HashMap<NodeId, PeerInfo>,
+    inbox: VecDeque<InboxMessage>,
+    /// Active proposals (keyed by proposal ID).
+    proposals: HashMap<u64, Proposal>,
+    /// Timestamp of the last completed/failed proposal by this node.
+    last_proposal_time: Option<Instant>,
+    /// This node's current load metric.
+    load: u32,
+    /// This node's capacity threshold.
+    capacity: u32,
+    /// Log of recent mesh events (ring buffer, for MESH-STATUS).
+    event_log: VecDeque<String>,
+    /// Flag to stop the network thread.
+    running: bool,
+}
+
+impl MeshState {
+    fn log_event(&mut self, msg: String) {
+        self.event_log.push_back(msg);
+        if self.event_log.len() > 20 {
+            self.event_log.pop_front();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MeshNode — public API for the VM
+// ---------------------------------------------------------------------------
+
+pub struct MeshNode {
+    id: NodeId,
+    id_hex: String,
+    socket: UdpSocket,
+    state: Arc<Mutex<MeshState>>,
+    _thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for MeshNode {
+    fn drop(&mut self) {
+        if let Ok(mut st) = self.state.lock() {
+            st.running = false;
+        }
+        if let Some(handle) = self._thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl MeshNode {
+    /// Start the mesh node. Binds a UDP socket and spawns the network thread.
+    pub fn start(port: u16, seed_peers: Vec<SocketAddr>) -> Result<Self, String> {
+        let id = generate_id();
+        let id_hex = id_to_hex(&id);
+
+        let bind_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
+        let socket = UdpSocket::bind(bind_addr).map_err(|e| format!("bind: {}", e))?;
+        let local_port = socket.local_addr().map_err(|e| format!("{}", e))?.port();
+
+        let state = Arc::new(Mutex::new(MeshState {
+            id,
+            port: local_port,
+            peers: HashMap::new(),
+            inbox: VecDeque::new(),
+            proposals: HashMap::new(),
+            last_proposal_time: None,
+            load: 0,
+            capacity: DEFAULT_CAPACITY,
+            event_log: VecDeque::new(),
+            running: true,
+        }));
+
+        // Add seed peers as tentative entries so the first heartbeat reaches them.
+        {
+            let mut st = state.lock().unwrap();
+            for addr in &seed_peers {
+                // We don't know their ID yet; use a placeholder that will be
+                // replaced when their first heartbeat arrives. We key by addr
+                // temporarily by generating a deterministic pseudo-ID from addr.
+                let pseudo_id = addr_to_pseudo_id(addr);
+                st.peers.insert(
+                    pseudo_id,
+                    PeerInfo {
+                        addr: *addr,
+                        id: pseudo_id,
+                        load: 0,
+                        capacity: 0,
+                        peer_count: 0,
+                        last_seen: Instant::now(),
+                    },
+                );
+            }
+            st.log_event(format!(
+                "mesh started on port {} with {} seed peers",
+                local_port,
+                seed_peers.len()
+            ));
+        }
+
+        let thread_socket = socket.try_clone().map_err(|e| format!("clone: {}", e))?;
+        let thread_state = Arc::clone(&state);
+        let thread_id = id;
+
+        let handle = thread::spawn(move || {
+            network_thread(thread_socket, thread_state, thread_id);
+        });
+
+        Ok(MeshNode {
+            id,
+            id_hex,
+            socket,
+            state,
+            _thread: Some(handle),
+        })
+    }
+
+    pub fn id_hex(&self) -> &str {
+        &self.id_hex
+    }
+
+    pub fn id(&self) -> &NodeId {
+        &self.id
+    }
+
+    pub fn local_port(&self) -> u16 {
+        self.socket.local_addr().map(|a| a.port()).unwrap_or(0)
+    }
+
+    pub fn peer_count(&self) -> usize {
+        let st = self.state.lock().unwrap();
+        st.peers.len()
+    }
+
+    pub fn load(&self) -> u32 {
+        self.state.lock().unwrap().load
+    }
+
+    pub fn set_load(&self, load: u32) {
+        self.state.lock().unwrap().load = load;
+    }
+
+    pub fn capacity(&self) -> u32 {
+        self.state.lock().unwrap().capacity
+    }
+
+    /// Print mesh status to stdout.
+    pub fn status(&self) {
+        let st = self.state.lock().unwrap();
+        println!("--- mesh status ---");
+        println!("id:       {}", id_to_hex(&st.id));
+        println!("port:     {}", st.port);
+        println!("load:     {}/{}", st.load, st.capacity);
+        println!("peers:    {}", st.peers.len());
+        for (_, peer) in &st.peers {
+            let age = peer.last_seen.elapsed().as_secs();
+            println!(
+                "  {} @ {} load={}/{} seen={}s ago",
+                id_to_hex(&peer.id),
+                peer.addr,
+                peer.load,
+                peer.capacity,
+                age
+            );
+        }
+        if !st.proposals.is_empty() {
+            println!("proposals:");
+            for (pid, prop) in &st.proposals {
+                println!(
+                    "  #{:016x} by {} yes={} no={} committed={}",
+                    pid,
+                    id_to_hex(&prop.proposer),
+                    prop.votes_yes.len(),
+                    prop.votes_no.len(),
+                    prop.committed
+                );
+            }
+        }
+        if !st.event_log.is_empty() {
+            println!("recent events:");
+            for evt in &st.event_log {
+                println!("  {}", evt);
+            }
+        }
+        println!("---");
+    }
+
+    /// Send a data message (from Forth SEND word) to all peers.
+    pub fn send_data(&self, data: &[u8]) {
+        let st = self.state.lock().unwrap();
+        let port = st.port;
+        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        drop(st);
+
+        let mut buf = Vec::with_capacity(HEADER_SIZE + 2 + data.len());
+        encode_header(&mut buf, MSG_DATA, &self.id, port);
+        write_u16(&mut buf, data.len() as u16);
+        write_bytes(&mut buf, data);
+
+        for addr in &peers {
+            let _ = self.socket.send_to(&buf, addr);
+        }
+    }
+
+    /// Pop the next received data message from the inbox.
+    pub fn recv_data(&self) -> Option<InboxMessage> {
+        self.state.lock().unwrap().inbox.pop_front()
+    }
+
+    /// Propose replication to the mesh. Returns an error if on cooldown or
+    /// if there are no peers to vote.
+    pub fn propose_replicate(
+        &self,
+        reason: &str,
+        state_bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        let mut st = self.state.lock().unwrap();
+
+        // Anti-spam: check cooldown.
+        if let Some(last) = st.last_proposal_time {
+            if last.elapsed() < PROPOSAL_COOLDOWN {
+                let remaining = PROPOSAL_COOLDOWN - last.elapsed();
+                return Err(format!(
+                    "cooldown: wait {}s",
+                    remaining.as_secs()
+                ));
+            }
+        }
+
+        // Anti-spam: only one active proposal per node.
+        for prop in st.proposals.values() {
+            if prop.proposer == self.id && !prop.committed {
+                if prop.started.elapsed() < PROPOSAL_TIMEOUT {
+                    return Err("already have an active proposal".into());
+                }
+            }
+        }
+
+        if st.peers.is_empty() {
+            return Err("no peers to vote".into());
+        }
+
+        // Generate proposal ID from time.
+        let proposal_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        let total_peers = st.peers.len();
+        let port = st.port;
+        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+
+        let proposal = Proposal {
+            id: proposal_id,
+            proposer: self.id,
+            reason: reason.to_string(),
+            votes_yes: HashSet::new(),
+            votes_no: HashSet::new(),
+            started: Instant::now(),
+            total_peers_at_start: total_peers,
+            committed: false,
+            state_bytes: Some(state_bytes),
+        };
+
+        st.proposals.insert(proposal_id, proposal);
+        st.log_event(format!("proposed replication #{:016x}: {}", proposal_id, reason));
+        drop(st);
+
+        // Broadcast PROPOSE to all peers.
+        let reason_bytes = reason.as_bytes();
+        let mut buf = Vec::with_capacity(HEADER_SIZE + 8 + 2 + reason_bytes.len());
+        encode_header(&mut buf, MSG_PROPOSE, &self.id, port);
+        write_u64(&mut buf, proposal_id);
+        write_u16(&mut buf, reason_bytes.len() as u16);
+        write_bytes(&mut buf, reason_bytes);
+
+        for addr in &peers {
+            let _ = self.socket.send_to(&buf, addr);
+        }
+
+        Ok(())
+    }
+
+    /// Shut down the mesh (stops network thread).
+    pub fn shutdown(&self) {
+        if let Ok(mut st) = self.state.lock() {
+            st.running = false;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Network thread
+// ---------------------------------------------------------------------------
+
+fn network_thread(socket: UdpSocket, state: Arc<Mutex<MeshState>>, my_id: NodeId) {
+    let _ = socket.set_read_timeout(Some(RECV_TIMEOUT));
+    let mut recv_buf = [0u8; 65535];
+    let mut last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL; // send immediately
+
+    loop {
+        // Check if we should stop.
+        {
+            let st = state.lock().unwrap();
+            if !st.running {
+                return;
+            }
+        }
+
+        // Try to receive a packet.
+        if let Ok((len, src_addr)) = socket.recv_from(&mut recv_buf) {
+            let packet = &recv_buf[..len];
+            handle_packet(packet, src_addr, &socket, &state, &my_id);
+        }
+
+        // Send heartbeat if interval elapsed.
+        if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+            send_heartbeat(&socket, &state, &my_id);
+            last_heartbeat = Instant::now();
+        }
+
+        // Check proposal timeouts and commitments.
+        check_proposals(&socket, &state, &my_id);
+
+        // Prune stale peers.
+        prune_peers(&state);
+    }
+}
+
+fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &NodeId) {
+    let st = state.lock().unwrap();
+    let port = st.port;
+    let load = st.load;
+    let capacity = st.capacity;
+    let peer_count = st.peers.len() as u16;
+
+    // Collect peer addresses for gossip (up to MAX_GOSSIP_PEERS).
+    let gossip_addrs: Vec<SocketAddr> = st
+        .peers
+        .values()
+        .take(MAX_GOSSIP_PEERS)
+        .map(|p| p.addr)
+        .collect();
+
+    let all_peer_addrs: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+    drop(st);
+
+    let mut buf = Vec::with_capacity(HEADER_SIZE + 11 + gossip_addrs.len() * 6);
+    encode_header(&mut buf, MSG_HEARTBEAT, my_id, port);
+    write_u32(&mut buf, load);
+    write_u32(&mut buf, capacity);
+    write_u16(&mut buf, peer_count);
+    write_u8(&mut buf, gossip_addrs.len() as u8);
+    for addr in &gossip_addrs {
+        if let SocketAddr::V4(v4) = addr {
+            write_bytes(&mut buf, &v4.ip().octets());
+            write_u16(&mut buf, v4.port());
+        }
+    }
+
+    for addr in &all_peer_addrs {
+        let _ = socket.send_to(&buf, addr);
+    }
+}
+
+fn handle_packet(
+    data: &[u8],
+    src_addr: SocketAddr,
+    socket: &UdpSocket,
+    state: &Arc<Mutex<MeshState>>,
+    my_id: &NodeId,
+) {
+    let mut pos = 0;
+    let (msg_type, sender_id, sender_port) = match decode_header(data, &mut pos) {
+        Some(h) => h,
+        None => return, // invalid packet
+    };
+
+    // Ignore our own messages.
+    if sender_id == *my_id {
+        return;
+    }
+
+    // Reconstruct the sender's listening address. Use the IP from the UDP
+    // source but the port from the header (they may differ if the OS assigns
+    // ephemeral source ports, but for our socket-per-node design they match).
+    let sender_addr = SocketAddr::new(src_addr.ip(), sender_port);
+
+    match msg_type {
+        MSG_HEARTBEAT => handle_heartbeat(data, &mut pos, sender_id, sender_addr, state),
+        MSG_PROPOSE => {
+            handle_propose(data, &mut pos, sender_id, sender_addr, socket, state, my_id)
+        }
+        MSG_VOTE => handle_vote(data, &mut pos, sender_id, socket, state, my_id),
+        MSG_COMMIT => handle_commit(data, &mut pos, sender_id, state),
+        MSG_REJECT => handle_reject(data, &mut pos, sender_id, state),
+        MSG_DATA => handle_data(data, &mut pos, sender_id, state),
+        _ => {} // unknown message type — ignore
+    }
+}
+
+fn handle_heartbeat(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    sender_addr: SocketAddr,
+    state: &Arc<Mutex<MeshState>>,
+) {
+    let load = match read_u32(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let capacity = match read_u32(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let peer_count = match read_u16(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let gossip_count = match read_u8(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+
+    // Parse gossiped peer addresses.
+    let mut gossip_addrs = Vec::with_capacity(gossip_count);
+    for _ in 0..gossip_count {
+        let ip_bytes = match read_bytes(data, pos, 4) {
+            Some(b) => b,
+            None => break,
+        };
+        let port = match read_u16(data, pos) {
+            Some(v) => v,
+            None => break,
+        };
+        let ip = Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+        gossip_addrs.push(SocketAddr::V4(SocketAddrV4::new(ip, port)));
+    }
+
+    let mut st = state.lock().unwrap();
+    let my_port = st.port;
+
+    // Remove any pseudo-ID entry for this address (from seed peers).
+    let pseudo = addr_to_pseudo_id(&sender_addr);
+    if pseudo != sender_id {
+        st.peers.remove(&pseudo);
+    }
+
+    // Update or insert the peer.
+    let is_new = !st.peers.contains_key(&sender_id);
+    st.peers.insert(
+        sender_id,
+        PeerInfo {
+            addr: sender_addr,
+            id: sender_id,
+            load,
+            capacity,
+            peer_count,
+            last_seen: Instant::now(),
+        },
+    );
+
+    if is_new {
+        st.log_event(format!(
+            "discovered peer {} @ {}",
+            id_to_hex(&sender_id),
+            sender_addr
+        ));
+    }
+
+    // Add gossiped peers we don't know about yet (transitive discovery).
+    for addr in gossip_addrs {
+        // Don't add ourselves.
+        if addr.port() == my_port && addr.ip().is_loopback() {
+            continue;
+        }
+        // Check if we already know a peer at this address.
+        let known = st.peers.values().any(|p| p.addr == addr);
+        if !known {
+            let pseudo_id = addr_to_pseudo_id(&addr);
+            st.peers.insert(
+                pseudo_id,
+                PeerInfo {
+                    addr,
+                    id: pseudo_id,
+                    load: 0,
+                    capacity: 0,
+                    peer_count: 0,
+                    last_seen: Instant::now(),
+                },
+            );
+            st.log_event(format!("gossip: discovered peer at {}", addr));
+        }
+    }
+}
+
+fn handle_propose(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    sender_addr: SocketAddr,
+    socket: &UdpSocket,
+    state: &Arc<Mutex<MeshState>>,
+    my_id: &NodeId,
+) {
+    let proposal_id = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let reason_len = match read_u16(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let reason_bytes = match read_bytes(data, pos, reason_len) {
+        Some(v) => v,
+        None => return,
+    };
+    let reason = String::from_utf8_lossy(&reason_bytes).to_string();
+
+    let mut st = state.lock().unwrap();
+    st.log_event(format!(
+        "proposal #{:016x} from {}: {}",
+        proposal_id,
+        id_to_hex(&sender_id),
+        reason
+    ));
+
+    // Evaluate: vote YES if we have available capacity.
+    let vote = st.load < (st.capacity * 80 / 100);
+    let port = st.port;
+    drop(st);
+
+    // Send vote.
+    let mut buf = Vec::with_capacity(HEADER_SIZE + 9);
+    encode_header(&mut buf, MSG_VOTE, my_id, port);
+    write_u64(&mut buf, proposal_id);
+    write_u8(&mut buf, if vote { 1 } else { 0 });
+
+    let _ = socket.send_to(&buf, sender_addr);
+}
+
+fn handle_vote(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    _socket: &UdpSocket,
+    state: &Arc<Mutex<MeshState>>,
+    _my_id: &NodeId,
+) {
+    let proposal_id = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let vote_val = match read_u8(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+
+    let mut st = state.lock().unwrap();
+    let mut yes_count = 0;
+    let mut no_count = 0;
+    if let Some(prop) = st.proposals.get_mut(&proposal_id) {
+        if vote_val == 1 {
+            prop.votes_yes.insert(sender_id);
+        } else {
+            prop.votes_no.insert(sender_id);
+        }
+        yes_count = prop.votes_yes.len();
+        no_count = prop.votes_no.len();
+    }
+    st.log_event(format!(
+        "vote {} from {} on #{:016x} (yes={}, no={})",
+        if vote_val == 1 { "YES" } else { "NO" },
+        id_to_hex(&sender_id),
+        proposal_id,
+        yes_count,
+        no_count,
+    ));
+}
+
+fn handle_commit(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    state: &Arc<Mutex<MeshState>>,
+) {
+    let proposal_id = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let state_len = match read_u32(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let state_bytes = match read_bytes(data, pos, state_len) {
+        Some(v) => v,
+        None => return,
+    };
+
+    let mut st = state.lock().unwrap();
+    st.log_event(format!(
+        "commit #{:016x} from {} ({} bytes of state)",
+        proposal_id,
+        id_to_hex(&sender_id),
+        state_bytes.len()
+    ));
+
+    // Store the received state as an inbox message so the Forth layer can
+    // inspect it. In a full implementation, this would bootstrap a new unit.
+    st.inbox.push_back(InboxMessage {
+        from: sender_id,
+        data: state_bytes,
+    });
+}
+
+fn handle_reject(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    state: &Arc<Mutex<MeshState>>,
+) {
+    let proposal_id = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+
+    let mut st = state.lock().unwrap();
+    st.log_event(format!(
+        "reject #{:016x} from {}",
+        proposal_id,
+        id_to_hex(&sender_id)
+    ));
+    st.proposals.remove(&proposal_id);
+}
+
+fn handle_data(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    state: &Arc<Mutex<MeshState>>,
+) {
+    let data_len = match read_u16(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let payload = match read_bytes(data, pos, data_len) {
+        Some(v) => v,
+        None => return,
+    };
+
+    let mut st = state.lock().unwrap();
+    st.inbox.push_back(InboxMessage {
+        from: sender_id,
+        data: payload,
+    });
+}
+
+/// Check proposals for quorum or timeout, and act accordingly.
+fn check_proposals(
+    socket: &UdpSocket,
+    state: &Arc<Mutex<MeshState>>,
+    my_id: &NodeId,
+) {
+    let mut st = state.lock().unwrap();
+    let port = st.port;
+
+    // Collect proposal IDs to process (avoid borrowing issues).
+    let proposal_ids: Vec<u64> = st.proposals.keys().cloned().collect();
+    let peer_addrs: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+
+    for pid in proposal_ids {
+        let prop = match st.proposals.get(&pid) {
+            Some(p) => p.clone(),
+            None => continue,
+        };
+
+        if prop.committed {
+            continue;
+        }
+
+        // Only the proposer drives the consensus.
+        if prop.proposer != *my_id {
+            // Clean up foreign proposals after timeout.
+            if prop.started.elapsed() > PROPOSAL_TIMEOUT * 2 {
+                st.proposals.remove(&pid);
+            }
+            continue;
+        }
+
+        let total = prop.total_peers_at_start;
+        let quorum = total / 2 + 1; // >50%
+
+        // Check if quorum reached.
+        if prop.votes_yes.len() >= quorum {
+            // Quorum reached — commit!
+            st.log_event(format!(
+                "quorum reached for #{:016x} ({}/{})",
+                pid,
+                prop.votes_yes.len(),
+                total
+            ));
+
+            // Mark committed.
+            if let Some(p) = st.proposals.get_mut(&pid) {
+                p.committed = true;
+            }
+            st.last_proposal_time = Some(Instant::now());
+
+            // Send COMMIT with serialized state.
+            if let Some(state_bytes) = &prop.state_bytes {
+                let mut buf =
+                    Vec::with_capacity(HEADER_SIZE + 8 + 4 + state_bytes.len());
+                encode_header(&mut buf, MSG_COMMIT, my_id, port);
+                write_u64(&mut buf, pid);
+                write_u32(&mut buf, state_bytes.len() as u32);
+                write_bytes(&mut buf, state_bytes);
+
+                for addr in &peer_addrs {
+                    let _ = socket.send_to(&buf, addr);
+                }
+            }
+
+            continue;
+        }
+
+        // Check if majority rejected.
+        if prop.votes_no.len() > total / 2 {
+            st.log_event(format!(
+                "proposal #{:016x} rejected ({} NO votes)",
+                pid,
+                prop.votes_no.len()
+            ));
+            st.proposals.remove(&pid);
+            st.last_proposal_time = Some(Instant::now());
+
+            // Send REJECT to all peers.
+            let mut buf = Vec::with_capacity(HEADER_SIZE + 8);
+            encode_header(&mut buf, MSG_REJECT, my_id, port);
+            write_u64(&mut buf, pid);
+            for addr in &peer_addrs {
+                let _ = socket.send_to(&buf, addr);
+            }
+            continue;
+        }
+
+        // Check timeout.
+        if prop.started.elapsed() > PROPOSAL_TIMEOUT {
+            st.log_event(format!(
+                "proposal #{:016x} timed out (yes={}, no={}, needed={})",
+                pid,
+                prop.votes_yes.len(),
+                prop.votes_no.len(),
+                quorum
+            ));
+            st.proposals.remove(&pid);
+            st.last_proposal_time = Some(Instant::now());
+
+            // Send REJECT.
+            let mut buf = Vec::with_capacity(HEADER_SIZE + 8);
+            encode_header(&mut buf, MSG_REJECT, my_id, port);
+            write_u64(&mut buf, pid);
+            for addr in &peer_addrs {
+                let _ = socket.send_to(&buf, addr);
+            }
+        }
+    }
+}
+
+/// Remove peers that haven't sent a heartbeat within PEER_TIMEOUT.
+fn prune_peers(state: &Arc<Mutex<MeshState>>) {
+    let mut st = state.lock().unwrap();
+    let stale: Vec<NodeId> = st
+        .peers
+        .iter()
+        .filter(|(_, p)| p.last_seen.elapsed() > PEER_TIMEOUT)
+        .map(|(id, _)| *id)
+        .collect();
+    for id in &stale {
+        st.peers.remove(id);
+        st.log_event(format!("peer {} timed out", id_to_hex(id)));
+    }
+}
+
+/// Derive a deterministic pseudo-ID from a socket address. Used as a
+/// temporary key for seed peers before we learn their real ID.
+fn addr_to_pseudo_id(addr: &SocketAddr) -> NodeId {
+    let mut id = [0xFFu8; 8];
+    let port_bytes = addr.port().to_be_bytes();
+    id[0] = port_bytes[0];
+    id[1] = port_bytes[1];
+    if let SocketAddr::V4(v4) = addr {
+        let octets = v4.ip().octets();
+        id[2] = octets[0];
+        id[3] = octets[1];
+        id[4] = octets[2];
+        id[5] = octets[3];
+    }
+    id
+}
+
+// ---------------------------------------------------------------------------
+// State serialization — dictionary + memory → byte stream
+// ---------------------------------------------------------------------------
+//
+// Wire format:
+//   magic: "UNIT" (4 bytes)
+//   version: u8 (1)
+//   entry_count: u32
+//   for each entry:
+//     name_len: u16
+//     name: [u8; name_len]
+//     flags: u8 (bit 0 = immediate, bit 1 = hidden)
+//     body_len: u32
+//     for each instruction:
+//       tag: u8 + payload
+//   here: u32
+//   memory_cells: u32
+//   memory: [i64; memory_cells]
+
+pub fn serialize_state(dictionary: &[Entry], memory: &[Cell], here: usize) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4096);
+
+    // Header.
+    write_bytes(&mut buf, MAGIC);
+    write_u8(&mut buf, 1); // version
+
+    // Dictionary.
+    write_u32(&mut buf, dictionary.len() as u32);
+    for entry in dictionary {
+        let name_bytes = entry.name.as_bytes();
+        write_u16(&mut buf, name_bytes.len() as u16);
+        write_bytes(&mut buf, name_bytes);
+
+        let flags = (if entry.immediate { 1u8 } else { 0 })
+            | (if entry.hidden { 2u8 } else { 0 });
+        write_u8(&mut buf, flags);
+
+        write_u32(&mut buf, entry.body.len() as u32);
+        for instr in &entry.body {
+            serialize_instruction(&mut buf, instr);
+        }
+    }
+
+    // Memory (only up to `here`).
+    let mem_cells = here.min(memory.len());
+    write_u32(&mut buf, here as u32);
+    write_u32(&mut buf, mem_cells as u32);
+    for i in 0..mem_cells {
+        write_i64(&mut buf, memory[i]);
+    }
+
+    buf
+}
+
+fn serialize_instruction(buf: &mut Vec<u8>, instr: &Instruction) {
+    match instr {
+        Instruction::Primitive(id) => {
+            write_u8(buf, 0);
+            write_u32(buf, *id as u32);
+        }
+        Instruction::Literal(val) => {
+            write_u8(buf, 1);
+            write_i64(buf, *val);
+        }
+        Instruction::Call(idx) => {
+            write_u8(buf, 2);
+            write_u32(buf, *idx as u32);
+        }
+        Instruction::StringLit(s) => {
+            write_u8(buf, 3);
+            let bytes = s.as_bytes();
+            write_u32(buf, bytes.len() as u32);
+            write_bytes(buf, bytes);
+        }
+        Instruction::Branch(offset) => {
+            write_u8(buf, 4);
+            write_i64(buf, *offset);
+        }
+        Instruction::BranchIfZero(offset) => {
+            write_u8(buf, 5);
+            write_i64(buf, *offset);
+        }
+    }
+}
+
+pub fn deserialize_state(data: &[u8]) -> Option<(Vec<Entry>, Vec<Cell>, usize)> {
+    let mut pos = 0;
+
+    // Header.
+    let magic = read_bytes(data, &mut pos, 4)?;
+    if magic != MAGIC {
+        return None;
+    }
+    let version = read_u8(data, &mut pos)?;
+    if version != 1 {
+        return None;
+    }
+
+    // Dictionary.
+    let entry_count = read_u32(data, &mut pos)? as usize;
+    let mut dictionary = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        let name_len = read_u16(data, &mut pos)? as usize;
+        let name_bytes = read_bytes(data, &mut pos, name_len)?;
+        let name = String::from_utf8_lossy(&name_bytes).to_string();
+
+        let flags = read_u8(data, &mut pos)?;
+        let immediate = flags & 1 != 0;
+        let hidden = flags & 2 != 0;
+
+        let body_len = read_u32(data, &mut pos)? as usize;
+        let mut body = Vec::with_capacity(body_len);
+        for _ in 0..body_len {
+            let instr = deserialize_instruction(data, &mut pos)?;
+            body.push(instr);
+        }
+
+        dictionary.push(Entry {
+            name,
+            immediate,
+            hidden,
+            body,
+        });
+    }
+
+    // Memory.
+    let here = read_u32(data, &mut pos)? as usize;
+    let mem_cells = read_u32(data, &mut pos)? as usize;
+    let mut memory = vec![0i64; 65536];
+    for i in 0..mem_cells.min(memory.len()) {
+        memory[i] = read_i64(data, &mut pos)?;
+    }
+
+    Some((dictionary, memory, here))
+}
+
+fn deserialize_instruction(data: &[u8], pos: &mut usize) -> Option<Instruction> {
+    let tag = read_u8(data, pos)?;
+    match tag {
+        0 => {
+            let id = read_u32(data, pos)? as usize;
+            Some(Instruction::Primitive(id))
+        }
+        1 => {
+            let val = read_i64(data, pos)?;
+            Some(Instruction::Literal(val))
+        }
+        2 => {
+            let idx = read_u32(data, pos)? as usize;
+            Some(Instruction::Call(idx))
+        }
+        3 => {
+            let len = read_u32(data, pos)? as usize;
+            let bytes = read_bytes(data, pos, len)?;
+            let s = String::from_utf8_lossy(&bytes).to_string();
+            Some(Instruction::StringLit(s))
+        }
+        4 => {
+            let offset = read_i64(data, pos)?;
+            Some(Instruction::Branch(offset))
+        }
+        5 => {
+            let offset = read_i64(data, pos)?;
+            Some(Instruction::BranchIfZero(offset))
+        }
+        _ => None,
+    }
+}
