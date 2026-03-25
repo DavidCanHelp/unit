@@ -32,6 +32,9 @@
 \ --- Mesh helpers ---
 : MESH-HELLO ." Mesh node " ID TYPE ."  online with " PEERS . ." peers" CR ;
 
+\ --- Goal helpers ---
+: STATUS  ( -- ) MESH-STATUS GOALS TASKS ;
+
 \ --- Boot banner ---
-." unit v0.1.0 — seed online" CR
+." unit v0.2.0 — seed online" CR
 MESH-HELLO

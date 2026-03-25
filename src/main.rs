@@ -6,6 +6,8 @@
 // for now — the skeleton is here, the network comes next.
 
 #[allow(dead_code)]
+mod goals;
+#[allow(dead_code)]
 mod mesh;
 
 use std::io::{self, BufRead, Read, Write};
@@ -110,6 +112,15 @@ const P_LOAD: usize = 53;
 const P_CAPACITY: usize = 54;
 const P_ID: usize = 55;
 const P_TYPE: usize = 56;
+const P_GOAL: usize = 57;
+const P_GOALS: usize = 58;
+const P_TASKS: usize = 59;
+const P_TASK_STATUS: usize = 60;
+const P_CANCEL: usize = 61;
+const P_STEER: usize = 62;
+const P_REPORT: usize = 63;
+const P_CLAIM: usize = 64;
+const P_COMPLETE: usize = 65;
 // Internal runtime primitives (not directly user-visible).
 const P_DO_RT: usize = 100;
 const P_LOOP_RT: usize = 101;
@@ -223,6 +234,15 @@ impl VM {
             ("CAPACITY", P_CAPACITY, false),
             ("ID", P_ID, false),
             ("TYPE", P_TYPE, false),
+            ("GOAL\"", P_GOAL, true),
+            ("GOALS", P_GOALS, false),
+            ("TASKS", P_TASKS, false),
+            ("TASK-STATUS", P_TASK_STATUS, false),
+            ("CANCEL", P_CANCEL, false),
+            ("STEER", P_STEER, false),
+            ("REPORT", P_REPORT, false),
+            ("CLAIM", P_CLAIM, false),
+            ("COMPLETE", P_COMPLETE, false),
         ];
 
         for &(name, id, immediate) in prims {
@@ -452,6 +472,15 @@ impl VM {
             P_CAPACITY => self.prim_mesh_capacity(),
             P_ID => self.prim_id(),
             P_TYPE => self.prim_type(),
+            P_GOAL => self.prim_goal(),
+            P_GOALS => self.prim_goals(),
+            P_TASKS => self.prim_tasks(),
+            P_TASK_STATUS => self.prim_task_status(),
+            P_CANCEL => self.prim_cancel(),
+            P_STEER => self.prim_steer(),
+            P_REPORT => self.prim_report(),
+            P_CLAIM => self.prim_claim(),
+            P_COMPLETE => self.prim_complete(),
             _ => eprintln!("unknown primitive {}", id),
         }
     }
@@ -1029,8 +1058,9 @@ impl VM {
             let user_words = self.dictionary.len();
             m.set_load(user_words as u32);
 
+            let goals = m.clone_goals();
             let state_bytes =
-                mesh::serialize_state(&self.dictionary, &self.memory, self.here);
+                mesh::serialize_state(&self.dictionary, &self.memory, self.here, Some(&goals));
             println!(
                 "REPLICATE: serialized {} bytes ({} dictionary entries, {} memory cells)",
                 state_bytes.len(),
@@ -1075,8 +1105,9 @@ impl VM {
             m.set_load(user_words as u32);
 
             // Serialize state for the proposal.
+            let goals = m.clone_goals();
             let state_bytes =
-                mesh::serialize_state(&self.dictionary, &self.memory, self.here);
+                mesh::serialize_state(&self.dictionary, &self.memory, self.here, Some(&goals));
             let reason = format!("load={} dict_size={}", user_words, self.dictionary.len());
 
             match m.propose_replicate(&reason, state_bytes) {
@@ -1131,6 +1162,159 @@ impl VM {
     }
 
     // -----------------------------------------------------------------------
+    // Goal primitives
+    // -----------------------------------------------------------------------
+
+    /// GOAL" <description>" ( priority -- goal-id ) submit a goal to the mesh.
+    /// Immediate: parses the description string like .", then acts.
+    /// Pushes the new goal ID onto the stack.
+    fn prim_goal(&mut self) {
+        let desc = self.parse_until('"');
+        let priority = self.pop();
+        if let Some(ref m) = self.mesh {
+            let goal_id = m.create_goal(&desc, priority);
+            m.set_load(self.dictionary.len() as u32);
+            self.stack.push(goal_id as Cell);
+            if !self.silent {
+                println!("goal #{} created", goal_id);
+            }
+        } else {
+            eprintln!("GOAL: mesh offline");
+            self.stack.push(0);
+        }
+    }
+
+    /// GOALS ( -- ) list all known goals.
+    fn prim_goals(&mut self) {
+        if let Some(ref m) = self.mesh {
+            print!("{}", m.format_goals());
+            let _ = io::stdout().flush();
+        } else {
+            println!("  (mesh offline)");
+        }
+    }
+
+    /// TASKS ( -- ) list this unit's current task queue.
+    fn prim_tasks(&mut self) {
+        if let Some(ref m) = self.mesh {
+            print!("{}", m.format_tasks());
+            let _ = io::stdout().flush();
+        } else {
+            println!("  (mesh offline)");
+        }
+    }
+
+    /// TASK-STATUS ( goal-id -- ) show task breakdown for a specific goal.
+    fn prim_task_status(&mut self) {
+        let goal_id = self.pop() as u64;
+        if let Some(ref m) = self.mesh {
+            print!("{}", m.format_goal_tasks(goal_id));
+            let _ = io::stdout().flush();
+        } else {
+            eprintln!("TASK-STATUS: mesh offline");
+        }
+    }
+
+    /// CANCEL ( goal-id -- ) cancel a goal and all its tasks.
+    fn prim_cancel(&mut self) {
+        let goal_id = self.pop() as u64;
+        if let Some(ref m) = self.mesh {
+            if m.cancel_goal(goal_id) {
+                println!("goal #{} cancelled", goal_id);
+            } else {
+                eprintln!("goal #{} not found", goal_id);
+            }
+        } else {
+            eprintln!("CANCEL: mesh offline");
+        }
+    }
+
+    /// STEER ( goal-id priority -- ) change priority of a goal.
+    fn prim_steer(&mut self) {
+        let priority = self.pop();
+        let goal_id = self.pop() as u64;
+        if let Some(ref m) = self.mesh {
+            if m.steer_goal(goal_id, priority) {
+                println!("goal #{} priority -> {}", goal_id, priority);
+            } else {
+                eprintln!("goal #{} not found", goal_id);
+            }
+        } else {
+            eprintln!("STEER: mesh offline");
+        }
+    }
+
+    /// REPORT ( -- ) mesh-wide progress summary.
+    fn prim_report(&mut self) {
+        if let Some(ref m) = self.mesh {
+            print!("{}", m.format_report());
+            let _ = io::stdout().flush();
+        } else {
+            println!("  (mesh offline)");
+        }
+    }
+
+    /// CLAIM ( -- task-id ) claim the next available task, or 0 if none.
+    fn prim_claim(&mut self) {
+        if let Some(ref m) = self.mesh {
+            if let Some((task_id, goal_id, desc)) = m.claim_task() {
+                println!("claimed task #{} (goal #{}): {}", task_id, goal_id, desc);
+                self.stack.push(task_id as Cell);
+            } else {
+                println!("no tasks available");
+                self.stack.push(0);
+            }
+        } else {
+            eprintln!("CLAIM: mesh offline");
+            self.stack.push(0);
+        }
+    }
+
+    /// COMPLETE ( task-id -- ) mark a task as done.
+    fn prim_complete(&mut self) {
+        let task_id = self.pop() as u64;
+        if let Some(ref m) = self.mesh {
+            m.complete_task(task_id);
+            println!("task #{} completed", task_id);
+        } else {
+            eprintln!("COMPLETE: mesh offline");
+        }
+    }
+
+    /// Check if auto-replication should be triggered by goal load.
+    fn check_auto_replicate(&mut self) {
+        let should = self
+            .mesh
+            .as_ref()
+            .map_or(false, |m| m.should_auto_replicate());
+        if should {
+            if let Some(ref m) = self.mesh {
+                m.clear_auto_replicate();
+                m.set_load(self.dictionary.len() as u32);
+                let goals = m.clone_goals();
+                let state_bytes = mesh::serialize_state(
+                    &self.dictionary,
+                    &self.memory,
+                    self.here,
+                    Some(&goals),
+                );
+                let reason = format!(
+                    "auto: goal_load dict={}",
+                    self.dictionary.len()
+                );
+                match m.propose_replicate(&reason, state_bytes) {
+                    Ok(()) => println!("auto-replication proposed"),
+                    Err(e) => {
+                        if !self.silent {
+                            eprintln!("auto-replicate: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Load prelude
     // -----------------------------------------------------------------------
 
@@ -1163,6 +1347,9 @@ impl VM {
                     self.interpret_line(&line);
                     if !self.running {
                         break;
+                    }
+                    if !self.compiling {
+                        self.check_auto_replicate();
                     }
                     if self.compiling {
                         let _ = write!(stdout, "  ");

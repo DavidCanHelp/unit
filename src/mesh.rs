@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::goals::{Goal, GoalId, GoalRegistry, GoalStatus, Task, TaskId, TaskStatus};
 use super::{Cell, Entry, Instruction};
 
 // ---------------------------------------------------------------------------
@@ -41,6 +42,9 @@ const MSG_VOTE: u8 = 3;
 const MSG_COMMIT: u8 = 4;
 const MSG_REJECT: u8 = 5;
 const MSG_DATA: u8 = 6;
+const MSG_GOAL_BROADCAST: u8 = 7;
+const MSG_TASK_CLAIM: u8 = 8;
+const MSG_TASK_RESULT: u8 = 9;
 
 // Wire format magic.
 const MAGIC: &[u8; 4] = b"UNIT";
@@ -237,6 +241,10 @@ struct MeshState {
     capacity: u32,
     /// Log of recent mesh events (ring buffer, for MESH-STATUS).
     event_log: VecDeque<String>,
+    /// Goal and task registry, shared across the mesh via gossip.
+    goals: GoalRegistry,
+    /// Flag: network thread detected that auto-replication is needed.
+    auto_replicate_needed: bool,
     /// Flag to stop the network thread.
     running: bool,
 }
@@ -293,6 +301,8 @@ impl MeshNode {
             load: 0,
             capacity: DEFAULT_CAPACITY,
             event_log: VecDeque::new(),
+            goals: GoalRegistry::new(&id),
+            auto_replicate_needed: false,
             running: true,
         }));
 
@@ -512,6 +522,185 @@ impl MeshNode {
             st.running = false;
         }
     }
+
+    // -------------------------------------------------------------------
+    // Goal and task operations
+    // -------------------------------------------------------------------
+
+    /// Create a goal and broadcast it to all peers.
+    pub fn create_goal(&self, description: &str, priority: Cell) -> GoalId {
+        let mut st = self.state.lock().unwrap();
+        let goal_id = st.goals.create_goal(
+            description.to_string(),
+            priority,
+            self.id,
+        );
+        st.log_event(format!("goal #{} created: {}", goal_id, description));
+
+        // Get the goal and its tasks for broadcasting.
+        let goal = st.goals.goals.get(&goal_id).cloned();
+        let tasks: Vec<Task> = goal
+            .as_ref()
+            .map(|g| {
+                g.task_ids
+                    .iter()
+                    .filter_map(|tid| st.goals.tasks.get(tid).cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let port = st.port;
+        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        drop(st);
+
+        // Broadcast the goal to all peers.
+        if let Some(goal) = goal {
+            let buf = encode_goal_broadcast(&self.id, port, &goal, &tasks);
+            for addr in &peers {
+                let _ = self.socket.send_to(&buf, addr);
+            }
+        }
+
+        goal_id
+    }
+
+    /// Claim the next available task. Returns (task_id, goal_id, description).
+    pub fn claim_task(&self) -> Option<(TaskId, GoalId, String)> {
+        let mut st = self.state.lock().unwrap();
+        let result = st.goals.claim_task(self.id);
+
+        if let Some((task_id, goal_id, ref desc)) = result {
+            st.log_event(format!("claimed task #{} (goal #{}): {}", task_id, goal_id, desc));
+            let port = st.port;
+            let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+            drop(st);
+
+            // Broadcast claim.
+            let mut buf = Vec::with_capacity(HEADER_SIZE + 16);
+            encode_header(&mut buf, MSG_TASK_CLAIM, &self.id, port);
+            write_u64(&mut buf, task_id);
+            write_u64(&mut buf, goal_id);
+            for addr in &peers {
+                let _ = self.socket.send_to(&buf, addr);
+            }
+            return Some((task_id, goal_id, desc.clone()));
+        }
+        None
+    }
+
+    /// Complete a task and broadcast the result.
+    pub fn complete_task(&self, task_id: TaskId) {
+        let mut st = self.state.lock().unwrap();
+        let goal_id = st.goals.tasks.get(&task_id).map(|t| t.goal_id);
+        st.goals.complete_task(task_id, None);
+        st.log_event(format!("task #{} completed", task_id));
+        let port = st.port;
+        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        drop(st);
+
+        // Broadcast result.
+        let mut buf = Vec::with_capacity(HEADER_SIZE + 19);
+        encode_header(&mut buf, MSG_TASK_RESULT, &self.id, port);
+        write_u64(&mut buf, task_id);
+        write_u64(&mut buf, goal_id.unwrap_or(0));
+        write_u8(&mut buf, TaskStatus::Done.as_u8());
+        write_u16(&mut buf, 0); // no result string
+        for addr in &peers {
+            let _ = self.socket.send_to(&buf, addr);
+        }
+    }
+
+    /// Cancel a goal and broadcast.
+    pub fn cancel_goal(&self, goal_id: GoalId) -> bool {
+        let mut st = self.state.lock().unwrap();
+        let ok = st.goals.cancel_goal(goal_id);
+        if ok {
+            st.log_event(format!("goal #{} cancelled", goal_id));
+            let goal = st.goals.goals.get(&goal_id).cloned();
+            let tasks: Vec<Task> = goal
+                .as_ref()
+                .map(|g| {
+                    g.task_ids
+                        .iter()
+                        .filter_map(|tid| st.goals.tasks.get(tid).cloned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let port = st.port;
+            let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+            drop(st);
+
+            if let Some(goal) = goal {
+                let buf = encode_goal_broadcast(&self.id, port, &goal, &tasks);
+                for addr in &peers {
+                    let _ = self.socket.send_to(&buf, addr);
+                }
+            }
+        }
+        ok
+    }
+
+    /// Change a goal's priority and broadcast.
+    pub fn steer_goal(&self, goal_id: GoalId, priority: Cell) -> bool {
+        let mut st = self.state.lock().unwrap();
+        let ok = st.goals.steer_goal(goal_id, priority);
+        if ok {
+            st.log_event(format!("goal #{} priority -> {}", goal_id, priority));
+            let goal = st.goals.goals.get(&goal_id).cloned();
+            let tasks: Vec<Task> = goal
+                .as_ref()
+                .map(|g| {
+                    g.task_ids
+                        .iter()
+                        .filter_map(|tid| st.goals.tasks.get(tid).cloned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let port = st.port;
+            let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+            drop(st);
+
+            if let Some(goal) = goal {
+                let buf = encode_goal_broadcast(&self.id, port, &goal, &tasks);
+                for addr in &peers {
+                    let _ = self.socket.send_to(&buf, addr);
+                }
+            }
+        }
+        ok
+    }
+
+    pub fn format_goals(&self) -> String {
+        self.state.lock().unwrap().goals.format_goals()
+    }
+
+    pub fn format_tasks(&self) -> String {
+        self.state.lock().unwrap().goals.format_my_tasks(&self.id)
+    }
+
+    pub fn format_goal_tasks(&self, goal_id: GoalId) -> String {
+        self.state.lock().unwrap().goals.format_goal_tasks(goal_id)
+    }
+
+    pub fn format_report(&self) -> String {
+        self.state.lock().unwrap().goals.format_report()
+    }
+
+    pub fn pending_goal_count(&self) -> usize {
+        self.state.lock().unwrap().goals.active_goal_count()
+    }
+
+    pub fn should_auto_replicate(&self) -> bool {
+        self.state.lock().unwrap().auto_replicate_needed
+    }
+
+    pub fn clear_auto_replicate(&self) {
+        self.state.lock().unwrap().auto_replicate_needed = false;
+    }
+
+    /// Clone the goal registry (for serialization during replication).
+    pub fn clone_goals(&self) -> GoalRegistry {
+        self.state.lock().unwrap().goals.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -549,6 +738,9 @@ fn network_thread(socket: UdpSocket, state: Arc<Mutex<MeshState>>, my_id: NodeId
 
         // Prune stale peers.
         prune_peers(&state);
+
+        // Check if goal load warrants auto-replication.
+        check_auto_replication(&state);
     }
 }
 
@@ -612,7 +804,9 @@ fn handle_packet(
     let sender_addr = SocketAddr::new(src_addr.ip(), sender_port);
 
     match msg_type {
-        MSG_HEARTBEAT => handle_heartbeat(data, &mut pos, sender_id, sender_addr, state),
+        MSG_HEARTBEAT => {
+            handle_heartbeat(data, &mut pos, sender_id, sender_addr, socket, state, my_id)
+        }
         MSG_PROPOSE => {
             handle_propose(data, &mut pos, sender_id, sender_addr, socket, state, my_id)
         }
@@ -620,6 +814,9 @@ fn handle_packet(
         MSG_COMMIT => handle_commit(data, &mut pos, sender_id, state),
         MSG_REJECT => handle_reject(data, &mut pos, sender_id, state),
         MSG_DATA => handle_data(data, &mut pos, sender_id, state),
+        MSG_GOAL_BROADCAST => handle_goal_broadcast(data, &mut pos, sender_id, state),
+        MSG_TASK_CLAIM => handle_task_claim(data, &mut pos, sender_id, state),
+        MSG_TASK_RESULT => handle_task_result(data, &mut pos, sender_id, state),
         _ => {} // unknown message type — ignore
     }
 }
@@ -629,7 +826,9 @@ fn handle_heartbeat(
     pos: &mut usize,
     sender_id: NodeId,
     sender_addr: SocketAddr,
+    socket: &UdpSocket,
     state: &Arc<Mutex<MeshState>>,
+    my_id: &NodeId,
 ) {
     let load = match read_u32(data, pos) {
         Some(v) => v,
@@ -692,6 +891,28 @@ fn handle_heartbeat(
             id_to_hex(&sender_id),
             sender_addr
         ));
+
+        // Broadcast all active goals to the new peer so it converges.
+        let port = st.port;
+        let active_goals: Vec<(Goal, Vec<Task>)> = st
+            .goals
+            .goals
+            .values()
+            .filter(|g| g.status != GoalStatus::Failed)
+            .map(|g| {
+                let tasks: Vec<Task> = g
+                    .task_ids
+                    .iter()
+                    .filter_map(|tid| st.goals.tasks.get(tid).cloned())
+                    .collect();
+                (g.clone(), tasks)
+            })
+            .collect();
+        // Send outside the lock via deferred sends.
+        for (goal, tasks) in &active_goals {
+            let buf = encode_goal_broadcast(my_id, port, goal, tasks);
+            let _ = socket.send_to(&buf, sender_addr);
+        }
     }
 
     // Add gossiped peers we don't know about yet (transitive discovery).
@@ -881,6 +1102,321 @@ fn handle_data(
     });
 }
 
+// ---------------------------------------------------------------------------
+// Goal message encoding and handling
+// ---------------------------------------------------------------------------
+
+/// Encode a full goal broadcast message (goal + all its tasks).
+fn encode_goal_broadcast(
+    my_id: &NodeId,
+    port: u16,
+    goal: &Goal,
+    tasks: &[Task],
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(256);
+    encode_header(&mut buf, MSG_GOAL_BROADCAST, my_id, port);
+    write_u64(&mut buf, goal.id);
+    write_i64(&mut buf, goal.priority);
+    write_u8(&mut buf, goal.status.as_u8());
+    write_bytes(&mut buf, &goal.creator);
+    write_u64(&mut buf, goal.created_at);
+    let desc = goal.description.as_bytes();
+    write_u16(&mut buf, desc.len() as u16);
+    write_bytes(&mut buf, desc);
+    write_u16(&mut buf, tasks.len() as u16);
+    for task in tasks {
+        write_u64(&mut buf, task.id);
+        write_u8(&mut buf, task.status.as_u8());
+        if let Some(ref assignee) = task.assigned_to {
+            write_u8(&mut buf, 1);
+            write_bytes(&mut buf, assignee);
+        } else {
+            write_u8(&mut buf, 0);
+        }
+        let tdesc = task.description.as_bytes();
+        write_u16(&mut buf, tdesc.len() as u16);
+        write_bytes(&mut buf, tdesc);
+        if let Some(ref result) = task.result {
+            let rb = result.as_bytes();
+            write_u8(&mut buf, 1);
+            write_u16(&mut buf, rb.len() as u16);
+            write_bytes(&mut buf, rb);
+        } else {
+            write_u8(&mut buf, 0);
+        }
+    }
+    buf
+}
+
+fn handle_goal_broadcast(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    state: &Arc<Mutex<MeshState>>,
+) {
+    let goal_id = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let priority = match read_i64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let status = match read_u8(data, pos) {
+        Some(v) => GoalStatus::from_u8(v),
+        None => return,
+    };
+    let creator = match read_bytes(data, pos, 8) {
+        Some(v) => {
+            let mut id = [0u8; 8];
+            id.copy_from_slice(&v);
+            id
+        }
+        None => return,
+    };
+    let created_at = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let desc_len = match read_u16(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let desc_bytes = match read_bytes(data, pos, desc_len) {
+        Some(v) => v,
+        None => return,
+    };
+    let description = String::from_utf8_lossy(&desc_bytes).to_string();
+
+    let task_count = match read_u16(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+
+    let mut task_ids = Vec::with_capacity(task_count);
+    let mut tasks = Vec::with_capacity(task_count);
+    for _ in 0..task_count {
+        let task_id = match read_u64(data, pos) {
+            Some(v) => v,
+            None => return,
+        };
+        let task_status = match read_u8(data, pos) {
+            Some(v) => TaskStatus::from_u8(v),
+            None => return,
+        };
+        let has_assignee = match read_u8(data, pos) {
+            Some(v) => v != 0,
+            None => return,
+        };
+        let assigned_to = if has_assignee {
+            match read_bytes(data, pos, 8) {
+                Some(v) => {
+                    let mut id = [0u8; 8];
+                    id.copy_from_slice(&v);
+                    Some(id)
+                }
+                None => return,
+            }
+        } else {
+            None
+        };
+        let tdesc_len = match read_u16(data, pos) {
+            Some(v) => v as usize,
+            None => return,
+        };
+        let tdesc_bytes = match read_bytes(data, pos, tdesc_len) {
+            Some(v) => v,
+            None => return,
+        };
+        let task_desc = String::from_utf8_lossy(&tdesc_bytes).to_string();
+        let has_result = match read_u8(data, pos) {
+            Some(v) => v != 0,
+            None => return,
+        };
+        let result = if has_result {
+            let rlen = match read_u16(data, pos) {
+                Some(v) => v as usize,
+                None => return,
+            };
+            let rb = match read_bytes(data, pos, rlen) {
+                Some(v) => v,
+                None => return,
+            };
+            Some(String::from_utf8_lossy(&rb).to_string())
+        } else {
+            None
+        };
+
+        task_ids.push(task_id);
+        tasks.push(Task {
+            id: task_id,
+            goal_id,
+            description: task_desc,
+            assigned_to,
+            status: task_status,
+            result,
+            created_at,
+        });
+    }
+
+    let goal = Goal {
+        id: goal_id,
+        description,
+        priority,
+        status,
+        created_at,
+        creator,
+        task_ids,
+    };
+
+    let mut st = state.lock().unwrap();
+    let is_new = !st.goals.goals.contains_key(&goal_id);
+    st.goals.merge_goal(goal);
+    for task in tasks {
+        st.goals.merge_task(task);
+    }
+    if is_new {
+        let desc = st.goals.goals.get(&goal_id)
+            .map(|g| g.description.clone())
+            .unwrap_or_else(|| "?".to_string());
+        st.log_event(format!(
+            "received goal #{} from {}: {}",
+            goal_id,
+            id_to_hex(&sender_id),
+            desc
+        ));
+    }
+}
+
+fn handle_task_claim(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    state: &Arc<Mutex<MeshState>>,
+) {
+    let task_id = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let _goal_id = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+
+    let mut st = state.lock().unwrap();
+    if let Some(task) = st.goals.tasks.get_mut(&task_id) {
+        // Accept the claim if the task is still waiting, or if this is
+        // a work-steal and the task is only claimed (not running).
+        // For simplicity: accept if status <= Running.
+        if task.status == TaskStatus::Waiting {
+            task.assigned_to = Some(sender_id);
+            task.status = TaskStatus::Running;
+            // Update parent goal status.
+            let gid = task.goal_id;
+            if let Some(goal) = st.goals.goals.get_mut(&gid) {
+                if goal.status == GoalStatus::Pending {
+                    goal.status = GoalStatus::Active;
+                }
+            }
+            st.log_event(format!(
+                "peer {} claimed task #{}",
+                id_to_hex(&sender_id),
+                task_id
+            ));
+        }
+    }
+}
+
+fn handle_task_result(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    state: &Arc<Mutex<MeshState>>,
+) {
+    let task_id = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let _goal_id = match read_u64(data, pos) {
+        Some(v) => v,
+        None => return,
+    };
+    let status = match read_u8(data, pos) {
+        Some(v) => TaskStatus::from_u8(v),
+        None => return,
+    };
+    let result_len = match read_u16(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let result = if result_len > 0 {
+        read_bytes(data, pos, result_len)
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+    } else {
+        None
+    };
+
+    let mut st = state.lock().unwrap();
+    if let Some(task) = st.goals.tasks.get_mut(&task_id) {
+        task.status = status;
+        task.result = result;
+        let gid = task.goal_id;
+        // Check if all tasks for the goal are done.
+        if let Some(goal) = st.goals.goals.get(&gid) {
+            let all_done = goal
+                .task_ids
+                .iter()
+                .all(|tid| {
+                    st.goals
+                        .tasks
+                        .get(tid)
+                        .map(|t| t.status == TaskStatus::Done)
+                        .unwrap_or(true)
+                });
+            if all_done {
+                if let Some(g) = st.goals.goals.get_mut(&gid) {
+                    g.status = GoalStatus::Completed;
+                }
+            }
+        }
+        st.log_event(format!(
+            "task #{} result from {}",
+            task_id,
+            id_to_hex(&sender_id)
+        ));
+    }
+}
+
+/// Check if goal load warrants auto-replication.
+fn check_auto_replication(state: &Arc<Mutex<MeshState>>) {
+    let mut st = state.lock().unwrap();
+    if st.auto_replicate_needed {
+        return; // already flagged
+    }
+    let pending = st.goals.pending_task_count();
+    let units = st.peers.len() + 1; // self + peers
+    if pending > units {
+        // Check cooldown.
+        if let Some(last) = st.last_proposal_time {
+            if last.elapsed() < PROPOSAL_COOLDOWN {
+                return;
+            }
+        }
+        // Check no active proposals.
+        let has_active = st
+            .proposals
+            .values()
+            .any(|p| !p.committed && p.started.elapsed() < PROPOSAL_TIMEOUT);
+        if !has_active {
+            st.auto_replicate_needed = true;
+            st.log_event(format!(
+                "auto-replicate triggered: {} pending tasks, {} units",
+                pending, units
+            ));
+        }
+    }
+}
+
 /// Check proposals for quorum or timeout, and act accordingly.
 fn check_proposals(
     socket: &UdpSocket,
@@ -1043,7 +1579,12 @@ fn addr_to_pseudo_id(addr: &SocketAddr) -> NodeId {
 //   memory_cells: u32
 //   memory: [i64; memory_cells]
 
-pub fn serialize_state(dictionary: &[Entry], memory: &[Cell], here: usize) -> Vec<u8> {
+pub fn serialize_state(
+    dictionary: &[Entry],
+    memory: &[Cell],
+    here: usize,
+    goals: Option<&GoalRegistry>,
+) -> Vec<u8> {
     let mut buf = Vec::with_capacity(4096);
 
     // Header.
@@ -1073,6 +1614,51 @@ pub fn serialize_state(dictionary: &[Entry], memory: &[Cell], here: usize) -> Ve
     write_u32(&mut buf, mem_cells as u32);
     for i in 0..mem_cells {
         write_i64(&mut buf, memory[i]);
+    }
+
+    // Goals (appended after memory — backward compatible).
+    if let Some(registry) = goals {
+        let goal_list: Vec<&Goal> = registry.goals.values().collect();
+        write_u32(&mut buf, goal_list.len() as u32);
+        for goal in &goal_list {
+            write_u64(&mut buf, goal.id);
+            write_i64(&mut buf, goal.priority);
+            write_u8(&mut buf, goal.status.as_u8());
+            write_bytes(&mut buf, &goal.creator);
+            write_u64(&mut buf, goal.created_at);
+            let desc = goal.description.as_bytes();
+            write_u16(&mut buf, desc.len() as u16);
+            write_bytes(&mut buf, desc);
+            write_u16(&mut buf, goal.task_ids.len() as u16);
+            for tid in &goal.task_ids {
+                write_u64(&mut buf, *tid);
+            }
+        }
+        let task_list: Vec<&Task> = registry.tasks.values().collect();
+        write_u32(&mut buf, task_list.len() as u32);
+        for task in &task_list {
+            write_u64(&mut buf, task.id);
+            write_u64(&mut buf, task.goal_id);
+            write_u8(&mut buf, task.status.as_u8());
+            if let Some(ref assignee) = task.assigned_to {
+                write_u8(&mut buf, 1);
+                write_bytes(&mut buf, assignee);
+            } else {
+                write_u8(&mut buf, 0);
+            }
+            let tdesc = task.description.as_bytes();
+            write_u16(&mut buf, tdesc.len() as u16);
+            write_bytes(&mut buf, tdesc);
+            if let Some(ref result) = task.result {
+                let rb = result.as_bytes();
+                write_u8(&mut buf, 1);
+                write_u16(&mut buf, rb.len() as u16);
+                write_bytes(&mut buf, rb);
+            } else {
+                write_u8(&mut buf, 0);
+            }
+            write_u64(&mut buf, task.created_at);
+        }
     }
 
     buf
