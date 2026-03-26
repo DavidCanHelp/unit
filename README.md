@@ -1,11 +1,22 @@
 # unit
 
+[![CI](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml/badge.svg)](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml)
+
 A software nanobot. The Forth interpreter *is* the agent.
+
+**[Try it in your browser](https://davidcanhelp.github.io/unit/)** — 226KB WASM, loads instantly.
 
 **unit** is a zero-dependency Forth interpreter that doubles as a self-replicating,
 self-healing distributed ops agent. Every instance can monitor services, alert on
 failures, self-remediate, replicate itself across machines, mutate and evolve its
-own code, and compile to WebAssembly — all from a 624KB native binary.
+own code, and compile to WebAssembly — all from a 673KB native binary.
+
+### Binary Sizes
+
+| Target | Size |
+|--------|------|
+| Native (Linux/macOS) | 673KB |
+| WASM (browser) | 226KB |
 
 ## Quick Start
 
