@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>unit — Forth nanobot</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a; color: #00ff88; font-family: 'Courier New', monospace;
+    font-size: 14px; height: 100vh; display: flex; flex-direction: column;
+  }
+  #header {
+    padding: 8px 12px; background: #111; border-bottom: 1px solid #333;
+    font-size: 12px; color: #666;
+  }
+  #header span { color: #00ff88; }
+  #terminal {
+    flex: 1; overflow-y: auto; padding: 12px; white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  #input-line {
+    display: flex; padding: 8px 12px; background: #111;
+    border-top: 1px solid #333;
+  }
+  #prompt { color: #00ff88; margin-right: 8px; line-height: 24px; }
+  #input {
+    flex: 1; background: transparent; border: none; outline: none;
+    color: #00ff88; font-family: inherit; font-size: inherit;
+    caret-color: #00ff88;
+  }
+  .output { color: #ccc; }
+  .error { color: #ff4444; }
+  .info { color: #666; }
+</style>
+</head>
+<body>
+<div id="header">
+  <span>unit</span> v0.5.0 — WASM seed |
+  <span id="status">loading...</span>
+</div>
+<div id="terminal" onclick="document.getElementById('input').focus()"></div>
+<div id="input-line">
+  <span id="prompt">&gt;</span>
+  <input id="input" type="text" autofocus autocomplete="off" spellcheck="false"
+         placeholder="type Forth here...">
+</div>
+
+<script src="unit.js"></script>
+<script>
+  const terminal = document.getElementById('terminal');
+  const input = document.getElementById('input');
+  const status = document.getElementById('status');
+  let vm = null;
+
+  function appendOutput(text, className) {
+    if (!text) return;
+    const span = document.createElement('span');
+    span.className = className || 'output';
+    span.textContent = text;
+    terminal.appendChild(span);
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+
+  async function init() {
+    try {
+      vm = await UnitVM.create('unit.wasm');
+      status.textContent = 'ready';
+      appendOutput('unit v0.5.0 — WASM seed online\n', 'info');
+      appendOutput('Type Forth commands. Try: 2 3 + .\n\n', 'info');
+    } catch (e) {
+      status.textContent = 'failed to load';
+      appendOutput('Failed to load WASM: ' + e.message + '\n', 'error');
+      appendOutput('Build with: make build-wasm\n', 'info');
+    }
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !vm) return;
+    const line = input.value;
+    input.value = '';
+    appendOutput('> ' + line + '\n', 'info');
+    const result = vm.eval(line);
+    if (result) appendOutput(result + '\n');
+    if (!vm.isRunning()) {
+      appendOutput('\n[unit exited]\n', 'info');
+      input.disabled = true;
+    }
+  });
+
+  init();
+</script>
+</body>
+</html>

@@ -15,6 +15,13 @@ mod io_words;
 mod mesh;
 #[allow(dead_code)]
 mod mutation;
+#[allow(dead_code)]
+mod persist;
+#[allow(dead_code)]
+mod platform;
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_entry;
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, BufRead, Read, Write};
@@ -168,6 +175,20 @@ const P_TRUST: usize = 96;
 const P_TRUST_ALL: usize = 97;
 const P_TRUST_NONE: usize = 98;
 const P_SHELL_ENABLE: usize = 99;
+// Persistence
+const P_SAVE: usize = 200;
+const P_LOAD_STATE: usize = 201;
+const P_AUTO_SAVE: usize = 202;
+const P_RESET: usize = 203;
+const P_SNAPSHOTS: usize = 204;
+const P_SNAPSHOT: usize = 205;
+const P_RESTORE: usize = 206;
+// Task decomposition
+const P_SUBTASK: usize = 210;
+const P_FORK: usize = 211;
+const P_RESULTS: usize = 212;
+const P_REDUCE: usize = 213;
+const P_PROGRESS: usize = 214;
 // Internal runtime primitives (not directly user-visible).
 const P_DO_RT: usize = 100;
 const P_LOOP_RT: usize = 101;
@@ -175,6 +196,7 @@ const P_GOAL_EXEC_RT: usize = 102;
 const P_IO_RT: usize = 103;
 const P_MUTATE_WORD_RT: usize = 104;
 const P_BENCHMARK_RT: usize = 105;
+const P_REDUCE_RT: usize = 106;
 
 // ---------------------------------------------------------------------------
 // VM: the Forth virtual machine
@@ -221,6 +243,11 @@ struct VM {
     rng: mutation::SimpleRng,
     // --- Fitness ---
     fitness: fitness::FitnessTracker,
+    // --- Persistence ---
+    auto_save_enabled: bool,
+    auto_save_interval: u32,
+    tasks_since_save: u32,
+    node_id_cache: Option<[u8; 8]>,
 }
 
 impl VM {
@@ -252,6 +279,10 @@ impl VM {
             mutation_history: Vec::new(),
             rng: mutation::SimpleRng::new(0), // re-seeded from node ID in main()
             fitness: fitness::FitnessTracker::new(),
+            auto_save_enabled: false,
+            auto_save_interval: 5,
+            tasks_since_save: 0,
+            node_id_cache: None,
         };
         vm.register_primitives();
         vm
@@ -367,6 +398,20 @@ impl VM {
             ("TRUST-ALL", P_TRUST_ALL, false),
             ("TRUST-NONE", P_TRUST_NONE, false),
             ("SHELL-ENABLE", P_SHELL_ENABLE, false),
+            // Persistence
+            ("SAVE", P_SAVE, false),
+            ("LOAD-STATE", P_LOAD_STATE, false),
+            ("AUTO-SAVE", P_AUTO_SAVE, false),
+            ("RESET", P_RESET, false),
+            ("SNAPSHOTS", P_SNAPSHOTS, false),
+            ("SNAPSHOT", P_SNAPSHOT, false),
+            ("RESTORE", P_RESTORE, false),
+            // Task decomposition
+            ("SUBTASK{", P_SUBTASK, true),
+            ("FORK", P_FORK, false),
+            ("RESULTS", P_RESULTS, false),
+            ("REDUCE\"", P_REDUCE, true),
+            ("PROGRESS", P_PROGRESS, false),
         ];
 
         for &(name, id, immediate) in prims {
@@ -519,6 +564,7 @@ impl VM {
                     P_IO_RT => self.rt_io(),
                     P_MUTATE_WORD_RT => self.rt_mutate_word(),
                     P_BENCHMARK_RT => self.rt_benchmark(),
+                    P_REDUCE_RT => self.rt_reduce(),
                     _ => self.execute_primitive(*id),
                 },
                 Instruction::Literal(val) => {
@@ -658,6 +704,20 @@ impl VM {
             P_TRUST_NONE => { self.trusted_peers.clear(); self.emit_str("trust: NONE\n"); }
             P_SHELL_ENABLE => { self.shell_enabled = !self.shell_enabled;
                 self.emit_str(&format!("shell: {}\n", if self.shell_enabled { "ENABLED" } else { "DISABLED" })); }
+            // Persistence
+            P_SAVE => self.prim_save(),
+            P_LOAD_STATE => self.prim_load_state(),
+            P_AUTO_SAVE => self.prim_auto_save(),
+            P_RESET => self.prim_reset(),
+            P_SNAPSHOTS => self.prim_snapshots(),
+            P_SNAPSHOT => self.prim_snapshot(),
+            P_RESTORE => self.prim_restore(),
+            // Task decomposition
+            P_SUBTASK => self.prim_subtask(),
+            P_FORK => self.prim_fork(),
+            P_RESULTS => self.prim_results(),
+            P_REDUCE => self.prim_reduce(),
+            P_PROGRESS => self.prim_progress(),
             _ => eprintln!("unknown primitive {}", id),
         }
     }
@@ -1194,6 +1254,14 @@ impl VM {
     }
 
     fn prim_bye(&mut self) {
+        // Auto-save on graceful shutdown.
+        if self.auto_save_enabled {
+            if let Some(id) = self.node_id_cache {
+                let snap = self.make_snapshot();
+                let data = persist::serialize_snapshot(&snap);
+                let _ = persist::save_state(&id, &data);
+            }
+        }
         self.running = false;
     }
 
@@ -1633,6 +1701,34 @@ impl VM {
 
     fn create_exec_goal(&mut self, code: &str) {
         let priority = self.pop();
+
+        // Check for SPLIT directive in the code.
+        if let Some(split_pos) = code.find(" SPLIT ") {
+            let before = &code[..split_pos];
+            let after = &code[split_pos + 7..]; // skip " SPLIT "
+            // Evaluate the "before" part to get total and N from the stack.
+            let saved = self.stack.clone();
+            self.interpret_line(before);
+            let n = self.pop();
+            let total = self.pop();
+            self.stack = saved;
+
+            if n > 0 && total > 0 {
+                if let Some(ref m) = self.mesh {
+                    let mut st = m.state_lock();
+                    let goal_id = st.goals.create_split_goal(total, n, after, priority, m.id_bytes());
+                    drop(st);
+                    m.set_load(self.dictionary.len() as u32);
+                    self.stack.push(goal_id as Cell);
+                    if !self.silent {
+                        println!("goal #{} created [split {}×{}]: {}", goal_id, n, total / n, after.chars().take(40).collect::<String>());
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Normal (non-SPLIT) goal creation.
         if let Some(ref m) = self.mesh {
             let goal_id = m.create_goal(code, priority, Some(code.to_string()));
             m.set_load(self.dictionary.len() as u32);
@@ -1751,6 +1847,7 @@ impl VM {
                 m.complete_task_with_result(task_id, result);
                 m.set_fitness(self.fitness.score);
             }
+            self.check_auto_save();
             println!("[auto] task #{} done", task_id);
         }
     }
@@ -2315,6 +2412,282 @@ impl VM {
     }
 
     // -----------------------------------------------------------------------
+    // Persistence primitives
+    // -----------------------------------------------------------------------
+
+    fn make_snapshot(&self) -> persist::VmSnapshot {
+        let node_id = self.node_id_cache.unwrap_or([0u8; 8]);
+        let goals = self.mesh.as_ref()
+            .map(|m| m.clone_goals())
+            .unwrap_or_else(goals::GoalRegistry::empty);
+        persist::VmSnapshot {
+            node_id,
+            dictionary: self.dictionary.clone(),
+            memory: self.memory.clone(),
+            here: self.here,
+            goals,
+            fitness: self.fitness.clone(),
+            code_strings: self.code_strings.clone(),
+        }
+    }
+
+    fn prim_save(&mut self) {
+        if let Some(id) = self.node_id_cache {
+            let snap = self.make_snapshot();
+            let data = persist::serialize_snapshot(&snap);
+            match persist::save_state(&id, &data) {
+                Ok(()) => self.emit_str(&format!("saved {} bytes to {}\n", data.len(), persist::state_dir(&id))),
+                Err(e) => self.emit_str(&format!("save failed: {}\n", e)),
+            }
+        } else {
+            self.emit_str("save: no node ID (mesh offline)\n");
+        }
+    }
+
+    fn prim_load_state(&mut self) {
+        if let Some(id) = self.node_id_cache {
+            if let Some(data) = persist::load_state(&id) {
+                if let Some(snap) = persist::deserialize_snapshot(&data) {
+                    self.restore_snapshot(snap);
+                    self.emit_str("state restored\n");
+                } else {
+                    self.emit_str("load: corrupt state file\n");
+                }
+            } else {
+                self.emit_str("load: no saved state\n");
+            }
+        } else {
+            self.emit_str("load: no node ID\n");
+        }
+    }
+
+    fn prim_auto_save(&mut self) {
+        self.auto_save_enabled = !self.auto_save_enabled;
+        self.emit_str(&format!(
+            "auto-save: {} (every {} tasks)\n",
+            if self.auto_save_enabled { "ON" } else { "OFF" },
+            self.auto_save_interval
+        ));
+    }
+
+    fn prim_reset(&mut self) {
+        if let Some(id) = self.node_id_cache {
+            let _ = persist::delete_state(&id);
+            self.emit_str("state deleted — restart for fresh boot\n");
+        }
+    }
+
+    fn prim_snapshots(&mut self) {
+        if let Some(id) = self.node_id_cache {
+            let snaps = persist::list_snapshots(&id);
+            if snaps.is_empty() {
+                self.emit_str("  (no snapshots)\n");
+            } else {
+                for name in &snaps {
+                    self.emit_str(&format!("  {}\n", name));
+                }
+            }
+        }
+    }
+
+    fn prim_snapshot(&mut self) {
+        if let Some(id) = self.node_id_cache {
+            let snap = self.make_snapshot();
+            let data = persist::serialize_snapshot(&snap);
+            match persist::save_snapshot(&id, &data) {
+                Ok(name) => self.emit_str(&format!("snapshot: {}\n", name)),
+                Err(e) => self.emit_str(&format!("snapshot failed: {}\n", e)),
+            }
+        }
+    }
+
+    fn prim_restore(&mut self) {
+        let snap_id = self.pop();
+        if let Some(id) = self.node_id_cache {
+            let name = format!("{}", snap_id);
+            if let Some(data) = persist::load_snapshot(&id, &name) {
+                if let Some(snap) = persist::deserialize_snapshot(&data) {
+                    self.restore_snapshot(snap);
+                    self.emit_str(&format!("restored snapshot {}\n", name));
+                } else {
+                    self.emit_str("restore: corrupt snapshot\n");
+                }
+            } else {
+                self.emit_str(&format!("snapshot {} not found\n", name));
+            }
+        }
+    }
+
+    fn restore_snapshot(&mut self, snap: persist::VmSnapshot) {
+        self.dictionary = snap.dictionary;
+        self.memory = snap.memory;
+        self.here = snap.here;
+        self.fitness = snap.fitness;
+        self.code_strings = snap.code_strings;
+        // Restore goals into mesh state if available.
+        if let Some(ref m) = self.mesh {
+            let mut st = m.state_lock();
+            st.goals = snap.goals;
+        }
+    }
+
+    fn check_auto_save(&mut self) {
+        if !self.auto_save_enabled {
+            return;
+        }
+        self.tasks_since_save += 1;
+        if self.tasks_since_save >= self.auto_save_interval {
+            self.tasks_since_save = 0;
+            if let Some(id) = self.node_id_cache {
+                let snap = self.make_snapshot();
+                let data = persist::serialize_snapshot(&snap);
+                let _ = persist::save_state(&id, &data);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task decomposition primitives
+    // -----------------------------------------------------------------------
+
+    /// SUBTASK{ <code> } ( goal-id -- task-id ) add a subtask to a goal.
+    fn prim_subtask(&mut self) {
+        let code = self.parse_balanced_braces();
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(code);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Literal(idx as Cell));
+                def.body.push(Instruction::Primitive(P_SUBTASK));
+            }
+        } else {
+            let goal_id = self.pop() as u64;
+            let result = self.mesh.as_ref().and_then(|m| {
+                let mut st = m.state_lock();
+                st.goals.create_subtask(goal_id, code.clone(), Some(code.clone()))
+            });
+            if let Some(tid) = result {
+                self.emit_str(&format!("subtask #{} added to goal #{}\n", tid, goal_id));
+                self.stack.push(tid as Cell);
+            } else {
+                self.emit_str(&format!("goal #{} not found\n", goal_id));
+                self.stack.push(0);
+            }
+        }
+    }
+
+    /// FORK ( goal-id n -- ) split an existing goal into n tasks.
+    fn prim_fork(&mut self) {
+        let n = self.pop() as usize;
+        let goal_id = self.pop() as u64;
+        let ok = self.mesh.as_ref().map_or(false, |m| {
+            let mut st = m.state_lock();
+            st.goals.fork_goal(goal_id, n)
+        });
+        if ok {
+            self.emit_str(&format!("goal #{} forked into {} tasks\n", goal_id, n));
+        } else {
+            self.emit_str(&format!("fork failed: goal #{} not found or no code\n", goal_id));
+        }
+    }
+
+    /// RESULTS ( goal-id -- ) show all subtask results.
+    fn prim_results(&mut self) {
+        let goal_id = self.pop() as u64;
+        let out = if let Some(ref m) = self.mesh {
+            let st = m.state_lock();
+            let results = st.goals.collect_results(goal_id);
+            if results.is_empty() {
+                format!("goal #{}: no results\n", goal_id)
+            } else {
+                let mut s = format!("goal #{}: {} results\n", goal_id, results.len());
+                for (tid, result) in &results {
+                    s.push_str(&format!("  task #{}:", tid));
+                    if let Some(r) = result {
+                        if !r.stack_snapshot.is_empty() {
+                            s.push_str(" stack=");
+                            for v in &r.stack_snapshot { s.push_str(&format!("{} ", v)); }
+                        }
+                        if !r.output.is_empty() {
+                            s.push_str(&format!(" output=\"{}\"", r.output.trim_end()));
+                        }
+                        s.push('\n');
+                    } else {
+                        s.push_str(" (pending)\n");
+                    }
+                }
+                s
+            }
+        } else {
+            "mesh offline\n".to_string()
+        };
+        self.emit_str(&out);
+    }
+
+    /// REDUCE" <forth code>" ( goal-id -- ) apply reduction across subtask results.
+    fn prim_reduce(&mut self) {
+        let code = self.parse_until('"');
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(code);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Literal(idx as Cell));
+                def.body.push(Instruction::Primitive(P_REDUCE_RT));
+            }
+        } else {
+            self.do_reduce(&code);
+        }
+    }
+
+    fn rt_reduce(&mut self) {
+        let idx = self.pop() as usize;
+        if idx < self.code_strings.len() {
+            let code = self.code_strings[idx].clone();
+            self.do_reduce(&code);
+        }
+    }
+
+    fn do_reduce(&mut self, reduce_code: &str) {
+        let goal_id = self.pop() as u64;
+        // Collect all stack results from completed subtasks.
+        let values: Vec<Cell> = if let Some(ref m) = self.mesh {
+            let st = m.state_lock();
+            let results = st.goals.collect_results(goal_id);
+            results.iter()
+                .filter_map(|(_, r)| r.as_ref())
+                .flat_map(|r| r.stack_snapshot.iter().copied())
+                .collect()
+        } else {
+            vec![]
+        };
+
+        if values.is_empty() {
+            self.emit_str("reduce: no values to reduce\n");
+            return;
+        }
+
+        // Push first value, then for each subsequent value push it and run reduce_code.
+        self.stack.push(values[0]);
+        for &val in &values[1..] {
+            self.stack.push(val);
+            self.interpret_line(reduce_code);
+        }
+        let result = self.stack.last().copied().unwrap_or(0);
+        self.emit_str(&format!("reduce: {} values -> {}\n", values.len(), result));
+    }
+
+    /// PROGRESS ( goal-id -- ) show completion progress.
+    fn prim_progress(&mut self) {
+        let goal_id = self.pop() as u64;
+        if let Some(ref m) = self.mesh {
+            let st = m.state_lock();
+            let s = st.goals.format_progress(goal_id);
+            drop(st);
+            self.emit_str(&s);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Load prelude
     // -----------------------------------------------------------------------
 
@@ -2394,6 +2767,7 @@ fn main() {
             let id = node.id_bytes();
             let seed = u64::from_be_bytes(id);
             vm.rng = mutation::SimpleRng::new(seed);
+            vm.node_id_cache = Some(id);
             vm.mesh = Some(node);
         }
         Err(e) => {
@@ -2406,6 +2780,28 @@ fn main() {
         m.set_load(vm.dictionary.len() as u32);
     }
 
-    vm.load_prelude();
+    // Attempt to restore saved state.
+    let mut restored = false;
+    if let Some(id) = vm.node_id_cache {
+        if let Some(data) = persist::load_state(&id) {
+            if let Some(snap) = persist::deserialize_snapshot(&data) {
+                vm.dictionary = snap.dictionary;
+                vm.memory = snap.memory;
+                vm.here = snap.here;
+                vm.fitness = snap.fitness;
+                vm.code_strings = snap.code_strings;
+                if let Some(ref m) = vm.mesh {
+                    let mut st = m.state_lock();
+                    st.goals = snap.goals;
+                }
+                restored = true;
+                eprintln!("restored from {}/state.bin", persist::state_dir(&id));
+            }
+        }
+    }
+
+    if !restored {
+        vm.load_prelude();
+    }
     vm.repl();
 }

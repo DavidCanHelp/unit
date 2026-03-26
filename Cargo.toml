@@ -1,8 +1,13 @@
 [package]
 name = "unit"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "A software nanobot — minimal Forth interpreter that is also a self-replicating networked agent"
 license = "CC0-1.0"
 
 [dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

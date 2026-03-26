@@ -2,25 +2,35 @@
 
 A software nanobot. The Forth interpreter *is* the agent.
 
-**unit** is a minimal Forth interpreter that doubles as a self-replicating,
-self-mutating networked agent. Every instance can execute code, communicate
-with peers, replicate across a mesh, mutate its own definitions, interact
-with the host system, and evolve toward higher fitness — all guided by
-human operators.
+**unit** is a minimal, zero-dependency Forth interpreter that doubles as a
+self-replicating, self-mutating, self-persisting networked agent. Every
+instance can execute code, communicate with peers over a gossip mesh,
+interact with the host system, replicate itself through consensus, mutate
+its own definitions, evolve toward higher fitness, persist and resume its
+state, decompose tasks across the mesh — and compile to WebAssembly to
+run in a browser.
 
 ## Build and Run
 
 ```sh
-cargo build --release
-./target/release/unit
+make build-native       # or: cargo build --release
+make run                # or: cargo run
 ```
 
 ```
-unit v0.4.0 — seed online
+unit v0.5.0 — seed online
 Mesh node a1b2c3d4e5f67890 online with 0 peers (fitness=0 )
 auto-claim: ON
 > 2 3 + .
 5 ok
+```
+
+### WASM target
+
+```sh
+rustup target add wasm32-unknown-unknown
+make build-wasm
+# Serve web/ directory and open index.html
 ```
 
 ## Mesh Networking
@@ -30,7 +40,6 @@ Units discover and communicate over UDP gossip.
 ```sh
 UNIT_PORT=4201 cargo run                                    # seed node
 UNIT_PORT=4202 UNIT_PEERS=127.0.0.1:4201 cargo run         # joins mesh
-UNIT_PORT=4203 UNIT_PEERS=127.0.0.1:4201 cargo run         # gossip discovery
 ```
 
 ## Executable Goals
@@ -45,170 +54,165 @@ goal #4201 created [exec]: 2 3 + 4 *
 [auto] task #4202 done
 ```
 
-| Word              | Stack effect              | Description                            |
-|-------------------|---------------------------|----------------------------------------|
-| `GOAL{ <code> }`  | `( priority -- id )`      | Submit executable Forth goal           |
-| `GOAL" <desc>"`   | `( priority -- id )`      | Submit description-only goal           |
-| `CLAIM`           | `( -- task-id )`          | Claim and execute next task            |
-| `AUTO-CLAIM`      | `( -- )`                  | Toggle automatic task execution        |
-| `RESULT`          | `( task-id -- )`          | Show task result                       |
-| `GOAL-RESULT`     | `( goal-id -- )`          | Show combined results for a goal       |
-| `TIMEOUT`         | `( seconds -- )`          | Set execution timeout (default 10s)    |
-| `GOALS`           | `( -- )`                  | List all goals                         |
-| `TASKS`           | `( -- )`                  | List claimed tasks                     |
-| `REPORT`          | `( -- )`                  | Mesh-wide progress summary             |
+## Task Decomposition
+
+Goals can be split into subtasks distributed across the mesh.
+
+### SPLIT — automatic decomposition
+
+```
+> 5 GOAL{ 1000 10 SPLIT DO I LOOP }
+goal #101 created [split 10×100]: DO I LOOP
+```
+
+This creates 10 subtasks, each iterating a chunk of the range:
+- Task 1: `0 100 DO I LOOP`
+- Task 2: `100 200 DO I LOOP`
+- ...
+- Task 10: `900 1000 DO I LOOP`
+
+### Decomposition words
+
+| Word                 | Stack effect             | Description                        |
+|----------------------|--------------------------|------------------------------------|
+| `SPLIT`              | inside GOAL{ only        | Split iterations into N subtasks   |
+| `SUBTASK{ <code> }`  | `( goal-id -- task-id )` | Add a subtask to a goal            |
+| `FORK`               | `( goal-id n -- )`       | Split goal into N identical tasks  |
+| `RESULTS`            | `( goal-id -- )`         | Show all subtask results           |
+| `REDUCE" <code>"`    | `( goal-id -- )`         | Reduce subtask results with code   |
+| `PROGRESS`           | `( goal-id -- )`         | Show completion progress           |
+
+### Example: distributed reduce
+
+```
+> 5 GOAL{ 100 10 SPLIT DO I LOOP } DROP
+> ( wait for completion... )
+> 101 RESULTS
+> 101 REDUCE" + "
+reduce: 10 values -> 4950
+```
+
+## Persistence
+
+Units can save and restore their full state — dictionary, memory, goals,
+fitness, and mutations survive restarts.
+
+### Persistence words
+
+| Word          | Description                                     |
+|---------------|-------------------------------------------------|
+| `SAVE`        | Save state to `~/.unit/<node-id>/state.bin`     |
+| `LOAD-STATE`  | Restore state from disk                         |
+| `AUTO-SAVE`   | Toggle auto-save (every 5 completed tasks)      |
+| `RESET`       | Wipe saved state                                |
+| `SNAPSHOT`    | Create a timestamped snapshot                   |
+| `SNAPSHOTS`   | List available snapshots                        |
+| `RESTORE`     | `( snapshot-id -- )` restore from a snapshot    |
+
+### Auto-persistence
+
+- On boot: automatically restores from saved state if present
+- On `BYE`: auto-saves if auto-save is enabled
+- After every 5 completed tasks (when auto-save is on)
+
+### Example: save and resume
+
+```
+> : DOUBLE DUP + ;
+> 5 DOUBLE .
+10 ok
+> SAVE
+saved 2048 bytes to /home/user/.unit/a1b2c3d4e5f67890
+> BYE
+
+$ cargo run
+restored from /home/user/.unit/a1b2c3d4e5f67890/state.bin
+> 5 DOUBLE .
+10 ok
+```
+
+## WASM Seed
+
+The unit compiles to WebAssembly for browser execution. The core VM
+(stacks, dictionary, interpreter) is platform-independent. On WASM:
+
+- Mesh networking: unavailable (WebSocket planned)
+- File I/O: unavailable (localStorage planned)
+- Shell: permanently unavailable
+- HTTP: unavailable (use browser fetch)
+
+The WASM binary provides a C-compatible API:
+- `boot()` → creates a VM
+- `eval(ptr, len)` → evaluates Forth, returns output
+- `is_running(ptr)` → check if VM is alive
+- `destroy(ptr)` → free VM
+
+The `web/` directory contains a terminal-style browser REPL.
 
 ## Host I/O
 
-Units can interact with the host system through file, HTTP, shell, and
-environment primitives.
-
-### File system
-
-| Word                   | Stack effect           | Description                         |
-|------------------------|------------------------|-------------------------------------|
-| `FILE-READ" <path>"`  | `( -- addr n )`        | Read file into memory               |
-| `FILE-WRITE" <path>"` | `( addr n -- )`        | Write memory to file                |
-| `FILE-EXISTS" <path>"`| `( -- flag )`          | Check if file exists                |
-| `FILE-LIST" <path>"`  | `( -- )`               | List directory contents             |
-| `FILE-DELETE" <path>"`| `( -- flag )`          | Delete a file                       |
-
-### HTTP (raw TCP, HTTP/1.1, no TLS)
-
-| Word                  | Stack effect                  | Description                  |
-|-----------------------|-------------------------------|------------------------------|
-| `HTTP-GET" <url>"`   | `( -- addr n status )`        | Fetch a URL                  |
-| `HTTP-POST" <url>"`  | `( addr n -- addr n status )` | POST body to URL             |
-
-### System
-
-| Word               | Stack effect            | Description                           |
-|--------------------|-------------------------|---------------------------------------|
-| `SHELL" <cmd>"`   | `( -- addr n exitcode )` | Execute shell command                 |
-| `ENV" <name>"`    | `( -- addr n )`          | Read environment variable             |
-| `TIMESTAMP`        | `( -- n )`               | Current unix timestamp                |
-| `SLEEP`            | `( ms -- )`              | Sleep for N milliseconds              |
-| `IO-LOG`           | `( -- )`                 | Show recent I/O operations            |
-
-### Example: read a file across the mesh
-
-```
-> 5 GOAL{ FILE-READ" /etc/hostname" TYPE }
-goal #101 created [exec]: FILE-READ" /etc/hostname" TYPE
-[auto] claimed task #102 (goal #101): ...
-[auto] output: myhost
-[auto] task #102 done
-```
+| Word                   | Stack effect                  | Description           |
+|------------------------|-------------------------------|-----------------------|
+| `FILE-READ" <path>"`  | `( -- addr n )`               | Read file             |
+| `FILE-WRITE" <path>"` | `( addr n -- )`               | Write file            |
+| `FILE-EXISTS" <path>"`| `( -- flag )`                 | Check file exists     |
+| `FILE-LIST" <path>"`  | `( -- )`                      | List directory        |
+| `FILE-DELETE" <path>"`| `( -- flag )`                 | Delete file           |
+| `HTTP-GET" <url>"`    | `( -- addr n status )`        | GET request           |
+| `HTTP-POST" <url>"`   | `( addr n -- addr n status )` | POST request          |
+| `SHELL" <cmd>"`       | `( -- addr n exitcode )`      | Shell command         |
+| `ENV" <name>"`        | `( -- addr n )`               | Environment variable  |
+| `TIMESTAMP`            | `( -- n )`                    | Unix timestamp        |
+| `SLEEP`                | `( ms -- )`                   | Sleep milliseconds    |
 
 ## Security
 
-The sandbox-by-default model prevents remote code from doing harm.
+| Operation   | REPL | Sandbox (remote) | Notes                            |
+|-------------|------|-------------------|----------------------------------|
+| FILE-READ   | yes  | yes (read-only)   |                                  |
+| FILE-WRITE  | yes  | **no**            | Blocked in sandbox               |
+| HTTP-GET    | yes  | yes               |                                  |
+| HTTP-POST   | yes  | **no**            | Blocked in sandbox               |
+| SHELL       | if enabled | **never**    | SHELL-ENABLE from REPL only      |
 
-### Sandbox rules
-
-| Operation      | REPL | Sandbox (untrusted) | Sandbox (trusted) |
-|----------------|------|---------------------|-------------------|
-| FILE-READ      | yes  | yes (read-only)     | yes               |
-| FILE-WRITE     | yes  | **no**              | yes               |
-| FILE-DELETE     | yes  | **no**              | yes               |
-| HTTP-GET        | yes  | yes                 | yes               |
-| HTTP-POST       | yes  | **no**              | yes               |
-| SHELL           | if enabled | **never**     | **never**         |
-| ENV             | yes  | yes                 | yes               |
-
-### Trust words
-
-| Word           | Description                                      |
-|----------------|--------------------------------------------------|
-| `SANDBOX-ON`   | Enable sandbox (blocks writes/POST)              |
-| `SANDBOX-OFF`  | Disable sandbox                                  |
-| `TRUST`        | `( peer-id -- )` whitelist a peer                |
-| `TRUST-ALL`    | Clear trust list                                 |
-| `TRUST-NONE`   | Clear trust list                                 |
-| `SHELL-ENABLE` | Toggle shell access (REPL only, never in sandbox)|
-
-### Key principles
-
-- **Goal payloads always run sandboxed** — remote code can read but not write
-- **SHELL is never available in sandbox** — even for trusted peers
-- **SHELL-ENABLE** can only be toggled from the local REPL
-- **All I/O is logged** — view with `IO-LOG`
+| Word           | Description                              |
+|----------------|------------------------------------------|
+| `SANDBOX-ON`   | Enable sandbox                           |
+| `SANDBOX-OFF`  | Disable sandbox                          |
+| `SHELL-ENABLE` | Toggle shell access                      |
+| `IO-LOG`       | Show I/O operation log                   |
 
 ## Mutation & Evolution
 
-Units can mutate their own word definitions and evolve toward higher
-fitness through a genetic-programming-style cycle.
-
-### Mutation strategies
-
-| Strategy           | Description                                   |
-|--------------------|-----------------------------------------------|
-| constant-tweak     | Adjust a literal value by ±1–10%              |
-| word-swap          | Replace a word call with a different word      |
-| instruction-delete | Remove one instruction from a word body        |
-| instruction-dup    | Duplicate one instruction in a word body       |
-
-### Mutation words
-
-| Word                    | Description                                 |
-|-------------------------|---------------------------------------------|
-| `MUTATE`                | Mutate a random non-kernel word             |
-| `MUTATE-WORD" <name>"`  | Mutate a specific word                     |
-| `UNDO-MUTATE`           | Revert the last mutation                    |
-| `MUTATIONS`             | List all mutations since boot               |
-
-### Fitness tracking
-
-Every task execution adjusts the unit's fitness score:
-- Success: **+10** plus speed bonus (up to +5)
-- Failure: **-5**
-- Peer rating via `RATE ( task-id score -- )`
-
-| Word              | Description                                     |
-|-------------------|-------------------------------------------------|
-| `FITNESS`         | `( -- n )` push fitness score                   |
-| `LEADERBOARD`     | Show fitness scores of all mesh units            |
-| `RATE`            | `( task-id score -- )` rate a task result        |
-
-### Evolution
-
-The evolution cycle mutates a word, benchmarks the result, and keeps
-or reverts the change:
-
-1. Apply a random mutation to a random word
-2. Run the benchmark code
-3. If performance improved or held: keep the mutation
-4. If performance dropped: revert
-
-| Word                   | Description                                |
-|------------------------|--------------------------------------------|
-| `EVOLVE`               | Run one evolution cycle                    |
-| `AUTO-EVOLVE`          | Toggle automatic evolution                 |
-| `BENCHMARK" <code>"`   | Set benchmark code for evaluating mutations|
-
-### Example: evolve a unit
-
-```
-> BENCHMARK" 1000 0 DO I DROP LOOP "
-benchmark set: 1000 0 DO I DROP LOOP
-> EVOLVE
-evolve: kept mutation (...): ...
-evolve: own=15 avg=15 evolutions=1
-> LEADERBOARD
---- leaderboard ---
-  1. a1b2c3d4e5f67890 score=15 (you)
----
-```
+| Word                   | Description                             |
+|------------------------|-----------------------------------------|
+| `MUTATE`               | Mutate a random non-kernel word         |
+| `MUTATE-WORD" <name>"` | Mutate a specific word                  |
+| `UNDO-MUTATE`          | Revert last mutation                    |
+| `MUTATIONS`            | List mutation history                   |
+| `FITNESS`              | `( -- n )` push fitness score           |
+| `LEADERBOARD`          | Show mesh-wide fitness rankings         |
+| `EVOLVE`               | Run one evolution cycle                 |
+| `AUTO-EVOLVE`          | Toggle automatic evolution              |
+| `BENCHMARK" <code>"`   | Set benchmark for evolution evaluation  |
 
 ## Architecture
 
 Zero external dependencies. Built entirely on `std`:
-- `std::net::UdpSocket` — mesh gossip
-- `std::net::TcpStream` — raw HTTP/1.1
-- `std::fs` — file operations
-- `std::process::Command` — shell execution
-- `std::sync::{Arc, Mutex}` — shared mesh state
-- `std::thread` — network thread
+
+```
+src/main.rs      — Forth VM, REPL, all primitive words
+src/mesh.rs      — UDP gossip, consensus, replication
+src/goals.rs     — Goal/task management, decomposition
+src/io_words.rs  — File, HTTP, shell operations
+src/mutation.rs  — Self-mutation engine
+src/fitness.rs   — Fitness tracking, evolution
+src/persist.rs   — State serialization, snapshots
+src/platform.rs  — Platform abstraction traits
+src/wasm_entry.rs — WASM entry point
+src/prelude.fs   — Forth prelude (compiled at boot)
+web/             — Browser REPL (HTML + JS)
+```
 
 ## License
 

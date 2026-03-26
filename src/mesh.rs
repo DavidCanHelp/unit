@@ -228,7 +228,7 @@ pub struct InboxMessage {
 // Shared state between VM thread and network thread
 // ---------------------------------------------------------------------------
 
-struct MeshState {
+pub(crate) struct MeshState {
     id: NodeId,
     port: u16,
     peers: HashMap<NodeId, PeerInfo>,
@@ -244,7 +244,7 @@ struct MeshState {
     /// Log of recent mesh events (ring buffer, for MESH-STATUS).
     event_log: VecDeque<String>,
     /// Goal and task registry, shared across the mesh via gossip.
-    goals: GoalRegistry,
+    pub(crate) goals: GoalRegistry,
     /// This unit's fitness score (updated by VM, included in heartbeats).
     fitness: i64,
     /// Flag: network thread detected that auto-replication is needed.
@@ -768,6 +768,11 @@ impl MeshNode {
     /// Update the fitness score in shared state (called by VM after tasks).
     pub fn set_fitness(&self, score: i64) {
         self.state.lock().unwrap().fitness = score;
+    }
+
+    /// Lock the shared state for direct access.
+    pub(crate) fn state_lock(&self) -> std::sync::MutexGuard<'_, MeshState> {
+        self.state.lock().unwrap()
     }
 
     /// Get all peer fitness scores for the leaderboard.
@@ -1408,6 +1413,7 @@ fn handle_goal_broadcast(
             id: task_id,
             goal_id,
             description: task_desc,
+            code: None, // per-task code not transmitted in gossip (uses goal code)
             assigned_to,
             status: task_status,
             result,

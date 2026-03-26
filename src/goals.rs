@@ -164,6 +164,8 @@ pub struct Task {
     pub id: TaskId,
     pub goal_id: GoalId,
     pub description: String,
+    /// Per-task code (for SPLIT subtasks; None = use parent goal's code).
+    pub code: Option<String>,
     pub assigned_to: Option<NodeId>,
     pub status: TaskStatus,
     pub result: Option<TaskResult>,
@@ -236,6 +238,7 @@ impl GoalRegistry {
             id: task_id,
             goal_id,
             description: description.clone(),
+            code: None,
             assigned_to: None,
             status: TaskStatus::Waiting,
             result: None,
@@ -296,18 +299,20 @@ impl GoalRegistry {
         &mut self,
         node_id: NodeId,
     ) -> Option<(TaskId, GoalId, String, String)> {
+        // Find tasks that have executable code (per-task or via parent goal).
         let mut candidates: Vec<(TaskId, Cell)> = self
             .tasks
             .iter()
             .filter(|(_, t)| t.status == TaskStatus::Waiting)
             .filter_map(|(tid, t)| {
-                self.goals.get(&t.goal_id).and_then(|g| {
-                    if g.code.is_some() {
-                        Some((*tid, g.priority))
-                    } else {
-                        None
-                    }
-                })
+                // Task has code itself, or parent goal has code.
+                let has_code = t.code.is_some()
+                    || self.goals.get(&t.goal_id).and_then(|g| g.code.as_ref()).is_some();
+                if has_code {
+                    self.goals.get(&t.goal_id).map(|g| (*tid, g.priority))
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -319,10 +324,9 @@ impl GoalRegistry {
                 task.status = TaskStatus::Running;
                 let goal_id = task.goal_id;
                 let desc = task.description.clone();
-                let code = self
-                    .goals
-                    .get(&goal_id)
-                    .and_then(|g| g.code.clone())
+                // Use per-task code (SPLIT subtasks) or fall back to goal code.
+                let code = task.code.clone()
+                    .or_else(|| self.goals.get(&goal_id).and_then(|g| g.code.clone()))
                     .unwrap_or_default();
 
                 if let Some(goal) = self.goals.get_mut(&goal_id) {
@@ -468,6 +472,175 @@ impl GoalRegistry {
     /// Get the code payload for a goal, if it's executable.
     pub fn goal_code(&self, goal_id: GoalId) -> Option<String> {
         self.goals.get(&goal_id).and_then(|g| g.code.clone())
+    }
+
+    // -------------------------------------------------------------------
+    // Task decomposition
+    // -------------------------------------------------------------------
+
+    /// Add a subtask to an existing goal. Returns the task ID.
+    pub fn create_subtask(
+        &mut self,
+        goal_id: GoalId,
+        description: String,
+        code: Option<String>,
+    ) -> Option<TaskId> {
+        if !self.goals.contains_key(&goal_id) {
+            return None;
+        }
+        let task_id = self.next_id();
+        let now = Self::now_millis();
+        let task = Task {
+            id: task_id,
+            goal_id,
+            description: description.clone(),
+            code: code.clone(),
+            assigned_to: None,
+            status: TaskStatus::Waiting,
+            result: None,
+            created_at: now,
+        };
+        self.tasks.insert(task_id, task);
+        if let Some(goal) = self.goals.get_mut(&goal_id) {
+            goal.task_ids.push(task_id);
+            if code.is_some() && goal.code.is_none() {
+                goal.code = code;
+            }
+        }
+        Some(task_id)
+    }
+
+    /// Create a goal with N subtasks from a SPLIT directive.
+    /// `total` is the iteration count, `n` is the split count,
+    /// `remaining_code` is the Forth code after SPLIT.
+    pub fn create_split_goal(
+        &mut self,
+        total: Cell,
+        n: Cell,
+        remaining_code: &str,
+        priority: Cell,
+        creator: NodeId,
+    ) -> GoalId {
+        let n = n.max(1) as usize;
+        let chunk = total / n as Cell;
+        let goal_id = self.next_id();
+        let now = Self::now_millis();
+
+        let description = format!(
+            "{}×{}: {}",
+            n,
+            chunk,
+            remaining_code.chars().take(40).collect::<String>()
+        );
+
+        let mut task_ids = Vec::with_capacity(n);
+        for k in 0..n {
+            let start = k as Cell * chunk;
+            let end = if k == n - 1 { total } else { start + chunk };
+            let task_code = format!("{} {} {}", start, end, remaining_code);
+            let task_id = self.next_id();
+            let task = Task {
+                id: task_id,
+                goal_id,
+                description: format!("chunk {}/{}: {}", k + 1, n, task_code.chars().take(30).collect::<String>()),
+                code: Some(task_code),
+                assigned_to: None,
+                status: TaskStatus::Waiting,
+                result: None,
+                created_at: now,
+            };
+            self.tasks.insert(task_id, task);
+            task_ids.push(task_id);
+        }
+
+        let full_code = format!("{} {} SPLIT {}", total, n, remaining_code);
+        let goal = Goal {
+            id: goal_id,
+            description,
+            code: Some(full_code),
+            priority,
+            status: GoalStatus::Pending,
+            created_at: now,
+            creator,
+            task_ids,
+        };
+        self.goals.insert(goal_id, goal);
+        goal_id
+    }
+
+    /// Fork an existing single-task goal into N tasks.
+    pub fn fork_goal(&mut self, goal_id: GoalId, n: usize) -> bool {
+        let code = match self.goals.get(&goal_id) {
+            Some(g) => match &g.code {
+                Some(c) => c.clone(),
+                None => return false,
+            },
+            None => return false,
+        };
+
+        let now = Self::now_millis();
+        // Create N-1 additional tasks (goal already has 1).
+        for k in 1..n {
+            let task_id = self.next_id();
+            let task = Task {
+                id: task_id,
+                goal_id,
+                description: format!("fork {}/{}: {}", k + 1, n, code.chars().take(30).collect::<String>()),
+                code: None,
+                assigned_to: None,
+                status: TaskStatus::Waiting,
+                result: None,
+                created_at: now,
+            };
+            self.tasks.insert(task_id, task);
+            if let Some(goal) = self.goals.get_mut(&goal_id) {
+                goal.task_ids.push(task_id);
+            }
+        }
+        true
+    }
+
+    /// Format progress for a goal: "3/10 subtasks completed"
+    pub fn format_progress(&self, goal_id: GoalId) -> String {
+        if let Some(goal) = self.goals.get(&goal_id) {
+            let total = goal.task_ids.len();
+            let done = goal.task_ids.iter()
+                .filter(|tid| self.tasks.get(tid).map(|t| t.status == TaskStatus::Done).unwrap_or(false))
+                .count();
+            let failed = goal.task_ids.iter()
+                .filter(|tid| self.tasks.get(tid).map(|t| t.status == TaskStatus::Failed).unwrap_or(false))
+                .count();
+            let running = goal.task_ids.iter()
+                .filter(|tid| self.tasks.get(tid).map(|t| t.status == TaskStatus::Running).unwrap_or(false))
+                .count();
+            format!(
+                "goal #{} [{}]: {}/{} done, {} running, {} failed\n",
+                goal.id, goal.status.label(), done, total, running, failed
+            )
+        } else {
+            format!("goal #{} not found\n", goal_id)
+        }
+    }
+
+    /// Collect all subtask results for a goal as a flat list.
+    pub fn collect_results(&self, goal_id: GoalId) -> Vec<(TaskId, Option<&TaskResult>)> {
+        if let Some(goal) = self.goals.get(&goal_id) {
+            goal.task_ids.iter()
+                .filter_map(|tid| self.tasks.get(tid).map(|t| (*tid, t.result.as_ref())))
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Get the executable code for a specific task.
+    /// Per-task code (from SPLIT) takes priority; falls back to goal code.
+    pub fn task_code(&self, task_id: TaskId) -> Option<String> {
+        let task = self.tasks.get(&task_id)?;
+        if let Some(ref code) = task.code {
+            return Some(code.clone());
+        }
+        self.goals.get(&task.goal_id).and_then(|g| g.code.clone())
     }
 
     // -------------------------------------------------------------------

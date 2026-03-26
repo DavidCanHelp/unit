@@ -42,8 +42,9 @@
 : WORDS-GOAL    ( -- id ) 5 GOAL{ WORDS } ;
 : HELLO-WORLD   ( -- id ) 5 GOAL{ ." Hello from the mesh!" } ;
 : READ-TEST     ( -- id ) 5 GOAL{ FILE-READ" /etc/hostname" TYPE } ;
+: PERSIST-TEST  ( -- )    SAVE ." state saved" CR ;
 
 \ --- Boot ---
-." unit v0.4.0 — seed online" CR
+." unit v0.5.0 — seed online" CR
 MESH-HELLO
 AUTO-CLAIM
