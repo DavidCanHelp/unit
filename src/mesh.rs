@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::fitness::PeerFitness;
 use super::goals::{Goal, GoalId, GoalRegistry, GoalStatus, Task, TaskId, TaskResult, TaskStatus};
 use super::{Cell, Entry, Instruction};
 
@@ -191,6 +192,7 @@ struct PeerInfo {
     load: u32,
     capacity: u32,
     peer_count: u16,
+    fitness: i64,
     last_seen: Instant,
 }
 
@@ -243,6 +245,8 @@ struct MeshState {
     event_log: VecDeque<String>,
     /// Goal and task registry, shared across the mesh via gossip.
     goals: GoalRegistry,
+    /// This unit's fitness score (updated by VM, included in heartbeats).
+    fitness: i64,
     /// Flag: network thread detected that auto-replication is needed.
     auto_replicate_needed: bool,
     /// Flag to stop the network thread.
@@ -302,6 +306,7 @@ impl MeshNode {
             capacity: DEFAULT_CAPACITY,
             event_log: VecDeque::new(),
             goals: GoalRegistry::new(&id),
+            fitness: 0,
             auto_replicate_needed: false,
             running: true,
         }));
@@ -322,6 +327,7 @@ impl MeshNode {
                         load: 0,
                         capacity: 0,
                         peer_count: 0,
+                        fitness: 0,
                         last_seen: Instant::now(),
                     },
                 );
@@ -753,6 +759,28 @@ impl MeshNode {
     pub fn goal_code(&self, goal_id: GoalId) -> Option<String> {
         self.state.lock().unwrap().goals.goal_code(goal_id)
     }
+
+    /// Get this node's ID as raw bytes.
+    pub fn id_bytes(&self) -> NodeId {
+        self.id
+    }
+
+    /// Update the fitness score in shared state (called by VM after tasks).
+    pub fn set_fitness(&self, score: i64) {
+        self.state.lock().unwrap().fitness = score;
+    }
+
+    /// Get all peer fitness scores for the leaderboard.
+    pub fn peer_fitness_list(&self) -> Vec<PeerFitness> {
+        let st = self.state.lock().unwrap();
+        st.peers
+            .values()
+            .map(|p| PeerFitness {
+                id: p.id,
+                score: p.fitness,
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -811,10 +839,11 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
         .map(|p| p.addr)
         .collect();
 
+    let fitness = st.fitness;
     let all_peer_addrs: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
     drop(st);
 
-    let mut buf = Vec::with_capacity(HEADER_SIZE + 11 + gossip_addrs.len() * 6);
+    let mut buf = Vec::with_capacity(HEADER_SIZE + 19 + gossip_addrs.len() * 6);
     encode_header(&mut buf, MSG_HEARTBEAT, my_id, port);
     write_u32(&mut buf, load);
     write_u32(&mut buf, capacity);
@@ -826,6 +855,8 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
             write_u16(&mut buf, v4.port());
         }
     }
+    // Fitness score appended after gossip addresses.
+    write_i64(&mut buf, fitness);
 
     for addr in &all_peer_addrs {
         let _ = socket.send_to(&buf, addr);
@@ -933,6 +964,7 @@ fn handle_heartbeat(
             load,
             capacity,
             peer_count,
+            fitness: 0, // updated below from heartbeat data
             last_seen: Instant::now(),
         },
     );
@@ -985,10 +1017,18 @@ fn handle_heartbeat(
                     load: 0,
                     capacity: 0,
                     peer_count: 0,
+                    fitness: 0,
                     last_seen: Instant::now(),
                 },
             );
             st.log_event(format!("gossip: discovered peer at {}", addr));
+        }
+    }
+
+    // Parse fitness score (appended after gossip, backward-compatible).
+    if let Some(fitness) = read_i64(data, pos) {
+        if let Some(peer) = st.peers.get_mut(&sender_id) {
+            peer.fitness = fitness;
         }
     }
 }

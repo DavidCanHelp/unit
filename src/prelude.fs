@@ -30,18 +30,20 @@
 : SPACES ( n -- ) 0 DO SPACE LOOP ;
 
 \ --- Mesh helpers ---
-: MESH-HELLO ." Mesh node " ID TYPE ."  online with " PEERS . ." peers" CR ;
+: MESH-HELLO ." Mesh node " ID TYPE ."  online with " PEERS . ." peers (fitness=" FITNESS . ." )" CR ;
 
 \ --- Goal helpers ---
-: STATUS  ( -- ) MESH-STATUS GOALS TASKS ;
+: STATUS  ( -- ) MESH-STATUS GOALS TASKS FITNESS . ." fitness" CR ;
 
-\ --- Built-in executable goals (test patterns) ---
-: PING-GOAL   ( -- id ) 5 GOAL{ ." pong" } ;
-: MATH-GOAL   ( -- id ) 5 GOAL{ 2 3 + 4 * } ;
-: STRESS-GOAL ( -- id ) 3 GOAL{ 1000000 0 DO LOOP ." done" } ;
-: WORDS-GOAL  ( -- id ) 5 GOAL{ WORDS } ;
+\ --- Built-in executable goals ---
+: PING-GOAL     ( -- id ) 5 GOAL{ ." pong" } ;
+: MATH-GOAL     ( -- id ) 5 GOAL{ 2 3 + 4 * } ;
+: STRESS-GOAL   ( -- id ) 3 GOAL{ 1000000 0 DO LOOP ." done" } ;
+: WORDS-GOAL    ( -- id ) 5 GOAL{ WORDS } ;
+: HELLO-WORLD   ( -- id ) 5 GOAL{ ." Hello from the mesh!" } ;
+: READ-TEST     ( -- id ) 5 GOAL{ FILE-READ" /etc/hostname" TYPE } ;
 
 \ --- Boot ---
-." unit v0.3.0 — seed online" CR
+." unit v0.4.0 — seed online" CR
 MESH-HELLO
 AUTO-CLAIM

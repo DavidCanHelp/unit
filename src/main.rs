@@ -6,10 +6,17 @@
 // for now — the skeleton is here, the network comes next.
 
 #[allow(dead_code)]
+mod fitness;
+#[allow(dead_code)]
 mod goals;
 #[allow(dead_code)]
+mod io_words;
+#[allow(dead_code)]
 mod mesh;
+#[allow(dead_code)]
+mod mutation;
 
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, BufRead, Read, Write};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -128,10 +135,46 @@ const P_RESULT: usize = 68;
 const P_AUTO_CLAIM: usize = 69;
 const P_TIMEOUT: usize = 70;
 const P_GOAL_RESULT: usize = 71;
+// Host I/O (immediate — parse string at compile time)
+const P_FILE_READ: usize = 72;
+const P_FILE_WRITE: usize = 73;
+const P_FILE_EXISTS: usize = 74;
+const P_FILE_LIST: usize = 75;
+const P_FILE_DELETE: usize = 76;
+const P_HTTP_GET: usize = 77;
+const P_HTTP_POST: usize = 78;
+const P_SHELL: usize = 79;
+const P_ENV: usize = 80;
+// Host I/O (non-immediate)
+const P_TIMESTAMP: usize = 81;
+const P_SLEEP: usize = 82;
+const P_SANDBOX_ON: usize = 83;
+const P_SANDBOX_OFF: usize = 84;
+const P_IO_LOG: usize = 85;
+// Mutation
+const P_MUTATE_RAND: usize = 86;
+const P_MUTATE_WORD: usize = 87;
+const P_UNDO_MUTATE: usize = 88;
+const P_MUTATIONS: usize = 89;
+// Fitness / Evolution
+const P_FITNESS: usize = 90;
+const P_LEADERBOARD: usize = 91;
+const P_RATE: usize = 92;
+const P_EVOLVE: usize = 93;
+const P_AUTO_EVOLVE: usize = 94;
+const P_BENCHMARK: usize = 95;
+// Trust / Security
+const P_TRUST: usize = 96;
+const P_TRUST_ALL: usize = 97;
+const P_TRUST_NONE: usize = 98;
+const P_SHELL_ENABLE: usize = 99;
 // Internal runtime primitives (not directly user-visible).
 const P_DO_RT: usize = 100;
 const P_LOOP_RT: usize = 101;
 const P_GOAL_EXEC_RT: usize = 102;
+const P_IO_RT: usize = 103;
+const P_MUTATE_WORD_RT: usize = 104;
+const P_BENCHMARK_RT: usize = 105;
 
 // ---------------------------------------------------------------------------
 // VM: the Forth virtual machine
@@ -168,6 +211,16 @@ struct VM {
     auto_claim: bool,
     /// Stored code strings for compiled GOAL{ ... } (indexed by Literal).
     code_strings: Vec<String>,
+    // --- Sandbox / Security ---
+    sandbox_active: bool,
+    shell_enabled: bool,
+    trusted_peers: HashSet<[u8; 8]>,
+    io_log: VecDeque<String>,
+    // --- Mutation ---
+    mutation_history: Vec<mutation::MutationRecord>,
+    rng: mutation::SimpleRng,
+    // --- Fitness ---
+    fitness: fitness::FitnessTracker,
 }
 
 impl VM {
@@ -192,6 +245,13 @@ impl VM {
             execution_timeout: 10,
             auto_claim: false,
             code_strings: Vec::new(),
+            sandbox_active: false,
+            shell_enabled: false,
+            trusted_peers: HashSet::new(),
+            io_log: VecDeque::new(),
+            mutation_history: Vec::new(),
+            rng: mutation::SimpleRng::new(0), // re-seeded from node ID in main()
+            fitness: fitness::FitnessTracker::new(),
         };
         vm.register_primitives();
         vm
@@ -275,6 +335,38 @@ impl VM {
             ("AUTO-CLAIM", P_AUTO_CLAIM, false),
             ("TIMEOUT", P_TIMEOUT, false),
             ("GOAL-RESULT", P_GOAL_RESULT, false),
+            // Host I/O
+            ("FILE-READ\"", P_FILE_READ, true),
+            ("FILE-WRITE\"", P_FILE_WRITE, true),
+            ("FILE-EXISTS\"", P_FILE_EXISTS, true),
+            ("FILE-LIST\"", P_FILE_LIST, true),
+            ("FILE-DELETE\"", P_FILE_DELETE, true),
+            ("HTTP-GET\"", P_HTTP_GET, true),
+            ("HTTP-POST\"", P_HTTP_POST, true),
+            ("SHELL\"", P_SHELL, true),
+            ("ENV\"", P_ENV, true),
+            ("TIMESTAMP", P_TIMESTAMP, false),
+            ("SLEEP", P_SLEEP, false),
+            ("SANDBOX-ON", P_SANDBOX_ON, false),
+            ("SANDBOX-OFF", P_SANDBOX_OFF, false),
+            ("IO-LOG", P_IO_LOG, false),
+            // Mutation
+            ("MUTATE", P_MUTATE_RAND, false),
+            ("MUTATE-WORD\"", P_MUTATE_WORD, true),
+            ("UNDO-MUTATE", P_UNDO_MUTATE, false),
+            ("MUTATIONS", P_MUTATIONS, false),
+            // Fitness / Evolution
+            ("FITNESS", P_FITNESS, false),
+            ("LEADERBOARD", P_LEADERBOARD, false),
+            ("RATE", P_RATE, false),
+            ("EVOLVE", P_EVOLVE, false),
+            ("AUTO-EVOLVE", P_AUTO_EVOLVE, false),
+            ("BENCHMARK\"", P_BENCHMARK, true),
+            // Trust / Security
+            ("TRUST", P_TRUST, false),
+            ("TRUST-ALL", P_TRUST_ALL, false),
+            ("TRUST-NONE", P_TRUST_NONE, false),
+            ("SHELL-ENABLE", P_SHELL_ENABLE, false),
         ];
 
         for &(name, id, immediate) in prims {
@@ -424,6 +516,9 @@ impl VM {
                     P_DO_RT => self.rt_do(),
                     P_LOOP_RT => self.rt_loop(),
                     P_GOAL_EXEC_RT => self.rt_goal_exec(),
+                    P_IO_RT => self.rt_io(),
+                    P_MUTATE_WORD_RT => self.rt_mutate_word(),
+                    P_BENCHMARK_RT => self.rt_benchmark(),
                     _ => self.execute_primitive(*id),
                 },
                 Instruction::Literal(val) => {
@@ -530,6 +625,39 @@ impl VM {
             P_AUTO_CLAIM => self.prim_auto_claim(),
             P_TIMEOUT => self.prim_timeout(),
             P_GOAL_RESULT => self.prim_goal_result(),
+            // Host I/O
+            P_FILE_READ => self.io_immediate(0),
+            P_FILE_WRITE => self.io_immediate(1),
+            P_FILE_EXISTS => self.io_immediate(2),
+            P_FILE_LIST => self.io_immediate(3),
+            P_FILE_DELETE => self.io_immediate(4),
+            P_HTTP_GET => self.io_immediate(5),
+            P_HTTP_POST => self.io_immediate(6),
+            P_SHELL => self.io_immediate(7),
+            P_ENV => self.io_immediate(8),
+            P_TIMESTAMP => self.prim_timestamp(),
+            P_SLEEP => self.prim_sleep(),
+            P_SANDBOX_ON => { self.sandbox_active = true; self.emit_str("sandbox: ON\n"); }
+            P_SANDBOX_OFF => { self.sandbox_active = false; self.emit_str("sandbox: OFF\n"); }
+            P_IO_LOG => self.prim_io_log(),
+            // Mutation
+            P_MUTATE_RAND => self.prim_mutate_rand(),
+            P_MUTATE_WORD => self.prim_mutate_word(),
+            P_UNDO_MUTATE => self.prim_undo_mutate(),
+            P_MUTATIONS => self.prim_mutations(),
+            // Fitness
+            P_FITNESS => { let s = self.fitness.score; self.stack.push(s); }
+            P_LEADERBOARD => self.prim_leaderboard(),
+            P_RATE => self.prim_rate(),
+            P_EVOLVE => self.prim_evolve(),
+            P_AUTO_EVOLVE => self.prim_auto_evolve(),
+            P_BENCHMARK => self.prim_benchmark(),
+            // Trust
+            P_TRUST => self.prim_trust(),
+            P_TRUST_ALL => { self.trusted_peers.clear(); self.emit_str("trust: ALL (cleared)\n"); }
+            P_TRUST_NONE => { self.trusted_peers.clear(); self.emit_str("trust: NONE\n"); }
+            P_SHELL_ENABLE => { self.shell_enabled = !self.shell_enabled;
+                self.emit_str(&format!("shell: {}\n", if self.shell_enabled { "ENABLED" } else { "DISABLED" })); }
             _ => eprintln!("unknown primitive {}", id),
         }
     }
@@ -1277,12 +1405,14 @@ impl VM {
         let saved_output_buffer = self.output_buffer.take();
         let saved_deadline = self.deadline.take();
         let saved_timed_out = self.timed_out;
+        let saved_sandbox = self.sandbox_active;
 
         // Set up sandbox.
         self.stack = Vec::with_capacity(256);
         self.rstack = Vec::with_capacity(256);
         self.output_buffer = Some(String::new());
         self.silent = true;
+        self.sandbox_active = true; // remote code always sandboxed
         self.compiling = false;
         self.timed_out = false;
         self.deadline = Some(Instant::now() + Duration::from_secs(self.execution_timeout));
@@ -1314,6 +1444,7 @@ impl VM {
         self.output_buffer = saved_output_buffer;
         self.deadline = saved_deadline;
         self.timed_out = saved_timed_out;
+        self.sandbox_active = saved_sandbox;
         self.running = true; // task execution must not kill the unit
 
         goals::TaskResult {
@@ -1587,9 +1718,18 @@ impl VM {
                 "[auto] claimed task #{} (goal #{}): {}",
                 task_id, goal_id, desc.chars().take(50).collect::<String>()
             );
-            // Execute in sandbox (borrows self mutably).
+            // Execute in sandbox with timing.
+            let start = Instant::now();
             let result = self.execute_sandbox(&code);
+            let elapsed_ms = start.elapsed().as_millis() as u64;
             let success = result.success;
+
+            // Record fitness.
+            if success {
+                self.fitness.record_success(elapsed_ms);
+            } else {
+                self.fitness.record_failure();
+            }
             if !result.output.is_empty() {
                 println!("[auto] output: {}", result.output.trim_end());
             }
@@ -1609,6 +1749,7 @@ impl VM {
             // Now borrow mesh again to broadcast result.
             if let Some(ref m) = self.mesh {
                 m.complete_task_with_result(task_id, result);
+                m.set_fitness(self.fitness.score);
             }
             println!("[auto] task #{} done", task_id);
         }
@@ -1644,6 +1785,532 @@ impl VM {
                     }
                 }
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Host I/O primitives
+    // -----------------------------------------------------------------------
+
+    fn log_io(&mut self, msg: &str) {
+        self.io_log.push_back(msg.to_string());
+        if self.io_log.len() > 50 {
+            self.io_log.pop_front();
+        }
+    }
+
+    fn check_sandbox_write(&self, op: &str) -> bool {
+        if self.sandbox_active {
+            eprintln!("{}: blocked by sandbox", op);
+            false
+        } else {
+            true
+        }
+    }
+
+    fn check_shell_allowed(&self) -> bool {
+        if self.sandbox_active {
+            eprintln!("SHELL: blocked by sandbox");
+            return false;
+        }
+        if !self.shell_enabled {
+            eprintln!("SHELL: disabled (use SHELL-ENABLE from REPL)");
+            return false;
+        }
+        true
+    }
+
+    /// Common handler for all immediate I/O words. Parses the string,
+    /// and in compile mode stores it for runtime dispatch.
+    fn io_immediate(&mut self, op: Cell) {
+        let s = self.parse_until('"');
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(s);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Literal(idx as Cell));
+                def.body.push(Instruction::Literal(op));
+                def.body.push(Instruction::Primitive(P_IO_RT));
+            }
+        } else {
+            self.execute_io(op, &s);
+        }
+    }
+
+    /// Runtime dispatch for compiled I/O words.
+    fn rt_io(&mut self) {
+        let op = self.pop();
+        let idx = self.pop() as usize;
+        if idx < self.code_strings.len() {
+            let s = self.code_strings[idx].clone();
+            self.execute_io(op, &s);
+        }
+    }
+
+    fn execute_io(&mut self, op: Cell, s: &str) {
+        match op {
+            0 => self.do_file_read(s),
+            1 => self.do_file_write(s),
+            2 => self.do_file_exists(s),
+            3 => self.do_file_list(s),
+            4 => self.do_file_delete(s),
+            5 => self.do_http_get(s),
+            6 => self.do_http_post(s),
+            7 => self.do_shell(s),
+            8 => self.do_env(s),
+            _ => {}
+        }
+    }
+
+    fn do_file_read(&mut self, path: &str) {
+        self.log_io(&format!("FILE-READ {}", path));
+        match io_words::file_read(path) {
+            Ok(data) => {
+                let len = data.len().min(self.memory.len() - PAD);
+                for (i, &byte) in data.iter().take(len).enumerate() {
+                    self.memory[PAD + i] = byte as Cell;
+                }
+                self.stack.push(PAD as Cell);
+                self.stack.push(len as Cell);
+            }
+            Err(e) => {
+                if !self.silent {
+                    eprintln!("FILE-READ: {}", e);
+                }
+                self.stack.push(0);
+                self.stack.push(0);
+            }
+        }
+    }
+
+    fn do_file_write(&mut self, path: &str) {
+        if !self.check_sandbox_write("FILE-WRITE") {
+            return;
+        }
+        let n = self.pop() as usize;
+        let addr = self.pop() as usize;
+        let mut data = Vec::with_capacity(n);
+        for i in 0..n {
+            if addr + i < self.memory.len() {
+                data.push(self.memory[addr + i] as u8);
+            }
+        }
+        self.log_io(&format!("FILE-WRITE {} ({} bytes)", path, n));
+        if let Err(e) = io_words::file_write(path, &data) {
+            if !self.silent {
+                eprintln!("FILE-WRITE: {}", e);
+            }
+        }
+    }
+
+    fn do_file_exists(&mut self, path: &str) {
+        self.log_io(&format!("FILE-EXISTS {}", path));
+        let flag = if io_words::file_exists(path) { -1 } else { 0 };
+        self.stack.push(flag);
+    }
+
+    fn do_file_list(&mut self, path: &str) {
+        self.log_io(&format!("FILE-LIST {}", path));
+        match io_words::file_list(path) {
+            Ok(names) => {
+                for name in &names {
+                    self.emit_str(&format!("  {}\n", name));
+                }
+            }
+            Err(e) => {
+                if !self.silent {
+                    eprintln!("FILE-LIST: {}", e);
+                }
+            }
+        }
+    }
+
+    fn do_file_delete(&mut self, path: &str) {
+        if !self.check_sandbox_write("FILE-DELETE") {
+            self.stack.push(0);
+            return;
+        }
+        self.log_io(&format!("FILE-DELETE {}", path));
+        let flag = if io_words::file_delete(path).is_ok() {
+            -1
+        } else {
+            0
+        };
+        self.stack.push(flag);
+    }
+
+    fn do_http_get(&mut self, url: &str) {
+        self.log_io(&format!("HTTP-GET {}", url));
+        match io_words::http_get(url) {
+            Ok((body, status)) => {
+                let len = body.len().min(self.memory.len() - PAD);
+                for (i, &byte) in body.iter().take(len).enumerate() {
+                    self.memory[PAD + i] = byte as Cell;
+                }
+                self.stack.push(PAD as Cell);
+                self.stack.push(len as Cell);
+                self.stack.push(status as Cell);
+            }
+            Err(e) => {
+                if !self.silent {
+                    eprintln!("HTTP-GET: {}", e);
+                }
+                self.stack.push(0);
+                self.stack.push(0);
+                self.stack.push(0);
+            }
+        }
+    }
+
+    fn do_http_post(&mut self, url: &str) {
+        if !self.check_sandbox_write("HTTP-POST") {
+            self.stack.push(0);
+            self.stack.push(0);
+            self.stack.push(0);
+            return;
+        }
+        let n = self.pop() as usize;
+        let addr = self.pop() as usize;
+        let mut body = Vec::with_capacity(n);
+        for i in 0..n {
+            if addr + i < self.memory.len() {
+                body.push(self.memory[addr + i] as u8);
+            }
+        }
+        self.log_io(&format!("HTTP-POST {} ({} bytes)", url, n));
+        match io_words::http_post(url, &body) {
+            Ok((resp, status)) => {
+                let len = resp.len().min(self.memory.len() - PAD);
+                for (i, &byte) in resp.iter().take(len).enumerate() {
+                    self.memory[PAD + i] = byte as Cell;
+                }
+                self.stack.push(PAD as Cell);
+                self.stack.push(len as Cell);
+                self.stack.push(status as Cell);
+            }
+            Err(e) => {
+                if !self.silent {
+                    eprintln!("HTTP-POST: {}", e);
+                }
+                self.stack.push(0);
+                self.stack.push(0);
+                self.stack.push(0);
+            }
+        }
+    }
+
+    fn do_shell(&mut self, cmd: &str) {
+        if !self.check_shell_allowed() {
+            self.stack.push(0);
+            self.stack.push(0);
+            self.stack.push(-1);
+            return;
+        }
+        self.log_io(&format!("SHELL {}", cmd));
+        match io_words::shell_exec(cmd) {
+            Ok((stdout, exit_code)) => {
+                let len = stdout.len().min(self.memory.len() - PAD);
+                for (i, &byte) in stdout.iter().take(len).enumerate() {
+                    self.memory[PAD + i] = byte as Cell;
+                }
+                self.stack.push(PAD as Cell);
+                self.stack.push(len as Cell);
+                self.stack.push(exit_code as Cell);
+            }
+            Err(e) => {
+                if !self.silent {
+                    eprintln!("SHELL: {}", e);
+                }
+                self.stack.push(0);
+                self.stack.push(0);
+                self.stack.push(-1);
+            }
+        }
+    }
+
+    fn do_env(&mut self, name: &str) {
+        self.log_io(&format!("ENV {}", name));
+        if let Some(val) = io_words::env_var(name) {
+            let len = val.len().min(self.memory.len() - PAD);
+            for (i, byte) in val.bytes().take(len).enumerate() {
+                self.memory[PAD + i] = byte as Cell;
+            }
+            self.stack.push(PAD as Cell);
+            self.stack.push(len as Cell);
+        } else {
+            self.stack.push(0);
+            self.stack.push(0);
+        }
+    }
+
+    fn prim_timestamp(&mut self) {
+        self.stack.push(io_words::timestamp());
+    }
+
+    fn prim_sleep(&mut self) {
+        let ms = self.pop();
+        if ms > 0 {
+            std::thread::sleep(Duration::from_millis(ms as u64));
+        }
+    }
+
+    fn prim_io_log(&mut self) {
+        if self.io_log.is_empty() {
+            self.emit_str("  (no I/O operations logged)\n");
+        } else {
+            self.emit_str("--- I/O log ---\n");
+            let entries: Vec<String> = self.io_log.iter().cloned().collect();
+            for entry in &entries {
+                self.emit_str(&format!("  {}\n", entry));
+            }
+            self.emit_str("---\n");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Mutation primitives
+    // -----------------------------------------------------------------------
+
+    fn prim_mutate_rand(&mut self) {
+        // Pick a random mutable word.
+        let mutable_indices: Vec<usize> = self
+            .dictionary
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| mutation::is_mutable(e))
+            .map(|(i, _)| i)
+            .collect();
+        if mutable_indices.is_empty() {
+            self.emit_str("no mutable words\n");
+            return;
+        }
+        let idx = mutable_indices[self.rng.next_usize(mutable_indices.len())];
+        let dict_len = self.dictionary.len();
+        if let Some(mut record) = mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
+            record.word_index = idx;
+            self.emit_str(&format!("mutated: {}\n", record.format()));
+            self.mutation_history.push(record);
+        } else {
+            self.emit_str("mutation failed (no applicable strategy)\n");
+        }
+    }
+
+    fn prim_mutate_word(&mut self) {
+        let name = self.parse_until('"');
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(name);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Literal(idx as Cell));
+                def.body.push(Instruction::Primitive(P_MUTATE_WORD_RT));
+            }
+        } else {
+            self.do_mutate_word(&name);
+        }
+    }
+
+    fn rt_mutate_word(&mut self) {
+        let idx = self.pop() as usize;
+        if idx < self.code_strings.len() {
+            let name = self.code_strings[idx].clone();
+            self.do_mutate_word(&name);
+        }
+    }
+
+    fn do_mutate_word(&mut self, name: &str) {
+        let upper = name.to_uppercase();
+        if let Some(idx) = self.find_word(&upper) {
+            if !mutation::is_mutable(&self.dictionary[idx]) {
+                self.emit_str(&format!("{}: not mutable (kernel word)\n", upper));
+                return;
+            }
+            let dict_len = self.dictionary.len();
+            if let Some(mut record) = mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
+                record.word_index = idx;
+                self.emit_str(&format!("mutated: {}\n", record.format()));
+                self.mutation_history.push(record);
+            } else {
+                self.emit_str("mutation failed\n");
+            }
+        } else {
+            self.emit_str(&format!("{}?\n", upper));
+        }
+    }
+
+    fn prim_undo_mutate(&mut self) {
+        if let Some(record) = self.mutation_history.pop() {
+            if record.word_index < self.dictionary.len() {
+                mutation::undo_mutation(&mut self.dictionary[record.word_index], &record);
+                self.emit_str(&format!("undone: {} [{}]\n", record.word_name, record.strategy.label()));
+            }
+        } else {
+            self.emit_str("nothing to undo\n");
+        }
+    }
+
+    fn prim_mutations(&mut self) {
+        if self.mutation_history.is_empty() {
+            self.emit_str("  (no mutations)\n");
+        } else {
+            let lines: Vec<String> = self.mutation_history.iter().map(|r| r.format()).collect();
+            for line in &lines {
+                self.emit_str(&format!("{}\n", line));
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Fitness / Evolution primitives
+    // -----------------------------------------------------------------------
+
+    fn prim_leaderboard(&mut self) {
+        if let Some(ref m) = self.mesh {
+            let peer_fitness = m.peer_fitness_list();
+            let s = fitness::format_leaderboard(&m.id_bytes(), self.fitness.score, &peer_fitness);
+            self.emit_str(&s);
+        } else {
+            self.emit_str(&format!("  (offline) score={}\n", self.fitness.score));
+        }
+    }
+
+    fn prim_rate(&mut self) {
+        let score = self.pop();
+        let _task_id = self.pop() as u64;
+        // For now, rating adjusts local fitness (the rated peer would
+        // receive the rating via gossip in a fuller implementation).
+        self.fitness.record_rating(score);
+        self.emit_str(&format!("rated: fitness adjusted by {}\n", score));
+    }
+
+    fn prim_evolve(&mut self) {
+        self.do_evolve();
+    }
+
+    fn prim_auto_evolve(&mut self) {
+        self.fitness.auto_evolve = !self.fitness.auto_evolve;
+        self.emit_str(&format!(
+            "auto-evolve: {}\n",
+            if self.fitness.auto_evolve { "ON" } else { "OFF" }
+        ));
+    }
+
+    fn prim_benchmark(&mut self) {
+        let code = self.parse_until('"');
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(code);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Literal(idx as Cell));
+                def.body.push(Instruction::Primitive(P_BENCHMARK_RT));
+            }
+        } else {
+            self.fitness.benchmark_code = Some(code.clone());
+            self.emit_str(&format!("benchmark set: {}\n", code.chars().take(50).collect::<String>()));
+        }
+    }
+
+    fn rt_benchmark(&mut self) {
+        let idx = self.pop() as usize;
+        if idx < self.code_strings.len() {
+            let code = self.code_strings[idx].clone();
+            self.fitness.benchmark_code = Some(code.clone());
+            self.emit_str(&format!("benchmark set: {}\n", code.chars().take(50).collect::<String>()));
+        }
+    }
+
+    fn prim_trust(&mut self) {
+        // Expect a node ID on the stack (as a number).
+        let id_val = self.pop() as u64;
+        let id_bytes = id_val.to_be_bytes();
+        self.trusted_peers.insert(id_bytes);
+        self.emit_str(&format!("trusted: {:016x}\n", id_val));
+    }
+
+    /// Run one evolution cycle.
+    fn do_evolve(&mut self) {
+        // Get mesh average fitness.
+        let avg_fitness = self
+            .mesh
+            .as_ref()
+            .map(|m| {
+                let peers = m.peer_fitness_list();
+                if peers.is_empty() {
+                    self.fitness.score
+                } else {
+                    let total: i64 = peers.iter().map(|p| p.score).sum::<i64>() + self.fitness.score;
+                    total / (peers.len() as i64 + 1)
+                }
+            })
+            .unwrap_or(self.fitness.score);
+
+        // Run benchmark before mutation.
+        let before_score = self.run_benchmark();
+
+        // Apply a random mutation.
+        let mutable_indices: Vec<usize> = self
+            .dictionary
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| mutation::is_mutable(e))
+            .map(|(i, _)| i)
+            .collect();
+        if mutable_indices.is_empty() {
+            self.emit_str("evolve: no mutable words\n");
+            return;
+        }
+        let idx = mutable_indices[self.rng.next_usize(mutable_indices.len())];
+        let dict_len = self.dictionary.len();
+        if let Some(mut record) = mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
+            record.word_index = idx;
+
+            // Run benchmark after mutation.
+            let after_score = self.run_benchmark();
+
+            if after_score >= before_score {
+                self.emit_str(&format!(
+                    "evolve: kept mutation ({} -> {}): {}\n",
+                    before_score, after_score, record.format()
+                ));
+                self.mutation_history.push(record);
+            } else {
+                mutation::undo_mutation(&mut self.dictionary[idx], &record);
+                self.emit_str(&format!(
+                    "evolve: reverted mutation ({} -> {})\n",
+                    before_score, after_score
+                ));
+            }
+        } else {
+            self.emit_str("evolve: mutation failed\n");
+        }
+        self.fitness.mark_evolved();
+        self.emit_str(&format!(
+            "evolve: own={} avg={} evolutions={}\n",
+            self.fitness.score, avg_fitness, self.fitness.evolution_count
+        ));
+    }
+
+    /// Run the benchmark code and return a score (stack depth after execution).
+    fn run_benchmark(&mut self) -> i64 {
+        let code = match self.fitness.benchmark_code.clone() {
+            Some(c) => c,
+            None => return 0,
+        };
+        let start = Instant::now();
+        let result = self.execute_sandbox(&code);
+        let elapsed = start.elapsed().as_millis() as i64;
+        // Score = stack depth * 10 - elapsed_ms (reward correct output, penalize slowness).
+        let depth_score = result.stack_snapshot.len() as i64 * 10;
+        let time_penalty = (elapsed / 100).min(50);
+        if result.success {
+            depth_score - time_penalty
+        } else {
+            -100
+        }
+    }
+
+    fn check_auto_evolve(&mut self) {
+        if self.fitness.should_auto_evolve() {
+            self.do_evolve();
         }
     }
 
@@ -1684,6 +2351,7 @@ impl VM {
                     if !self.compiling {
                         self.check_auto_claim();
                         self.check_auto_replicate();
+                        self.check_auto_evolve();
                     }
                     if self.compiling {
                         let _ = write!(stdout, "  ");
@@ -1722,6 +2390,10 @@ fn main() {
     // Start the mesh networking layer.
     match mesh::MeshNode::start(port, seed_peers) {
         Ok(node) => {
+            // Seed RNG from node ID for mutation uniqueness.
+            let id = node.id_bytes();
+            let seed = u64::from_be_bytes(id);
+            vm.rng = mutation::SimpleRng::new(seed);
             vm.mesh = Some(node);
         }
         Err(e) => {
