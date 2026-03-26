@@ -301,7 +301,8 @@ fn handle_ws_client(
     state: Arc<Mutex<WsBridgeState>>,
     mesh_json: Arc<Mutex<String>>,
 ) {
-    stream.set_read_timeout(Some(Duration::from_millis(100))).ok();
+    // Use a longer timeout for the initial handshake read.
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
 
     // Read HTTP upgrade request.
@@ -312,6 +313,54 @@ fn handle_ws_client(
     };
     let request = String::from_utf8_lossy(&buf[..n]).to_string();
 
+    // If this is a regular HTTP GET (no Upgrade header), serve the web UI.
+    let is_upgrade = request.lines().any(|l| l.to_lowercase().contains("upgrade: websocket"));
+
+    // Handle OPTIONS preflight (CORS / Private Network Access).
+    if request.starts_with("OPTIONS ") {
+        let preflight = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\nAccess-Control-Allow-Private-Network: true\r\nContent-Length: 0\r\n\r\n";
+        let _ = stream.write_all(preflight.as_bytes());
+        let _ = stream.flush();
+        return;
+    }
+
+    if !is_upgrade {
+        serve_http(&mut stream, &request);
+        return;
+    }
+
+    handle_ws_upgrade(stream, request, tx, state, mesh_json);
+}
+
+/// Serve embedded web assets over plain HTTP.
+fn serve_http(stream: &mut TcpStream, request: &str) {
+    let path = request.split_whitespace().nth(1).unwrap_or("/");
+    let (content_type, body) = match path {
+        "/" | "/index.html" => ("text/html; charset=utf-8", &include_bytes!("../web/index.html")[..]),
+        "/unit.js" => ("application/javascript; charset=utf-8", &include_bytes!("../web/unit.js")[..]),
+        "/unit.wasm" => ("application/wasm", &include_bytes!("../web/unit.wasm")[..]),
+        _ => {
+            let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+            let _ = stream.write_all(resp.as_bytes());
+            return;
+        }
+    };
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
+        content_type, body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+    let _ = stream.flush();
+}
+
+fn handle_ws_upgrade(
+    mut stream: TcpStream,
+    request: String,
+    tx: std::sync::mpsc::Sender<WsEvent>,
+    state: Arc<Mutex<WsBridgeState>>,
+    mesh_json: Arc<Mutex<String>>,
+) {
     // Extract Sec-WebSocket-Key.
     let key = request
         .lines()
@@ -324,18 +373,24 @@ fn handle_ws_client(
         None => return,
     };
 
+    // Extract Origin for CORS.
+    let origin = request
+        .lines()
+        .find(|l| l.to_lowercase().starts_with("origin:"))
+        .and_then(|l| l.splitn(2, ':').nth(1))
+        .map(|o| o.trim().to_string())
+        .unwrap_or_else(|| "*".to_string());
+
     // Send upgrade response.
     let accept = ws_accept_key(&key);
-    let response = format!(
-        "HTTP/1.1 101 Switching Protocols\r\n\
-         Upgrade: websocket\r\n\
-         Connection: Upgrade\r\n\
-         Sec-WebSocket-Accept: {}\r\n\r\n",
-        accept
-    );
+    let response = format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n", accept);
     if stream.write_all(response.as_bytes()).is_err() {
         return;
     }
+    let _ = stream.flush();
+
+    // Switch to short timeout for the frame read loop.
+    stream.set_read_timeout(Some(Duration::from_millis(100))).ok();
 
     // Generate client ID.
     let client_id = format!("browser-{:04x}", std::time::SystemTime::now()
@@ -360,7 +415,15 @@ fn handle_ws_client(
         id: client_id.clone(),
     });
 
-    // Send initial mesh state.
+    // Send a welcome frame immediately.
+    {
+        let welcome = r#"{"type":"welcome","id":"server"}"#;
+        let frame = ws_encode_text(welcome);
+        if stream.write_all(&frame).is_err() { return; }
+        let _ = stream.flush();
+    }
+
+    // Also send initial mesh state if available.
     {
         let json = mesh_json.lock().unwrap().clone();
         if !json.is_empty() {
@@ -371,7 +434,6 @@ fn handle_ws_client(
 
     let mut read_buf = Vec::new();
     let mut last_mesh_push = Instant::now();
-
     loop {
         // Read from client.
         let mut tmp = [0u8; 4096];

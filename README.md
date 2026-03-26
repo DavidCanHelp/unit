@@ -231,6 +231,22 @@ Click "Connect" with `ws://localhost:6201`.
 |---------------|------------------|--------------------------|
 | `UNIT_WS_PORT`| `UNIT_PORT+2000` | WebSocket server port    |
 
+The WS bridge also serves the web UI — browse to `http://localhost:<WS_PORT>/`
+to load the REPL and connect from the same origin.
+
+### Browser compatibility
+
+The WS bridge uses plain `ws://` (no TLS). Chrome 104+ blocks `ws://`
+connections to localhost under its Private Network Access policy. Use
+**Firefox** for local mesh testing, or launch Chrome with:
+
+```sh
+open -a "Google Chrome" --args --disable-features=PrivateNetworkAccessRespectPreflightResults
+```
+
+The protocol is correct (verified against RFC 6455). Future versions may
+add TLS support for full Chrome compatibility.
+
 ## WASM Target
 
 ```sh

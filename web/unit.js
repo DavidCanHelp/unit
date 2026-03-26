@@ -81,12 +81,14 @@ class MeshClient {
     }
 
     this.ws.onopen = () => {
+      console.log('[mesh] WebSocket connected');
       this.reconnectDelay = 1000;
       this.onStatusChange('connected', null);
       this._startHeartbeat();
     };
 
     this.ws.onmessage = (event) => {
+      console.log('[mesh] message:', event.data.substring(0, 100));
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'mesh_state') {
@@ -101,13 +103,15 @@ class MeshClient {
       }
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (e) => {
+      console.log('[mesh] WebSocket closed:', e.code, e.reason);
       this._stopHeartbeat();
       this.onStatusChange('disconnected', null);
       this._scheduleReconnect();
     };
 
-    this.ws.onerror = () => {
+    this.ws.onerror = (e) => {
+      console.error('[mesh] WebSocket error:', e);
       this.onStatusChange('error', 'connection failed');
     };
   }

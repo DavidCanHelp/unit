@@ -100,7 +100,7 @@
 <div id="mesh-bar">
   <span class="dot dot-off" id="mesh-dot"></span>
   <span id="mesh-status">mesh: offline</span>
-  <input id="ws-url" type="text" value="ws://localhost:6201" spellcheck="false">
+  <input id="ws-url" type="text" value="" spellcheck="false" placeholder="ws://localhost:6201">
   <button id="ws-btn" onclick="toggleMesh()">Connect</button>
 </div>
 <div id="terminal" onclick="document.getElementById('input').focus()"></div>
@@ -164,8 +164,12 @@
       mesh.disconnect();
       appendOutput('[mesh disconnected]\n', 'mesh-event');
     } else {
-      const url = wsUrlInput.value.trim();
-      if (!url) return;
+      let url = wsUrlInput.value.trim();
+      if (!url) {
+        // Auto-detect: connect to WS on the same host:port we were loaded from.
+        url = 'ws://' + location.host + '/';
+        wsUrlInput.value = url;
+      }
       if (!mesh) {
         mesh = new MeshClient(
           (msg) => {
