@@ -272,6 +272,10 @@ pub struct MeshNode {
     socket: UdpSocket,
     state: Arc<Mutex<MeshState>>,
     _thread: Option<thread::JoinHandle<()>>,
+    /// Receiver for incoming replication packages (from TCP listener).
+    repl_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
+    /// TCP port for replication listener.
+    pub repl_port: u16,
 }
 
 impl Drop for MeshNode {
@@ -355,12 +359,22 @@ impl MeshNode {
             network_thread(thread_socket, thread_state, thread_id);
         });
 
+        // Start TCP replication listener on port+1000 (best effort).
+        let repl_tcp_port = if local_port > 0 { local_port + 1000 } else { 0 };
+        let (repl_rx, actual_repl_port) =
+            match crate::spawn::start_replication_listener(repl_tcp_port) {
+                Ok(rx) => (Some(rx), repl_tcp_port),
+                Err(_) => (None, 0),
+            };
+
         Ok(MeshNode {
             id,
             id_hex,
             socket,
             state,
             _thread: Some(handle),
+            repl_rx,
+            repl_port: actual_repl_port,
         })
     }
 
@@ -776,6 +790,13 @@ impl MeshNode {
     /// Update the fitness score in shared state (called by VM after tasks).
     pub fn set_fitness(&self, score: i64) {
         self.state.lock().unwrap().fitness = score;
+    }
+
+    /// Check for an incoming replication package (non-blocking).
+    pub fn recv_replication(&self) -> Option<Vec<u8>> {
+        self.repl_rx
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok())
     }
 
     /// Lock the shared state for direct access.

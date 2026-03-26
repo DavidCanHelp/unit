@@ -18,6 +18,8 @@ mod mutation;
 #[allow(dead_code)]
 mod persist;
 #[allow(dead_code)]
+mod spawn;
+#[allow(dead_code)]
 mod platform;
 
 #[cfg(target_arch = "wasm32")]
@@ -25,6 +27,15 @@ mod wasm_entry;
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, BufRead, Read, Write};
+
+#[cfg(unix)]
+extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+#[cfg(unix)]
+unsafe fn libc_kill(pid: i32, sig: i32) -> i32 {
+    unsafe { kill(pid, sig) }
+}
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -185,6 +196,20 @@ const P_RESET: usize = 203;
 const P_SNAPSHOTS: usize = 204;
 const P_SNAPSHOT: usize = 205;
 const P_RESTORE: usize = 206;
+// Spawn / Replication
+const P_SPAWN: usize = 220;
+const P_SPAWN_N: usize = 221;
+const P_PACKAGE: usize = 222;
+const P_PACKAGE_SIZE: usize = 223;
+const P_CHILDREN: usize = 224;
+const P_FAMILY: usize = 225;
+const P_GENERATION: usize = 226;
+const P_KILL_CHILD: usize = 227;
+const P_REPLICATE_TO: usize = 228;
+const P_ACCEPT_REPL: usize = 229;
+const P_DENY_REPL: usize = 230;
+const P_QUARANTINE: usize = 231;
+const P_MAX_CHILDREN: usize = 232;
 // Task decomposition
 const P_SUBTASK: usize = 210;
 const P_FORK: usize = 211;
@@ -245,6 +270,8 @@ struct VM {
     rng: mutation::SimpleRng,
     // --- Fitness ---
     fitness: fitness::FitnessTracker,
+    // --- Spawn ---
+    spawn_state: spawn::SpawnState,
     // --- Persistence ---
     auto_save_enabled: bool,
     auto_save_interval: u32,
@@ -281,6 +308,7 @@ impl VM {
             mutation_history: Vec::new(),
             rng: mutation::SimpleRng::new(0), // re-seeded from node ID in main()
             fitness: fitness::FitnessTracker::new(),
+            spawn_state: spawn::SpawnState::new(),
             auto_save_enabled: false,
             auto_save_interval: 5,
             tasks_since_save: 0,
@@ -410,6 +438,20 @@ impl VM {
             ("SNAPSHOTS", P_SNAPSHOTS, false),
             ("SNAPSHOT", P_SNAPSHOT, false),
             ("RESTORE", P_RESTORE, false),
+            // Spawn / Replication
+            ("SPAWN", P_SPAWN, false),
+            ("SPAWN-N", P_SPAWN_N, false),
+            ("PACKAGE", P_PACKAGE, false),
+            ("PACKAGE-SIZE", P_PACKAGE_SIZE, false),
+            ("CHILDREN", P_CHILDREN, false),
+            ("FAMILY", P_FAMILY, false),
+            ("GENERATION", P_GENERATION, false),
+            ("KILL-CHILD", P_KILL_CHILD, false),
+            ("REPLICATE-TO\"", P_REPLICATE_TO, true),
+            ("ACCEPT-REPLICATE", P_ACCEPT_REPL, false),
+            ("DENY-REPLICATE", P_DENY_REPL, false),
+            ("QUARANTINE", P_QUARANTINE, false),
+            ("MAX-CHILDREN", P_MAX_CHILDREN, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -718,6 +760,22 @@ impl VM {
             P_SNAPSHOTS => self.prim_snapshots(),
             P_SNAPSHOT => self.prim_snapshot(),
             P_RESTORE => self.prim_restore(),
+            // Spawn / Replication
+            P_SPAWN => self.prim_spawn(),
+            P_SPAWN_N => self.prim_spawn_n(),
+            P_PACKAGE => self.prim_package(),
+            P_PACKAGE_SIZE => self.prim_package_size(),
+            P_CHILDREN => self.prim_children(),
+            P_FAMILY => self.prim_family(),
+            P_GENERATION => { let g = self.spawn_state.generation as Cell; self.stack.push(g); }
+            P_KILL_CHILD => self.prim_kill_child(),
+            P_REPLICATE_TO => self.prim_replicate_to(),
+            P_ACCEPT_REPL => { self.spawn_state.accept_replicate = true; self.emit_str("accept-replicate: ON\n"); }
+            P_DENY_REPL => { self.spawn_state.accept_replicate = false; self.emit_str("accept-replicate: OFF\n"); }
+            P_QUARANTINE => { self.spawn_state.quarantine = !self.spawn_state.quarantine;
+                self.emit_str(&format!("quarantine: {}\n", if self.spawn_state.quarantine { "ON" } else { "OFF" })); }
+            P_MAX_CHILDREN => { let n = self.pop() as usize; self.spawn_state.max_children = n;
+                self.emit_str(&format!("max-children: {}\n", n)); }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),
@@ -2418,6 +2476,190 @@ impl VM {
     }
 
     // -----------------------------------------------------------------------
+    // Spawn / Replication primitives
+    // -----------------------------------------------------------------------
+
+    fn build_state_for_spawn(&self) -> Vec<u8> {
+        let snap = self.make_snapshot();
+        persist::serialize_snapshot(&snap)
+    }
+
+    fn prim_spawn(&mut self) {
+        if let Err(e) = self.spawn_state.can_spawn() {
+            self.emit_str(&format!("SPAWN: {}\n", e));
+            return;
+        }
+        let state = self.build_state_for_spawn();
+        let package = match spawn::build_package(&state) {
+            Ok(p) => p,
+            Err(e) => {
+                self.emit_str(&format!("SPAWN: {}\n", e));
+                return;
+            }
+        };
+        let parent_port = self.mesh.as_ref().map(|m| m.local_port()).unwrap_or(0);
+        let child_gen = self.spawn_state.generation + 1;
+
+        match spawn::spawn_local(&package, parent_port, child_gen) {
+            Ok((pid, port, child_id)) => {
+                self.spawn_state.children.push(spawn::ChildInfo {
+                    pid,
+                    port,
+                    node_id: child_id,
+                    spawned_at: Instant::now(),
+                });
+                self.spawn_state.last_spawn = Some(Instant::now());
+                self.emit_str(&format!(
+                    "spawned child pid={} id={}\n",
+                    pid,
+                    mesh::id_to_hex(&child_id)
+                ));
+            }
+            Err(e) => self.emit_str(&format!("SPAWN: {}\n", e)),
+        }
+    }
+
+    fn prim_spawn_n(&mut self) {
+        let n = self.pop() as usize;
+        for i in 0..n {
+            self.prim_spawn();
+            // Override cooldown for batch spawns.
+            if i < n - 1 {
+                self.spawn_state.last_spawn = None;
+            }
+        }
+    }
+
+    fn prim_package(&mut self) {
+        let state = self.build_state_for_spawn();
+        match spawn::build_package(&state) {
+            Ok(pkg) => {
+                let len = pkg.len().min(self.memory.len() - PAD);
+                for (i, &byte) in pkg.iter().take(len).enumerate() {
+                    self.memory[PAD + i] = byte as Cell;
+                }
+                self.stack.push(PAD as Cell);
+                self.stack.push(len as Cell);
+                self.emit_str(&format!("package: {} bytes\n", pkg.len()));
+            }
+            Err(e) => {
+                self.emit_str(&format!("PACKAGE: {}\n", e));
+                self.stack.push(0);
+                self.stack.push(0);
+            }
+        }
+    }
+
+    fn prim_package_size(&mut self) {
+        let state = self.build_state_for_spawn();
+        match spawn::package_size_estimate(state.len()) {
+            Ok(size) => {
+                self.stack.push(size as Cell);
+                self.emit_str(&format!("package size: {} bytes\n", size));
+            }
+            Err(e) => {
+                self.emit_str(&format!("PACKAGE-SIZE: {}\n", e));
+                self.stack.push(0);
+            }
+        }
+    }
+
+    fn prim_children(&mut self) {
+        if self.spawn_state.children.is_empty() {
+            self.emit_str("  (no children)\n");
+        } else {
+            let lines: Vec<String> = self.spawn_state.children.iter().map(|c| {
+                format!("  pid={} id={} age={}s\n", c.pid, mesh::id_to_hex(&c.node_id), c.spawned_at.elapsed().as_secs())
+            }).collect();
+            for line in &lines { self.emit_str(line); }
+        }
+    }
+
+    fn prim_family(&mut self) {
+        let self_id = self
+            .node_id_cache
+            .map(|id| mesh::id_to_hex(&id))
+            .unwrap_or_else(|| "?".to_string());
+        let parent = self
+            .spawn_state
+            .parent_id
+            .map(|id| mesh::id_to_hex(&id))
+            .unwrap_or_else(|| "none".to_string());
+        self.emit_str(&format!(
+            "id: {} gen: {} parent: {} children: {}\n",
+            self_id,
+            self.spawn_state.generation,
+            parent,
+            self.spawn_state.children.len(),
+        ));
+    }
+
+    fn prim_kill_child(&mut self) {
+        let pid = self.pop() as u32;
+        #[cfg(unix)]
+        {
+            unsafe {
+                libc_kill(pid as i32, 15); // SIGTERM
+            }
+        }
+        self.spawn_state.children.retain(|c| c.pid != pid);
+        self.emit_str(&format!("sent SIGTERM to pid {}\n", pid));
+    }
+
+    fn prim_replicate_to(&mut self) {
+        let addr = self.parse_until('"');
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(addr);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Literal(idx as Cell));
+                def.body.push(Instruction::Primitive(P_REPLICATE_TO));
+            }
+            return;
+        }
+        let state = self.build_state_for_spawn();
+        let package = match spawn::build_package(&state) {
+            Ok(p) => p,
+            Err(e) => {
+                self.emit_str(&format!("REPLICATE-TO: {}\n", e));
+                return;
+            }
+        };
+        match spawn::send_package(&addr, &package) {
+            Ok(()) => self.emit_str(&format!("sent {} bytes to {}\n", package.len(), addr)),
+            Err(e) => self.emit_str(&format!("REPLICATE-TO: {}\n", e)),
+        }
+    }
+
+    /// Check for and handle incoming replication packages.
+    fn check_incoming_replications(&mut self) {
+        if self.spawn_state.quarantine || !self.spawn_state.accept_replicate {
+            return;
+        }
+        let pkg = self.mesh.as_ref().and_then(|m| m.recv_replication());
+        if let Some(pkg) = pkg {
+            let parent_port = self.mesh.as_ref().map(|m| m.local_port()).unwrap_or(0);
+            let child_gen = self.spawn_state.generation + 1;
+            match spawn::spawn_local(&pkg, parent_port, child_gen) {
+                Ok((pid, _, child_id)) => {
+                    self.spawn_state.children.push(spawn::ChildInfo {
+                        pid,
+                        port: 0,
+                        node_id: child_id,
+                        spawned_at: Instant::now(),
+                    });
+                    println!(
+                        "[repl] spawned child pid={} id={}",
+                        pid,
+                        mesh::id_to_hex(&child_id)
+                    );
+                }
+                Err(e) => eprintln!("[repl] spawn failed: {}", e),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Identity
     // -----------------------------------------------------------------------
 
@@ -2760,6 +3002,7 @@ impl VM {
                         self.check_auto_claim();
                         self.check_auto_replicate();
                         self.check_auto_evolve();
+                        self.check_incoming_replications();
                     }
                     if self.compiling {
                         let _ = write!(stdout, "  ");
@@ -2796,8 +3039,18 @@ fn main() {
         .collect();
 
     // Load or generate a persistent node identity.
-    let persisted_id = persist::load_node_id();
-    let resumed = persisted_id.is_some();
+    // Check for forced node ID from environment (set by parent during spawn).
+    let env_node_id: Option<[u8; 8]> = std::env::var("UNIT_NODE_ID").ok().and_then(|hex| {
+        if hex.len() != 16 { return None; }
+        let mut id = [0u8; 8];
+        for i in 0..8 {
+            id[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+        }
+        Some(id)
+    });
+
+    let persisted_id = env_node_id.or_else(persist::load_node_id);
+    let resumed = persisted_id.is_some() && env_node_id.is_none();
 
     // Start the mesh networking layer with the stable identity.
     match mesh::MeshNode::start_with_id(persisted_id, port, seed_peers) {
@@ -2812,6 +3065,28 @@ fn main() {
                 eprintln!("resumed identity {}", mesh::id_to_hex(&id));
             }
             vm.mesh = Some(node);
+
+            // Parse generation and parent ID from environment (set by parent during spawn).
+            if let Ok(gen_str) = std::env::var("UNIT_GENERATION") {
+                if let Ok(gen) = gen_str.parse::<u32>() {
+                    vm.spawn_state.generation = gen;
+                }
+            }
+            if let Ok(parent_hex) = std::env::var("UNIT_PARENT_ID") {
+                if parent_hex.len() == 16 {
+                    let mut pid = [0u8; 8];
+                    let mut ok = true;
+                    for i in 0..8 {
+                        match u8::from_str_radix(&parent_hex[i * 2..i * 2 + 2], 16) {
+                            Ok(b) => pid[i] = b,
+                            Err(_) => { ok = false; break; }
+                        }
+                    }
+                    if ok {
+                        vm.spawn_state.parent_id = Some(pid);
+                    }
+                }
+            }
         }
         Err(e) => {
             eprintln!("mesh: failed to start: {}", e);
