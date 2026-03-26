@@ -14,6 +14,8 @@ mod io_words;
 #[allow(dead_code)]
 mod mesh;
 #[allow(dead_code)]
+mod monitor;
+#[allow(dead_code)]
 mod mutation;
 #[allow(dead_code)]
 mod persist;
@@ -219,6 +221,26 @@ const P_FORK: usize = 211;
 const P_RESULTS: usize = 212;
 const P_REDUCE: usize = 213;
 const P_PROGRESS: usize = 214;
+// Monitoring & Ops
+const P_WATCH_URL: usize = 300;
+const P_WATCH_FILE: usize = 301;
+const P_WATCH_PROC: usize = 302;
+const P_WATCHES: usize = 303;
+const P_UNWATCH: usize = 304;
+const P_WATCH_LOG: usize = 305;
+const P_ON_ALERT: usize = 306;
+const P_ALERTS: usize = 307;
+const P_ACK: usize = 308;
+const P_ALERT_HISTORY: usize = 309;
+const P_DASHBOARD: usize = 310;
+const P_HEALTH: usize = 311;
+const P_UPTIME: usize = 312;
+const P_EVERY: usize = 313;
+const P_SCHEDULE: usize = 314;
+const P_UNSCHED: usize = 315;
+const P_HEAL: usize = 316;
+const P_HEALTH_PORT: usize = 317;
+const P_ALERT_THRESHOLD: usize = 318;
 // Internal runtime primitives (not directly user-visible).
 const P_DO_RT: usize = 100;
 const P_LOOP_RT: usize = 101;
@@ -227,6 +249,12 @@ const P_IO_RT: usize = 103;
 const P_MUTATE_WORD_RT: usize = 104;
 const P_BENCHMARK_RT: usize = 105;
 const P_REDUCE_RT: usize = 106;
+const P_WATCH_URL_RT: usize = 107;
+const P_WATCH_FILE_RT: usize = 108;
+const P_WATCH_PROC_RT: usize = 109;
+const P_ON_ALERT_RT: usize = 110;
+const P_EVERY_RT: usize = 111;
+const P_ALERT_THRESHOLD_RT: usize = 112;
 
 // ---------------------------------------------------------------------------
 // VM: the Forth virtual machine
@@ -275,6 +303,8 @@ struct VM {
     fitness: fitness::FitnessTracker,
     // --- Spawn ---
     spawn_state: spawn::SpawnState,
+    // --- Monitoring ---
+    monitor: monitor::MonitorState,
     // --- Anonymous definition nesting depth (for interpret-mode control flow) ---
     anon_depth: i32,
     // --- Persistence ---
@@ -314,6 +344,7 @@ impl VM {
             rng: mutation::SimpleRng::new(0), // re-seeded from node ID in main()
             fitness: fitness::FitnessTracker::new(),
             spawn_state: spawn::SpawnState::new(),
+            monitor: monitor::MonitorState::new(),
             anon_depth: 0,
             auto_save_enabled: false,
             auto_save_interval: 5,
@@ -461,6 +492,27 @@ impl VM {
             ("DENY-REPLICATE", P_DENY_REPL, false),
             ("QUARANTINE", P_QUARANTINE, false),
             ("MAX-CHILDREN", P_MAX_CHILDREN, false),
+            // Task decomposition
+            // Monitoring & Ops
+            ("WATCH\"", P_WATCH_URL, true),
+            ("WATCH-FILE\"", P_WATCH_FILE, true),
+            ("WATCH-PROC\"", P_WATCH_PROC, true),
+            ("WATCHES", P_WATCHES, false),
+            ("UNWATCH", P_UNWATCH, false),
+            ("WATCH-LOG", P_WATCH_LOG, false),
+            ("ON-ALERT\"", P_ON_ALERT, true),
+            ("ALERTS", P_ALERTS, false),
+            ("ACK", P_ACK, false),
+            ("ALERT-HISTORY", P_ALERT_HISTORY, false),
+            ("DASHBOARD", P_DASHBOARD, false),
+            ("HEALTH", P_HEALTH, false),
+            ("UPTIME", P_UPTIME, false),
+            ("EVERY", P_EVERY, false),
+            ("SCHEDULE", P_SCHEDULE, false),
+            ("UNSCHED", P_UNSCHED, false),
+            ("HEAL", P_HEAL, false),
+            ("HEALTH-PORT", P_HEALTH_PORT, false),
+            ("ALERT-THRESHOLD", P_ALERT_THRESHOLD, true),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -620,6 +672,12 @@ impl VM {
                     P_MUTATE_WORD_RT => self.rt_mutate_word(),
                     P_BENCHMARK_RT => self.rt_benchmark(),
                     P_REDUCE_RT => self.rt_reduce(),
+                    P_WATCH_URL_RT => self.rt_watch(0),
+                    P_WATCH_FILE_RT => self.rt_watch(1),
+                    P_WATCH_PROC_RT => self.rt_watch(2),
+                    P_ON_ALERT_RT => self.rt_on_alert(),
+                    P_EVERY_RT => self.rt_every(),
+                    P_ALERT_THRESHOLD_RT => self.rt_alert_threshold(),
                     _ => self.execute_primitive(*id),
                 },
                 Instruction::Literal(val) => {
@@ -796,6 +854,35 @@ impl VM {
                 self.emit_str(&format!("quarantine: {}\n", if self.spawn_state.quarantine { "ON" } else { "OFF" })); }
             P_MAX_CHILDREN => { let n = self.pop() as usize; self.spawn_state.max_children = n;
                 self.emit_str(&format!("max-children: {}\n", n)); }
+            // Monitoring & Ops
+            P_WATCH_URL => self.prim_watch(0),
+            P_WATCH_FILE => self.prim_watch(1),
+            P_WATCH_PROC => self.prim_watch(2),
+            P_WATCHES => { let s = self.monitor.format_watches(); self.emit_str(&s); }
+            P_UNWATCH => { let id = self.pop() as u32; self.monitor.remove_watch(id);
+                self.emit_str(&format!("watch #{} removed\n", id)); }
+            P_WATCH_LOG => { let id = self.pop() as u32;
+                let s = self.monitor.format_watch_log(id); self.emit_str(&s); }
+            P_ON_ALERT => self.prim_on_alert(),
+            P_ALERTS => { let s = self.monitor.format_alerts(); self.emit_str(&s); }
+            P_ACK => { let id = self.pop() as u32; self.monitor.ack_alert(id);
+                self.emit_str(&format!("alert #{} acknowledged\n", id)); }
+            P_ALERT_HISTORY => { let s = self.monitor.format_alert_history(); self.emit_str(&s); }
+            P_DASHBOARD => self.prim_dashboard(),
+            P_HEALTH => self.prim_health(),
+            P_UPTIME => { let id = self.pop() as u32;
+                let pct = self.monitor.uptime(id);
+                self.emit_str(&format!("watch #{}: {:.1}% uptime\n", id, pct)); }
+            P_EVERY => self.prim_every(),
+            P_SCHEDULE => { let s = self.monitor.format_schedules(); self.emit_str(&s); }
+            P_UNSCHED => { let id = self.pop() as u32; self.monitor.remove_schedule(id);
+                self.emit_str(&format!("schedule #{} removed\n", id)); }
+            P_HEAL => self.prim_heal(),
+            P_HEALTH_PORT => {
+                let port = self.mesh.as_ref().map(|m| m.repl_port).unwrap_or(0);
+                self.stack.push(port as Cell);
+            }
+            P_ALERT_THRESHOLD => self.prim_alert_threshold(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),
@@ -2547,6 +2634,247 @@ impl VM {
     }
 
     // -----------------------------------------------------------------------
+    // Monitoring & Ops primitives
+    // -----------------------------------------------------------------------
+
+    fn prim_watch(&mut self, kind: i32) {
+        let target = self.parse_until('"');
+        let rt_prim = match kind {
+            0 => P_WATCH_URL_RT,
+            1 => P_WATCH_FILE_RT,
+            2 => P_WATCH_PROC_RT,
+            _ => P_WATCH_URL_RT,
+        };
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(target);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Literal(idx as Cell));
+                def.body.push(Instruction::Primitive(rt_prim));
+            }
+        } else {
+            self.do_add_watch(kind, &target);
+        }
+    }
+
+    fn rt_watch(&mut self, kind: i32) {
+        let idx = self.pop() as usize;
+        if idx < self.code_strings.len() {
+            let target = self.code_strings[idx].clone();
+            self.do_add_watch(kind, &target);
+        }
+    }
+
+    fn do_add_watch(&mut self, kind: i32, target: &str) {
+        let interval = self.pop() as u64;
+        let wk = match kind {
+            0 => monitor::WatchKind::Url(target.to_string()),
+            1 => monitor::WatchKind::File(target.to_string()),
+            2 => monitor::WatchKind::Process(target.to_string()),
+            _ => return,
+        };
+        let id = self.monitor.add_watch(wk, interval.max(1));
+        self.stack.push(id as Cell);
+        self.emit_str(&format!("watch #{} created (every {}s)\n", id, interval));
+    }
+
+    fn prim_on_alert(&mut self) {
+        let code = self.parse_until('"');
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(code);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Primitive(P_ON_ALERT_RT));
+                def.body.push(Instruction::Literal(idx as Cell));
+            }
+        } else {
+            let watch_id = self.pop() as u32;
+            self.monitor.set_alert_handler(watch_id, code);
+            self.emit_str(&format!("alert handler set for watch #{}\n", watch_id));
+        }
+    }
+
+    fn rt_on_alert(&mut self) {
+        let idx = self.pop() as usize;
+        let watch_id = self.pop() as u32;
+        if idx < self.code_strings.len() {
+            let code = self.code_strings[idx].clone();
+            self.monitor.set_alert_handler(watch_id, code);
+        }
+    }
+
+    fn prim_alert_threshold(&mut self) {
+        let target = self.parse_until('"');
+        if self.compiling {
+            let idx = self.code_strings.len();
+            self.code_strings.push(target);
+            if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Literal(idx as Cell));
+                def.body.push(Instruction::Primitive(P_ALERT_THRESHOLD_RT));
+            }
+        } else {
+            if let Ok(watch_id) = target.trim().parse::<u32>() {
+                let level = self.pop();
+                self.monitor.set_alert_level(watch_id, monitor::AlertLevel::from_val(level));
+                self.emit_str(&format!("alert threshold set for watch #{}\n", watch_id));
+            }
+        }
+    }
+
+    fn rt_alert_threshold(&mut self) {
+        let idx = self.pop() as usize;
+        if idx < self.code_strings.len() {
+            if let Ok(watch_id) = self.code_strings[idx].trim().parse::<u32>() {
+                let level = self.pop();
+                self.monitor.set_alert_level(watch_id, monitor::AlertLevel::from_val(level));
+            }
+        }
+    }
+
+    fn prim_dashboard(&mut self) {
+        let peer_count = self.mesh.as_ref().map(|m| m.peer_count()).unwrap_or(0);
+        let goal_summary = self.mesh.as_ref()
+            .map(|m| m.format_goals())
+            .unwrap_or_default();
+        let s = self.monitor.format_dashboard(peer_count, self.fitness.score, &goal_summary);
+        self.emit_str(&s);
+    }
+
+    fn prim_health(&mut self) {
+        let peer_count = self.mesh.as_ref().map(|m| m.peer_count()).unwrap_or(0);
+        let score = self.monitor.health_score(peer_count, self.fitness.score);
+        self.stack.push(score);
+    }
+
+    fn prim_every(&mut self) {
+        let interval = self.pop() as u64;
+        // Consume the rest of the input line as the code to schedule.
+        let remaining = self.input_buffer[self.input_pos..].trim().to_string();
+        self.input_pos = self.input_buffer.len(); // consume it
+        if remaining.is_empty() {
+            self.emit_str("EVERY: no code to schedule\n");
+            return;
+        }
+        let id = self.monitor.add_schedule(remaining.clone(), interval.max(1));
+        self.stack.push(id as Cell);
+        self.emit_str(&format!(
+            "schedule #{} every {}s: {}\n",
+            id, interval, remaining.chars().take(40).collect::<String>()
+        ));
+    }
+
+    fn rt_every(&mut self) {
+        // For compiled EVERY, not yet supported — would need code string storage.
+        self.emit_str("EVERY only works at the REPL\n");
+    }
+
+    fn prim_heal(&mut self) {
+        self.emit_str("--- heal cycle ---\n");
+        // Check all watches.
+        let due = self.monitor.due_watches();
+        if due.is_empty() {
+            self.emit_str("  no watches due\n");
+        }
+        for wid in &due {
+            self.run_watch_check(*wid);
+        }
+        // Run handlers for active alerts.
+        let handlers: Vec<(u32, String)> = self.monitor.alerts.iter()
+            .filter(|a| !a.acknowledged)
+            .filter_map(|a| {
+                self.monitor.watches.get(&a.watch_id)
+                    .and_then(|w| w.alert_handler.clone())
+                    .map(|h| (a.id, h))
+            })
+            .collect();
+        for (aid, handler) in &handlers {
+            self.emit_str(&format!("  running handler for alert #{}\n", aid));
+            self.interpret_line(handler);
+        }
+        self.emit_str("--- heal done ---\n");
+    }
+
+    /// Execute a watch check for a specific watch ID.
+    fn run_watch_check(&mut self, watch_id: u32) {
+        let kind = match self.monitor.watches.get(&watch_id) {
+            Some(w) => w.kind.clone(),
+            None => return,
+        };
+        let start = Instant::now();
+        let status = match kind {
+            monitor::WatchKind::Url(ref url) => {
+                match io_words::http_get(url) {
+                    Ok((_, code)) => {
+                        let ms = start.elapsed().as_millis() as u64;
+                        if code >= 200 && code < 400 {
+                            monitor::WatchStatus::up(code as i32, ms, format!("{}", code))
+                        } else {
+                            monitor::WatchStatus::down(code as i32, format!("HTTP {}", code))
+                        }
+                    }
+                    Err(e) => monitor::WatchStatus::down(-1, e),
+                }
+            }
+            monitor::WatchKind::File(ref path) => {
+                if io_words::file_exists(path) {
+                    let ms = start.elapsed().as_millis() as u64;
+                    match std::fs::metadata(path) {
+                        Ok(m) => monitor::WatchStatus::up(0, ms, format!("{}b", m.len())),
+                        Err(e) => monitor::WatchStatus::down(-1, e.to_string()),
+                    }
+                } else {
+                    monitor::WatchStatus::down(-1, "not found".into())
+                }
+            }
+            monitor::WatchKind::Process(ref name) => {
+                match io_words::shell_exec(&format!("pgrep -x {} >/dev/null 2>&1 && echo UP || echo DOWN", name)) {
+                    Ok((stdout, _)) => {
+                        let ms = start.elapsed().as_millis() as u64;
+                        let out = String::from_utf8_lossy(&stdout).trim().to_string();
+                        if out.contains("UP") {
+                            monitor::WatchStatus::up(0, ms, "running".into())
+                        } else {
+                            monitor::WatchStatus::down(-1, "not running".into())
+                        }
+                    }
+                    Err(e) => monitor::WatchStatus::down(-1, e),
+                }
+            }
+        };
+
+        // Record the check result.
+        if let Some(alert) = self.monitor.record_check(watch_id, status.clone()) {
+            self.emit_str(&format!(
+                "ALERT [{}] watch #{}: {}\n",
+                alert.level.label(), watch_id, alert.message
+            ));
+            // Run alert handler if defined.
+            let handler = self.monitor.watches.get(&watch_id)
+                .and_then(|w| w.alert_handler.clone());
+            if let Some(code) = handler {
+                self.interpret_line(&code);
+                // Fitness bonus for attempted remediation.
+                self.fitness.score += 15;
+            }
+        }
+    }
+
+    /// Tick the monitor: check due watches and run due schedules.
+    fn tick_monitor(&mut self) {
+        // Check due watches.
+        let due_watches = self.monitor.due_watches();
+        for wid in due_watches {
+            self.run_watch_check(wid);
+        }
+
+        // Run due schedules.
+        let due_scheds = self.monitor.due_schedules();
+        for (_sid, code) in due_scheds {
+            self.interpret_line(&code);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Spawn / Replication primitives
     // -----------------------------------------------------------------------
 
@@ -3074,6 +3402,7 @@ impl VM {
                         self.check_auto_replicate();
                         self.check_auto_evolve();
                         self.check_incoming_replications();
+                        self.tick_monitor();
                     }
                     if self.compiling {
                         let _ = write!(stdout, "  ");

@@ -47,7 +47,10 @@
 : FAMILY-TREE  ( -- ) FAMILY CHILDREN ;
 : SPAWN-TEST   ( -- ) SPAWN ." spawned child" CR ;
 
+\ --- Ops helpers ---
+: OPS      ( -- ) DASHBOARD ALERTS SCHEDULE ;
+
 \ --- Boot ---
-." unit v0.6.1 — seed online" CR
+." unit v0.7.0 — seed online" CR
 MESH-HELLO
 AUTO-CLAIM
