@@ -175,6 +175,8 @@ const P_TRUST: usize = 96;
 const P_TRUST_ALL: usize = 97;
 const P_TRUST_NONE: usize = 98;
 const P_SHELL_ENABLE: usize = 99;
+// Identity
+const P_REIDENTIFY: usize = 199;
 // Persistence
 const P_SAVE: usize = 200;
 const P_LOAD_STATE: usize = 201;
@@ -398,6 +400,8 @@ impl VM {
             ("TRUST-ALL", P_TRUST_ALL, false),
             ("TRUST-NONE", P_TRUST_NONE, false),
             ("SHELL-ENABLE", P_SHELL_ENABLE, false),
+            // Identity
+            ("REIDENTIFY", P_REIDENTIFY, false),
             // Persistence
             ("SAVE", P_SAVE, false),
             ("LOAD-STATE", P_LOAD_STATE, false),
@@ -704,6 +708,8 @@ impl VM {
             P_TRUST_NONE => { self.trusted_peers.clear(); self.emit_str("trust: NONE\n"); }
             P_SHELL_ENABLE => { self.shell_enabled = !self.shell_enabled;
                 self.emit_str(&format!("shell: {}\n", if self.shell_enabled { "ENABLED" } else { "DISABLED" })); }
+            // Identity
+            P_REIDENTIFY => self.prim_reidentify(),
             // Persistence
             P_SAVE => self.prim_save(),
             P_LOAD_STATE => self.prim_load_state(),
@@ -2412,6 +2418,34 @@ impl VM {
     }
 
     // -----------------------------------------------------------------------
+    // Identity
+    // -----------------------------------------------------------------------
+
+    /// REIDENTIFY ( -- ) generate a new node ID, migrate saved state.
+    fn prim_reidentify(&mut self) {
+        let old_id = self.node_id_cache;
+        // Generate a new random ID.
+        let mut new_id = [0u8; 8];
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            use std::io::Read;
+            let _ = f.read_exact(&mut new_id);
+        }
+        // Migrate state directory.
+        if let Some(oid) = old_id {
+            let _ = persist::rename_state(&oid, &new_id);
+        }
+        // Save the new ID.
+        let _ = persist::save_node_id(&new_id);
+        self.node_id_cache = Some(new_id);
+        self.rng = mutation::SimpleRng::new(u64::from_be_bytes(new_id));
+        self.emit_str(&format!(
+            "reidentified: {} -> {}\n",
+            old_id.map(|id| mesh::id_to_hex(&id)).unwrap_or_else(|| "none".into()),
+            mesh::id_to_hex(&new_id),
+        ));
+    }
+
+    // -----------------------------------------------------------------------
     // Persistence primitives
     // -----------------------------------------------------------------------
 
@@ -2473,8 +2507,9 @@ impl VM {
     fn prim_reset(&mut self) {
         if let Some(id) = self.node_id_cache {
             let _ = persist::delete_state(&id);
-            self.emit_str("state deleted — restart for fresh boot\n");
         }
+        let _ = persist::delete_node_id();
+        self.emit_str("state and identity deleted — restart for fresh boot\n");
     }
 
     fn prim_snapshots(&mut self) {
@@ -2760,14 +2795,22 @@ fn main() {
         .filter_map(|s| s.trim().parse().ok())
         .collect();
 
-    // Start the mesh networking layer.
-    match mesh::MeshNode::start(port, seed_peers) {
+    // Load or generate a persistent node identity.
+    let persisted_id = persist::load_node_id();
+    let resumed = persisted_id.is_some();
+
+    // Start the mesh networking layer with the stable identity.
+    match mesh::MeshNode::start_with_id(persisted_id, port, seed_peers) {
         Ok(node) => {
-            // Seed RNG from node ID for mutation uniqueness.
             let id = node.id_bytes();
             let seed = u64::from_be_bytes(id);
             vm.rng = mutation::SimpleRng::new(seed);
             vm.node_id_cache = Some(id);
+            // Save the ID for next boot (no-op if already saved).
+            let _ = persist::save_node_id(&id);
+            if resumed {
+                eprintln!("resumed identity {}", mesh::id_to_hex(&id));
+            }
             vm.mesh = Some(node);
         }
         Err(e) => {

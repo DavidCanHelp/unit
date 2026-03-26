@@ -288,7 +288,15 @@ impl Drop for MeshNode {
 impl MeshNode {
     /// Start the mesh node. Binds a UDP socket and spawns the network thread.
     pub fn start(port: u16, seed_peers: Vec<SocketAddr>) -> Result<Self, String> {
-        let id = generate_id();
+        Self::start_with_id(None, port, seed_peers)
+    }
+
+    pub fn start_with_id(
+        fixed_id: Option<NodeId>,
+        port: u16,
+        seed_peers: Vec<SocketAddr>,
+    ) -> Result<Self, String> {
+        let id = fixed_id.unwrap_or_else(generate_id);
         let id_hex = id_to_hex(&id);
 
         let bind_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);

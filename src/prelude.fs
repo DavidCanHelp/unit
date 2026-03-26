@@ -45,6 +45,6 @@
 : PERSIST-TEST  ( -- )    SAVE ." state saved" CR ;
 
 \ --- Boot ---
-." unit v0.5.0 — seed online" CR
+." unit v0.5.1 — seed online" CR
 MESH-HELLO
 AUTO-CLAIM

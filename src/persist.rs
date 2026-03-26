@@ -379,7 +379,77 @@ pub fn delete_state(node_id: &NodeId) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Node ID persistence
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+fn node_id_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    format!("{}/.unit/node-id", home)
+}
+
+/// Load a previously saved node ID, or return None for first boot.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_node_id() -> Option<NodeId> {
+    let path = node_id_path();
+    let hex = std::fs::read_to_string(&path).ok()?;
+    let hex = hex.trim();
+    if hex.len() != 16 {
+        return None;
+    }
+    let mut id = [0u8; 8];
+    for i in 0..8 {
+        id[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(id)
+}
+
+/// Save the node ID so it persists across restarts.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_node_id(id: &NodeId) -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let dir = format!("{}/.unit", home);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {}", e))?;
+    let hex: String = id.iter().map(|b| format!("{:02x}", b)).collect();
+    std::fs::write(node_id_path(), hex).map_err(|e| format!("write: {}", e))
+}
+
+/// Delete the persisted node ID (used by RESET).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn delete_node_id() -> Result<(), String> {
+    let path = node_id_path();
+    if std::fs::metadata(&path).is_ok() {
+        std::fs::remove_file(&path).map_err(|e| format!("rm: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Rename the state directory from old ID to new ID.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn rename_state(old_id: &NodeId, new_id: &NodeId) -> Result<(), String> {
+    let old_dir = state_dir(old_id);
+    let new_dir = state_dir(new_id);
+    if std::fs::metadata(&old_dir).is_ok() {
+        std::fs::create_dir_all(
+            std::path::Path::new(&new_dir).parent().unwrap_or(std::path::Path::new(".")),
+        )
+        .map_err(|e| format!("mkdir: {}", e))?;
+        std::fs::rename(&old_dir, &new_dir).map_err(|e| format!("rename: {}", e))?;
+    }
+    Ok(())
+}
+
 // WASM stubs
+#[cfg(target_arch = "wasm32")]
+pub fn load_node_id() -> Option<NodeId> { None }
+#[cfg(target_arch = "wasm32")]
+pub fn save_node_id(_: &NodeId) -> Result<(), String> { Ok(()) }
+#[cfg(target_arch = "wasm32")]
+pub fn delete_node_id() -> Result<(), String> { Ok(()) }
+#[cfg(target_arch = "wasm32")]
+pub fn rename_state(_: &NodeId, _: &NodeId) -> Result<(), String> { Ok(()) }
+
 #[cfg(target_arch = "wasm32")]
 pub fn state_dir(_: &NodeId) -> String { String::new() }
 #[cfg(target_arch = "wasm32")]
