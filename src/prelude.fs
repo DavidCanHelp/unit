@@ -48,6 +48,6 @@
 : SPAWN-TEST   ( -- ) SPAWN ." spawned child" CR ;
 
 \ --- Boot ---
-." unit v0.6.0 — seed online" CR
+." unit v0.6.1 — seed online" CR
 MESH-HELLO
 AUTO-CLAIM

@@ -196,6 +196,9 @@ const P_RESET: usize = 203;
 const P_SNAPSHOTS: usize = 204;
 const P_SNAPSHOT: usize = 205;
 const P_RESTORE: usize = 206;
+// Loop index
+const P_I: usize = 215;
+const P_J: usize = 216;
 // Spawn / Replication
 const P_SPAWN: usize = 220;
 const P_SPAWN_N: usize = 221;
@@ -272,6 +275,8 @@ struct VM {
     fitness: fitness::FitnessTracker,
     // --- Spawn ---
     spawn_state: spawn::SpawnState,
+    // --- Anonymous definition nesting depth (for interpret-mode control flow) ---
+    anon_depth: i32,
     // --- Persistence ---
     auto_save_enabled: bool,
     auto_save_interval: u32,
@@ -309,6 +314,7 @@ impl VM {
             rng: mutation::SimpleRng::new(0), // re-seeded from node ID in main()
             fitness: fitness::FitnessTracker::new(),
             spawn_state: spawn::SpawnState::new(),
+            anon_depth: 0,
             auto_save_enabled: false,
             auto_save_interval: 5,
             tasks_since_save: 0,
@@ -438,6 +444,9 @@ impl VM {
             ("SNAPSHOTS", P_SNAPSHOTS, false),
             ("SNAPSHOT", P_SNAPSHOT, false),
             ("RESTORE", P_RESTORE, false),
+            // Loop index
+            ("I", P_I, false),
+            ("J", P_J, false),
             // Spawn / Replication
             ("SPAWN", P_SPAWN, false),
             ("SPAWN-N", P_SPAWN_N, false),
@@ -760,6 +769,17 @@ impl VM {
             P_SNAPSHOTS => self.prim_snapshots(),
             P_SNAPSHOT => self.prim_snapshot(),
             P_RESTORE => self.prim_restore(),
+            // Loop index: I pushes current DO..LOOP index from return stack
+            P_I => {
+                let index = self.rstack.last().copied().unwrap_or(0);
+                self.stack.push(index);
+            }
+            // J pushes the outer loop index (2 levels deep on rstack)
+            P_J => {
+                let len = self.rstack.len();
+                let index = if len >= 3 { self.rstack[len - 3] } else { 0 };
+                self.stack.push(index);
+            }
             // Spawn / Replication
             P_SPAWN => self.prim_spawn(),
             P_SPAWN_N => self.prim_spawn_n(),
@@ -1103,6 +1123,19 @@ impl VM {
     // -----------------------------------------------------------------------
 
     fn prim_if(&mut self) {
+        // If not already compiling, start an anonymous definition so
+        // IF...ELSE...THEN works at the interpret prompt.
+        if !self.compiling && self.current_def.is_none() {
+            self.compiling = true;
+            self.current_def = Some(Entry {
+                name: String::new(), // anonymous
+                immediate: false,
+                hidden: true,
+                body: Vec::new(),
+            });
+            self.anon_depth = 0;
+        }
+        self.anon_depth += 1;
         if let Some(ref mut def) = self.current_def {
             let fixup = def.body.len() as Cell;
             self.rstack.push(fixup);
@@ -1135,10 +1168,34 @@ impl VM {
                 }
                 _ => {}
             }
+
+            // If this is an anonymous definition, only finalize when
+            // nesting depth returns to zero.
+            self.anon_depth -= 1;
+            if def.name.is_empty() && self.anon_depth <= 0 {
+                let body = def.body.clone();
+                self.current_def = None;
+                self.compiling = false;
+                self.anon_depth = 0;
+                self.execute_body(&body);
+                return;
+            }
         }
     }
 
     fn prim_do(&mut self) {
+        // Start anonymous definition if at the interpret prompt.
+        if !self.compiling && self.current_def.is_none() {
+            self.compiling = true;
+            self.current_def = Some(Entry {
+                name: String::new(),
+                immediate: false,
+                hidden: true,
+                body: Vec::new(),
+            });
+            self.anon_depth = 0;
+        }
+        self.anon_depth += 1;
         if let Some(ref mut def) = self.current_def {
             def.body.push(Instruction::Primitive(P_DO_RT));
             let loop_start = def.body.len() as Cell;
@@ -1153,6 +1210,17 @@ impl VM {
             let here = def.body.len();
             let offset = loop_start - here as i64;
             def.body.push(Instruction::BranchIfZero(offset));
+
+            // Only finalize when nesting depth returns to zero.
+            self.anon_depth -= 1;
+            if def.name.is_empty() && self.anon_depth <= 0 {
+                let body = def.body.clone();
+                self.current_def = None;
+                self.compiling = false;
+                self.anon_depth = 0;
+                self.execute_body(&body);
+                return;
+            }
         }
     }
 
@@ -1266,8 +1334,10 @@ impl VM {
         if let Some(name) = self.next_word() {
             let upper = name.to_uppercase();
             if let Some(idx) = self.find_word(&upper) {
+                // Collect the entire decompilation into a string first
+                // to avoid borrow conflicts with emit_str.
                 let entry = &self.dictionary[idx];
-                print!(": {} ", entry.name);
+                let mut out = format!(": {} ", entry.name);
                 for instr in &entry.body {
                     match instr {
                         Instruction::Primitive(id) => {
@@ -1277,27 +1347,28 @@ impl VM {
                                 .find(|(_, pid)| pid == id)
                                 .map(|(n, _)| n.as_str())
                                 .unwrap_or("?PRIM");
-                            print!("{} ", pname);
+                            out.push_str(&format!("{} ", pname));
                         }
-                        Instruction::Literal(val) => print!("LIT({}) ", val),
+                        Instruction::Literal(val) => out.push_str(&format!("LIT({}) ", val)),
                         Instruction::Call(cidx) => {
                             if *cidx < self.dictionary.len() {
-                                print!("{} ", self.dictionary[*cidx].name);
+                                out.push_str(&format!("{} ", self.dictionary[*cidx].name));
                             } else {
-                                print!("CALL({}) ", cidx);
+                                out.push_str(&format!("CALL({}) ", cidx));
                             }
                         }
-                        Instruction::StringLit(s) => print!(".\" {}\" ", s),
-                        Instruction::Branch(off) => print!("BRANCH({}) ", off),
-                        Instruction::BranchIfZero(off) => print!("0BRANCH({}) ", off),
+                        Instruction::StringLit(s) => out.push_str(&format!(".\" {}\" ", s)),
+                        Instruction::Branch(off) => out.push_str(&format!("BRANCH({}) ", off)),
+                        Instruction::BranchIfZero(off) => out.push_str(&format!("0BRANCH({}) ", off)),
                     }
                 }
-                println!(";");
+                out.push_str(";\n");
+                self.emit_str(&out);
             } else {
-                eprintln!("{}?", upper);
+                self.emit_str(&format!("{}?\n", upper));
             }
         } else {
-            eprintln!("expected word name after SEE");
+            self.emit_str("expected word name after SEE\n");
         }
     }
 
