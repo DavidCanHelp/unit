@@ -22,6 +22,8 @@ mod persist;
 #[allow(dead_code)]
 mod spawn;
 #[allow(dead_code)]
+mod ws_bridge;
+#[allow(dead_code)]
 mod platform;
 
 #[cfg(target_arch = "wasm32")]
@@ -241,6 +243,11 @@ const P_UNSCHED: usize = 315;
 const P_HEAL: usize = 316;
 const P_HEALTH_PORT: usize = 317;
 const P_ALERT_THRESHOLD: usize = 318;
+// WebSocket bridge
+const P_WS_STATUS: usize = 320;
+const P_WS_CLIENTS: usize = 321;
+const P_WS_PORT: usize = 322;
+const P_WS_BROADCAST: usize = 323;
 // Internal runtime primitives (not directly user-visible).
 const P_DO_RT: usize = 100;
 const P_LOOP_RT: usize = 101;
@@ -305,6 +312,10 @@ struct VM {
     spawn_state: spawn::SpawnState,
     // --- Monitoring ---
     monitor: monitor::MonitorState,
+    // --- WebSocket bridge ---
+    ws_state: Option<std::sync::Arc<std::sync::Mutex<ws_bridge::WsBridgeState>>>,
+    ws_events: Option<std::sync::mpsc::Receiver<ws_bridge::WsEvent>>,
+    ws_mesh_json: std::sync::Arc<std::sync::Mutex<String>>,
     // --- Anonymous definition nesting depth (for interpret-mode control flow) ---
     anon_depth: i32,
     // --- Persistence ---
@@ -345,6 +356,9 @@ impl VM {
             fitness: fitness::FitnessTracker::new(),
             spawn_state: spawn::SpawnState::new(),
             monitor: monitor::MonitorState::new(),
+            ws_state: None,
+            ws_events: None,
+            ws_mesh_json: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
             anon_depth: 0,
             auto_save_enabled: false,
             auto_save_interval: 5,
@@ -513,6 +527,11 @@ impl VM {
             ("HEAL", P_HEAL, false),
             ("HEALTH-PORT", P_HEALTH_PORT, false),
             ("ALERT-THRESHOLD", P_ALERT_THRESHOLD, true),
+            // WebSocket bridge
+            ("WS-STATUS", P_WS_STATUS, false),
+            ("WS-CLIENTS", P_WS_CLIENTS, false),
+            ("WS-PORT", P_WS_PORT, false),
+            ("WS-BROADCAST\"", P_WS_BROADCAST, true),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -883,6 +902,15 @@ impl VM {
                 self.stack.push(port as Cell);
             }
             P_ALERT_THRESHOLD => self.prim_alert_threshold(),
+            // WebSocket bridge
+            P_WS_STATUS => self.prim_ws_status(),
+            P_WS_CLIENTS => self.prim_ws_clients(),
+            P_WS_PORT => {
+                let port = self.ws_state.as_ref()
+                    .map(|s| s.lock().unwrap().port as Cell).unwrap_or(0);
+                self.stack.push(port);
+            }
+            P_WS_BROADCAST => self.prim_ws_broadcast(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),
@@ -2634,6 +2662,84 @@ impl VM {
     }
 
     // -----------------------------------------------------------------------
+    // WebSocket bridge primitives
+    // -----------------------------------------------------------------------
+
+    fn prim_ws_status(&mut self) {
+        if let Some(ref st) = self.ws_state {
+            let s = st.lock().unwrap().format_status();
+            self.emit_str(&s);
+        } else {
+            self.emit_str("ws-bridge: not running\n");
+        }
+    }
+
+    fn prim_ws_clients(&mut self) {
+        if let Some(ref st) = self.ws_state {
+            let s = st.lock().unwrap().format_clients();
+            self.emit_str(&s);
+        } else {
+            self.emit_str("  (ws-bridge not running)\n");
+        }
+    }
+
+    fn prim_ws_broadcast(&mut self) {
+        let msg = self.parse_until('"');
+        // The broadcast happens by updating the mesh_json which gets
+        // pushed to all connected browsers on the next 2s tick.
+        if let Ok(mut json) = self.ws_mesh_json.lock() {
+            *json = format!(r#"{{"type":"broadcast","message":"{}"}}"#, msg.replace('"', "\\\""));
+        }
+        self.emit_str(&format!("ws broadcast: {}\n", msg));
+    }
+
+    fn update_ws_mesh_json(&mut self) {
+        let id_hex = self.node_id_cache
+            .map(|id| mesh::id_to_hex(&id))
+            .unwrap_or_default();
+        let peers = self.mesh.as_ref().map(|m| m.peer_count()).unwrap_or(0);
+        let ws_clients = self.ws_state.as_ref()
+            .map(|s| s.lock().unwrap().clients.len()).unwrap_or(0);
+        let goals = self.mesh.as_ref()
+            .map(|m| m.format_goals()).unwrap_or_default();
+        let json = ws_bridge::build_mesh_json(
+            &id_hex, peers, self.fitness.score, &goals, ws_clients,
+        );
+        if let Ok(mut j) = self.ws_mesh_json.lock() {
+            *j = json;
+        }
+    }
+
+    fn poll_ws_events(&mut self) {
+        // Process incoming WS events (goal submissions from browsers).
+        let events: Vec<ws_bridge::WsEvent> = self.ws_events.as_ref()
+            .map(|rx| {
+                let mut evts = Vec::new();
+                while let Ok(e) = rx.try_recv() { evts.push(e); }
+                evts
+            })
+            .unwrap_or_default();
+
+        for event in events {
+            match event {
+                ws_bridge::WsEvent::GoalSubmit { code, priority } => {
+                    if let Some(ref m) = self.mesh {
+                        let gid = m.create_goal(&code, priority, Some(code.clone()));
+                        println!("[ws] goal #{} from browser: {}", gid, code.chars().take(40).collect::<String>());
+                    }
+                }
+                ws_bridge::WsEvent::ClientConnected { id } => {
+                    println!("[ws] browser connected: {}", id);
+                }
+                ws_bridge::WsEvent::ClientDisconnected { id } => {
+                    println!("[ws] browser disconnected: {}", id);
+                }
+                ws_bridge::WsEvent::Heartbeat { .. } => {}
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Monitoring & Ops primitives
     // -----------------------------------------------------------------------
 
@@ -3403,6 +3509,8 @@ impl VM {
                         self.check_auto_evolve();
                         self.check_incoming_replications();
                         self.tick_monitor();
+                        self.poll_ws_events();
+                        self.update_ws_mesh_json();
                     }
                     if self.compiling {
                         let _ = write!(stdout, "  ");
@@ -3465,6 +3573,22 @@ fn main() {
                 eprintln!("resumed identity {}", mesh::id_to_hex(&id));
             }
             vm.mesh = Some(node);
+
+            // Start WebSocket bridge for browser connectivity.
+            let ws_port: u16 = std::env::var("UNIT_WS_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| if port > 0 { port + 2000 } else { 0 });
+            if ws_port > 0 {
+                match ws_bridge::start_ws_bridge(ws_port, vm.ws_mesh_json.clone()) {
+                    Ok((ws_st, ws_rx)) => {
+                        vm.ws_state = Some(ws_st);
+                        vm.ws_events = Some(ws_rx);
+                        eprintln!("ws-bridge: listening on port {}", ws_port);
+                    }
+                    Err(e) => eprintln!("ws-bridge: {}", e),
+                }
+            }
 
             // Parse generation and parent ID from environment (set by parent during spawn).
             if let Ok(gen_str) = std::env::var("UNIT_GENERATION") {

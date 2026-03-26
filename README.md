@@ -180,15 +180,66 @@ File, HTTP, shell, env. Sandbox by default for remote code.
 
 Self-mutating code with fitness-driven evolution.
 
+## Browser Mesh
+
+Browser WASM units join the same mesh as native units via WebSocket.
+
+### Architecture
+
+```
+browser (WASM) ↔ WebSocket ↔ native unit ↔ UDP gossip ↔ native units
+```
+
+Each native unit runs a WebSocket server on `UNIT_PORT + 2000`. Browser
+units connect and appear as peers — they submit goals, receive results,
+and show in PEERS and DASHBOARD.
+
+### Demo
+
+```sh
+# Terminal: start a native unit
+UNIT_PORT=4201 cargo run
+# ws-bridge: listening on port 6201
+```
+
+Open https://davidcanhelp.github.io/unit/ (or localhost:8080).
+Click "Connect" with `ws://localhost:6201`.
+
+```
+# In browser:
+> 5 GOAL{ 6 7 * }
+[submitted to mesh: 6 7 *]
+
+# Native terminal auto-claims:
+[ws] goal #101 from browser: 6 7 *
+[auto] claimed task #102 (goal #101): 6 7 *
+[auto] stack: 42
+```
+
+### WebSocket words (native)
+
+| Word                    | Description                        |
+|-------------------------|------------------------------------|
+| `WS-STATUS`             | Show bridge: port, clients, relay count |
+| `WS-CLIENTS`            | List connected browsers            |
+| `WS-PORT`               | `( -- n )` push WS port           |
+| `WS-BROADCAST" <msg>"`  | Send message to all browsers       |
+
+### Configuration
+
+| Env var       | Default          | Description              |
+|---------------|------------------|--------------------------|
+| `UNIT_WS_PORT`| `UNIT_PORT+2000` | WebSocket server port    |
+
 ## WASM Target
 
 ```sh
-make build-wasm    # 172KB binary, browser REPL in web/
+make build-wasm    # browser REPL in web/
 ```
 
 ## Architecture
 
-Zero external dependencies. ~5500 lines of Rust + Forth.
+Zero external dependencies. ~6500 lines of Rust + Forth.
 
 ```
 src/main.rs       — Forth VM, REPL, ~150 primitives

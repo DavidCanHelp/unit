@@ -32,6 +32,29 @@
     background: #111; border: 1px solid #222; padding: 2px 6px;
     border-radius: 3px; color: #00ff88; font-size: 11px;
   }
+  #mesh-bar {
+    padding: 4px 14px; border-bottom: 1px solid #111;
+    display: flex; gap: 8px; align-items: center; font-size: 11px;
+  }
+  #mesh-bar .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    display: inline-block; margin-right: 2px;
+  }
+  .dot-off { background: #600; }
+  .dot-on { background: #0a0; }
+  #ws-url {
+    background: #111; border: 1px solid #222; color: #888;
+    font-family: inherit; font-size: 11px; padding: 1px 6px;
+    border-radius: 2px; width: 220px; outline: none;
+  }
+  #ws-url:focus { border-color: #444; color: #00ff88; }
+  #ws-btn {
+    background: #111; border: 1px solid #222; color: #555;
+    font-family: inherit; font-size: 11px; padding: 1px 8px;
+    border-radius: 2px; cursor: pointer;
+  }
+  #ws-btn:hover { color: #00ff88; border-color: #444; }
+  #mesh-status { color: #555; }
   #terminal {
     flex: 1; overflow-y: auto; padding: 12px; white-space: pre-wrap;
     word-wrap: break-word; font-size: 13px; line-height: 1.4;
@@ -60,6 +83,7 @@
   .output { color: #bbb; }
   .error { color: #ff4444; }
   .info { color: #555; }
+  .mesh-event { color: #886; }
 </style>
 </head>
 <body>
@@ -72,6 +96,12 @@
     <span class="badge">226KB WASM</span>
     <a href="https://github.com/DavidCanHelp/unit">GitHub</a>
   </div>
+</div>
+<div id="mesh-bar">
+  <span class="dot dot-off" id="mesh-dot"></span>
+  <span id="mesh-status">mesh: offline</span>
+  <input id="ws-url" type="text" value="ws://localhost:6201" spellcheck="false">
+  <button id="ws-btn" onclick="toggleMesh()">Connect</button>
 </div>
 <div id="terminal" onclick="document.getElementById('input').focus()"></div>
 <div id="hints">
@@ -92,7 +122,12 @@
 <script>
   const terminal = document.getElementById('terminal');
   const input = document.getElementById('input');
+  const meshDot = document.getElementById('mesh-dot');
+  const meshStatusEl = document.getElementById('mesh-status');
+  const wsUrlInput = document.getElementById('ws-url');
+  const wsBtn = document.getElementById('ws-btn');
   let vm = null;
+  let mesh = null;
   let history = [];
   let histIdx = -1;
 
@@ -110,11 +145,48 @@
     input.focus();
   }
 
+  function updateMeshUI(status, detail) {
+    if (status === 'connected') {
+      meshDot.className = 'dot dot-on';
+      const p = mesh ? mesh.peers : 0;
+      const b = mesh ? mesh.browsers : 0;
+      meshStatusEl.textContent = `mesh: connected (${p} peers, ${b} browsers)`;
+      wsBtn.textContent = 'Disconnect';
+    } else {
+      meshDot.className = 'dot dot-off';
+      meshStatusEl.textContent = detail ? `mesh: ${detail}` : 'mesh: offline';
+      wsBtn.textContent = 'Connect';
+    }
+  }
+
+  function toggleMesh() {
+    if (mesh && mesh.isConnected()) {
+      mesh.disconnect();
+      appendOutput('[mesh disconnected]\n', 'mesh-event');
+    } else {
+      const url = wsUrlInput.value.trim();
+      if (!url) return;
+      if (!mesh) {
+        mesh = new MeshClient(
+          (msg) => {
+            // Handle mesh messages.
+            if (msg.type === 'broadcast' && msg.message) {
+              appendOutput(`[mesh] ${msg.message}\n`, 'mesh-event');
+            }
+          },
+          (status, detail) => updateMeshUI(status, detail)
+        );
+      }
+      mesh.connect(url);
+      appendOutput(`[connecting to ${url}...]\n`, 'mesh-event');
+    }
+  }
+
   async function init() {
     try {
       vm = await UnitVM.create('unit.wasm');
-      appendOutput('unit v0.7.1 \u2014 WASM seed online\n', 'info');
-      appendOutput('Type Forth commands. Click examples below.\n\n', 'info');
+      appendOutput('unit v0.8.0 \u2014 WASM seed online\n', 'info');
+      appendOutput('Type Forth commands. Connect to a native mesh above.\n\n', 'info');
     } catch (e) {
       appendOutput('Failed to load WASM: ' + e.message + '\n', 'error');
       appendOutput('Build with: make build-wasm\n', 'info');
@@ -136,6 +208,16 @@
     input.value = '';
     if (line.trim()) { history.push(line); histIdx = -1; }
     appendOutput('> ' + line + '\n', 'info');
+
+    // Check if this is a GOAL{ } submission — forward to mesh if connected.
+    if (mesh && mesh.isConnected() && line.includes('GOAL{')) {
+      const match = line.match(/(\d+)\s+GOAL\{\s*(.*?)\s*\}/);
+      if (match) {
+        mesh.submitGoal(match[2], parseInt(match[1]));
+        appendOutput(`[submitted to mesh: ${match[2]}]\n`, 'mesh-event');
+      }
+    }
+
     const result = vm.eval(line);
     if (result) appendOutput(result);
     appendOutput(' ok\n', 'info');
