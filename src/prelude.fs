@@ -51,11 +51,13 @@
 : OPS      ( -- ) DASHBOARD ALERTS SCHEDULE ;
 
 \ --- Swarm helpers ---
-: SWARM-ON  ( -- ) AUTO-DISCOVER AUTO-SHARE AUTO-SPAWN ." swarm mode active" CR ;
+: SWARM-ON  ( -- ) AUTO-DISCOVER AUTO-SHARE AUTO-SPAWN TRUST-ALL ." swarm mode active" CR ;
 : SWARM-OFF ( -- ) ." swarm mode disabled" CR ;
 : SWARM     ( -- ) SWARM-STATUS MESH-STATUS LEADERBOARD ;
+: SECURE-SWARM ( -- ) SWARM-ON TRUST-MESH ." swarm with mesh trust" CR ;
+: LOCKDOWN  ( -- ) TRUST-NONE QUARANTINE ." replication locked" CR ;
 
 \ --- Boot ---
-." unit v0.10.0 — seed online" CR
+." unit v0.10.1 — seed online" CR
 MESH-HELLO
 AUTO-CLAIM

@@ -50,6 +50,9 @@ const MSG_WORD_SHARE: u8 = 10;
 const MSG_DISCOVERY_BEACON: u8 = 11;
 const MSG_SPAWN_INTENT: u8 = 12;
 const MSG_CULL_INTENT: u8 = 13;
+const MSG_REPLICATE_REQUEST: u8 = 14;
+const MSG_REPLICATE_ACCEPT: u8 = 15;
+const MSG_REPLICATE_DENY: u8 = 16;
 
 // Wire format magic.
 const MAGIC: &[u8; 4] = b"UNIT";
@@ -274,14 +277,71 @@ pub(crate) struct MeshState {
     /// Pending spawn/cull intents from peers (for coordination).
     pub(crate) spawn_intent_active: bool,
     pub(crate) cull_intent_active: bool,
+    // --- Replication consent ---
+    pub(crate) trust_level: TrustLevel,
+    pub(crate) pending_requests: Vec<ReplicationRequest>,
+    pub(crate) replication_log: Vec<ReplicationLogEntry>,
+    pub(crate) next_request_id: u32,
+    pub(crate) parent_id: Option<NodeId>,
+    pub(crate) children_ids: Vec<NodeId>,
 }
 
 /// A word definition received from a peer.
 #[derive(Clone, Debug)]
 pub struct SharedWord {
     pub name: String,
-    pub body_source: String, // Forth source to compile
+    pub body_source: String,
     pub origin: NodeId,
+}
+
+/// Trust level for replication consent.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TrustLevel {
+    All,    // auto-accept everything (default)
+    Mesh,   // auto-accept known peers, prompt for unknown
+    Family, // auto-accept parent/children/siblings, prompt for others
+    None,   // prompt for everything
+}
+
+impl TrustLevel {
+    pub fn label(&self) -> &str {
+        match self {
+            TrustLevel::All => "all",
+            TrustLevel::Mesh => "mesh",
+            TrustLevel::Family => "family",
+            TrustLevel::None => "none",
+        }
+    }
+    pub fn as_val(&self) -> i64 {
+        match self {
+            TrustLevel::All => 0,
+            TrustLevel::Mesh => 1,
+            TrustLevel::Family => 2,
+            TrustLevel::None => 3,
+        }
+    }
+}
+
+/// A pending replication request from a remote peer.
+#[derive(Clone, Debug)]
+pub struct ReplicationRequest {
+    pub id: u32,
+    pub sender_id: NodeId,
+    pub sender_fitness: i64,
+    pub sender_generation: u32,
+    pub package_size: u64,
+    pub reason: String,
+    pub received_at: Instant,
+}
+
+/// An entry in the replication log.
+#[derive(Clone, Debug)]
+pub struct ReplicationLogEntry {
+    pub timestamp: u64,
+    pub direction: String, // "incoming" or "outgoing"
+    pub peer_id: NodeId,
+    pub reason: String,
+    pub result: String, // "accepted", "denied", "expired", "auto-accepted"
 }
 
 impl MeshState {
@@ -362,6 +422,12 @@ impl MeshNode {
             max_units: 10,
             spawn_intent_active: false,
             cull_intent_active: false,
+            trust_level: TrustLevel::All,
+            pending_requests: Vec::new(),
+            replication_log: Vec::new(),
+            next_request_id: 1,
+            parent_id: None,
+            children_ids: Vec::new(),
         }));
 
         // Add seed peers as tentative entries so the first heartbeat reaches them.
@@ -1019,6 +1085,171 @@ impl MeshNode {
             st.word_inbox.len(),
         )
     }
+
+    // -------------------------------------------------------------------
+    // Replication consent
+    // -------------------------------------------------------------------
+
+    pub fn set_trust_level(&self, level: TrustLevel) {
+        self.state.lock().unwrap().trust_level = level;
+    }
+
+    pub fn trust_level(&self) -> TrustLevel {
+        self.state.lock().unwrap().trust_level.clone()
+    }
+
+    /// Check if a replication from `sender` should be auto-accepted.
+    pub fn should_auto_accept(&self, sender: &NodeId) -> bool {
+        let st = self.state.lock().unwrap();
+        match st.trust_level {
+            TrustLevel::All => true,
+            TrustLevel::Mesh => st.peers.contains_key(sender),
+            TrustLevel::Family => {
+                st.parent_id.as_ref() == Some(sender)
+                    || st.children_ids.contains(sender)
+            }
+            TrustLevel::None => false,
+        }
+    }
+
+    /// Queue a replication request for manual approval.
+    pub fn queue_request(
+        &self,
+        sender: NodeId,
+        fitness: i64,
+        generation: u32,
+        size: u64,
+        reason: String,
+    ) -> u32 {
+        let mut st = self.state.lock().unwrap();
+        // Rate limit: max 3 pending per peer.
+        let from_peer = st.pending_requests.iter().filter(|r| r.sender_id == sender).count();
+        if from_peer >= 3 {
+            return 0;
+        }
+        let id = st.next_request_id;
+        st.next_request_id += 1;
+        st.pending_requests.push(ReplicationRequest {
+            id,
+            sender_id: sender,
+            sender_fitness: fitness,
+            sender_generation: generation,
+            package_size: size,
+            reason,
+            received_at: Instant::now(),
+        });
+        id
+    }
+
+    /// Accept the oldest pending request. Returns sender info if found.
+    pub fn accept_oldest(&self) -> Option<(NodeId, u32)> {
+        let mut st = self.state.lock().unwrap();
+        if st.pending_requests.is_empty() { return None; }
+        let req = st.pending_requests.remove(0);
+        self.log_replication(&mut st, "incoming", &req.sender_id, &req.reason, "accepted");
+        Some((req.sender_id, req.id))
+    }
+
+    /// Deny the oldest pending request.
+    pub fn deny_oldest(&self) -> Option<u32> {
+        let mut st = self.state.lock().unwrap();
+        if st.pending_requests.is_empty() { return None; }
+        let req = st.pending_requests.remove(0);
+        self.log_replication(&mut st, "incoming", &req.sender_id, &req.reason, "denied");
+        Some(req.id)
+    }
+
+    /// Deny all pending requests.
+    pub fn deny_all_requests(&self) -> usize {
+        let mut st = self.state.lock().unwrap();
+        let count = st.pending_requests.len();
+        let entries: Vec<ReplicationLogEntry> = st.pending_requests.iter().map(|req| {
+            ReplicationLogEntry {
+                timestamp: now_secs(),
+                direction: "incoming".into(),
+                peer_id: req.sender_id,
+                reason: req.reason.clone(),
+                result: "denied".into(),
+            }
+        }).collect();
+        for entry in entries {
+            st.replication_log.push(entry);
+        }
+        st.pending_requests.clear();
+        count
+    }
+
+    /// Expire requests older than 60 seconds.
+    pub fn expire_requests(&self) {
+        let mut st = self.state.lock().unwrap();
+        let before = st.pending_requests.len();
+        st.pending_requests.retain(|r| r.received_at.elapsed().as_secs() < 60);
+        let expired = before - st.pending_requests.len();
+        if expired > 0 {
+            st.log_event(format!("{} replication request(s) expired", expired));
+        }
+    }
+
+    /// Format pending requests for display.
+    pub fn format_requests(&self) -> String {
+        let st = self.state.lock().unwrap();
+        if st.pending_requests.is_empty() {
+            return "  (no pending requests)\n".to_string();
+        }
+        let mut out = String::new();
+        for r in &st.pending_requests {
+            let age = r.received_at.elapsed().as_secs();
+            out.push_str(&format!(
+                "  #{} from {} gen={} fitness={} size={}KB age={}s: {}\n",
+                r.id, id_to_hex(&r.sender_id), r.sender_generation,
+                r.sender_fitness, r.package_size / 1024, age, r.reason
+            ));
+        }
+        out
+    }
+
+    /// Format replication log.
+    pub fn format_replication_log(&self) -> String {
+        let st = self.state.lock().unwrap();
+        if st.replication_log.is_empty() {
+            return "  (no replication history)\n".to_string();
+        }
+        let mut out = String::new();
+        for e in st.replication_log.iter().rev().take(20) {
+            out.push_str(&format!(
+                "  {} {} {} [{}]: {}\n",
+                e.timestamp, e.direction, id_to_hex(&e.peer_id), e.result, e.reason
+            ));
+        }
+        out
+    }
+
+    fn log_replication(
+        &self,
+        st: &mut MeshState,
+        direction: &str,
+        peer: &NodeId,
+        reason: &str,
+        result: &str,
+    ) {
+        st.replication_log.push(ReplicationLogEntry {
+            timestamp: now_secs(),
+            direction: direction.into(),
+            peer_id: *peer,
+            reason: reason.into(),
+            result: result.into(),
+        });
+        if st.replication_log.len() > 100 {
+            st.replication_log.remove(0);
+        }
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,6 +1392,15 @@ fn handle_packet(
             let mut st = state.lock().unwrap();
             st.cull_intent_active = true;
             st.log_event(format!("cull intent from {}", id_to_hex(&sender_id)));
+        }
+        MSG_REPLICATE_REQUEST => {
+            handle_replicate_request(data, &mut pos, sender_id, state, socket, my_id);
+        }
+        MSG_REPLICATE_ACCEPT | MSG_REPLICATE_DENY => {
+            // Handled by the sender's send_replicate_request flow.
+            let mut st = state.lock().unwrap();
+            let result = if msg_type == MSG_REPLICATE_ACCEPT { "accepted" } else { "denied" };
+            st.log_event(format!("replication {} by {}", result, id_to_hex(&sender_id)));
         }
         _ => {} // unknown message type — ignore
     }
@@ -1814,6 +2054,81 @@ fn handle_task_result(
         task_id,
         id_to_hex(&sender_id)
     ));
+}
+
+fn handle_replicate_request(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    state: &Arc<Mutex<MeshState>>,
+    socket: &UdpSocket,
+    my_id: &NodeId,
+) {
+    let fitness = read_i64(data, pos).unwrap_or(0);
+    let generation = read_u32(data, pos).unwrap_or(0);
+    let package_size = read_u64(data, pos).unwrap_or(0);
+    let reason_len = read_u16(data, pos).unwrap_or(0) as usize;
+    let reason = read_bytes(data, pos, reason_len)
+        .map(|b| String::from_utf8_lossy(&b).to_string())
+        .unwrap_or_default();
+
+    // Reject if > 100MB.
+    if package_size > 100_000_000 {
+        let mut st = state.lock().unwrap();
+        st.log_event(format!("rejected oversized replication from {} ({}MB)", id_to_hex(&sender_id), package_size / 1_000_000));
+        return;
+    }
+
+    let mut st = state.lock().unwrap();
+
+    // Check trust level.
+    let auto_accept = match st.trust_level {
+        TrustLevel::All => true,
+        TrustLevel::Mesh => st.peers.contains_key(&sender_id),
+        TrustLevel::Family => {
+            st.parent_id.as_ref() == Some(&sender_id)
+                || st.children_ids.contains(&sender_id)
+        }
+        TrustLevel::None => false,
+    };
+
+    if auto_accept {
+        let trust_label = st.trust_level.label().to_string();
+        st.log_event(format!(
+            "[auto-accepted from {} (trust: {})]",
+            id_to_hex(&sender_id), trust_label
+        ));
+        // Send accept response.
+        let port = st.port;
+        drop(st);
+        let mut buf = Vec::with_capacity(HEADER_SIZE);
+        encode_header(&mut buf, MSG_REPLICATE_ACCEPT, my_id, port);
+        if let Some(peer) = state.lock().unwrap().peers.get(&sender_id) {
+            let _ = socket.send_to(&buf, peer.addr);
+        }
+    } else {
+        // Queue for manual approval.
+        let from_peer = st.pending_requests.iter().filter(|r| r.sender_id == sender_id).count();
+        if from_peer >= 3 {
+            st.log_event(format!("rate-limited replication from {}", id_to_hex(&sender_id)));
+            return;
+        }
+        let rid = st.next_request_id;
+        st.next_request_id += 1;
+        st.pending_requests.push(ReplicationRequest {
+            id: rid,
+            sender_id,
+            sender_fitness: fitness,
+            sender_generation: generation,
+            package_size,
+            reason: reason.clone(),
+            received_at: Instant::now(),
+        });
+        st.log_event(format!(
+            "[replication request #{} from {} (gen {}, fitness {}, {}KB) — ACCEPT or DENY]",
+            rid, id_to_hex(&sender_id), generation, fitness, package_size / 1024
+        ));
+    }
 }
 
 fn handle_word_share(

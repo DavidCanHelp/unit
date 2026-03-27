@@ -193,6 +193,17 @@ pub(crate) const P_AUTO_CULL_TOGGLE: usize = 337;
 pub(crate) const P_MIN_UNITS: usize = 338;
 pub(crate) const P_MAX_UNITS: usize = 339;
 pub(crate) const P_SWARM_STATUS: usize = 340;
+// Replication consent
+pub(crate) const P_TRUST_ALL_LEVEL: usize = 350;
+pub(crate) const P_TRUST_MESH: usize = 351;
+pub(crate) const P_TRUST_FAMILY: usize = 352;
+pub(crate) const P_TRUST_NONE_LEVEL: usize = 353;
+pub(crate) const P_TRUST_LEVEL: usize = 354;
+pub(crate) const P_REQUESTS: usize = 355;
+pub(crate) const P_ACCEPT_REQ: usize = 356;
+pub(crate) const P_DENY_REQ: usize = 357;
+pub(crate) const P_DENY_ALL_REQ: usize = 358;
+pub(crate) const P_REPLICATION_LOG: usize = 359;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -485,6 +496,17 @@ impl VM {
             ("MIN-UNITS", P_MIN_UNITS, false),
             ("MAX-UNITS", P_MAX_UNITS, false),
             ("SWARM-STATUS", P_SWARM_STATUS, false),
+            // Replication consent
+            ("TRUST-ALL", P_TRUST_ALL_LEVEL, false),
+            ("TRUST-MESH", P_TRUST_MESH, false),
+            ("TRUST-FAMILY", P_TRUST_FAMILY, false),
+            ("TRUST-NONE", P_TRUST_NONE_LEVEL, false),
+            ("TRUST-LEVEL", P_TRUST_LEVEL, false),
+            ("REQUESTS", P_REQUESTS, false),
+            ("ACCEPT", P_ACCEPT_REQ, false),
+            ("DENY", P_DENY_REQ, false),
+            ("DENY-ALL", P_DENY_ALL_REQ, false),
+            ("REPLICATION-LOG", P_REPLICATION_LOG, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -879,6 +901,17 @@ impl VM {
             P_MIN_UNITS => self.prim_min_units(),
             P_MAX_UNITS => self.prim_max_units(),
             P_SWARM_STATUS => self.prim_swarm_status(),
+            // Replication consent
+            P_TRUST_ALL_LEVEL => self.prim_trust_all_level(),
+            P_TRUST_MESH => self.prim_trust_mesh(),
+            P_TRUST_FAMILY => self.prim_trust_family(),
+            P_TRUST_NONE_LEVEL => self.prim_trust_none_level(),
+            P_TRUST_LEVEL => self.prim_trust_level(),
+            P_REQUESTS => self.prim_requests(),
+            P_ACCEPT_REQ => self.prim_accept_req(),
+            P_DENY_REQ => self.prim_deny_req(),
+            P_DENY_ALL_REQ => self.prim_deny_all_req(),
+            P_REPLICATION_LOG => self.prim_replication_log(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),
