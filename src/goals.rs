@@ -13,8 +13,8 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::mesh::{id_to_hex, NodeId};
-use super::Cell;
+use crate::mesh::{id_to_hex, NodeId};
+use crate::types::Cell;
 
 // ---------------------------------------------------------------------------
 // Types

@@ -253,21 +253,33 @@ add TLS support for full Chrome compatibility.
 make build-wasm    # browser REPL in web/
 ```
 
+## Testing
+
+```sh
+cargo test          # 69 Rust unit tests
+./tests/integration.sh  # 104 bash integration tests
+```
+
 ## Architecture
 
-Zero external dependencies. ~6500 lines of Rust + Forth.
+Zero external dependencies. ~9000 lines of Rust + Forth.
 
 ```
-src/main.rs       — Forth VM, REPL, ~150 primitives
-src/mesh.rs       — UDP gossip, consensus, replication
-src/goals.rs      — Goals, tasks, decomposition
-src/monitor.rs    — Watches, alerts, dashboard, scheduler
-src/spawn.rs      — Self-replication, package format
-src/persist.rs    — State serialization, snapshots
-src/io_words.rs   — File, HTTP, shell operations
-src/mutation.rs   — Self-mutation engine
-src/fitness.rs    — Fitness tracking, evolution
-src/platform.rs   — Platform abstraction traits
+src/
+├── main.rs              — VM struct, REPL, primitive dispatch
+├── types.rs             — shared types: Cell, Entry, Instruction
+├── mesh.rs              — UDP gossip, consensus, replication
+├── goals.rs             — goal registry, task management
+├── persist.rs           — state serialization, snapshots
+├── spawn.rs             — self-replication, package format
+├── features/
+│   ├── io_words.rs      — file, HTTP, shell operations
+│   ├── mutation.rs      — self-mutation engine
+│   ├── fitness.rs       — fitness tracking, evolution
+│   ├── monitor.rs       — watches, alerts, dashboard, scheduler
+│   └── ws_bridge.rs     — WebSocket bridge for browser units
+├── platform.rs          — native/WASM abstraction
+└── wasm_entry.rs        — WASM FFI entry point
 ```
 
 ## License

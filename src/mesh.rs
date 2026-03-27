@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::fitness::PeerFitness;
-use super::goals::{Goal, GoalId, GoalRegistry, GoalStatus, Task, TaskId, TaskResult, TaskStatus};
-use super::{Cell, Entry, Instruction};
+use crate::features::fitness::PeerFitness;
+use crate::goals::{Goal, GoalId, GoalRegistry, GoalStatus, Task, TaskId, TaskResult, TaskStatus};
+use crate::types::{Cell, Entry, Instruction};
 
 // ---------------------------------------------------------------------------
 // Constants

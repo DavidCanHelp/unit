@@ -5,7 +5,7 @@
 // strategies from fitter peers; units above average experiment with
 // mutations.
 
-use super::mesh::{id_to_hex, NodeId};
+use crate::mesh::{id_to_hex, NodeId};
 
 // ---------------------------------------------------------------------------
 // Fitness tracker

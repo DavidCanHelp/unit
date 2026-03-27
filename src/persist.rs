@@ -9,10 +9,10 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{Cell, Entry, Instruction};
-use super::fitness::FitnessTracker;
-use super::goals::{Goal, GoalRegistry, GoalStatus, Task, TaskResult, TaskStatus};
-use super::mesh::NodeId;
+use crate::types::{Cell, Entry, Instruction};
+use crate::features::fitness::FitnessTracker;
+use crate::goals::{Goal, GoalRegistry, GoalStatus, Task, TaskResult, TaskStatus};
+use crate::mesh::NodeId;
 
 const PERSIST_MAGIC: &[u8; 4] = b"USAV";
 const PERSIST_VERSION: u8 = 1;

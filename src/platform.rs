@@ -62,34 +62,34 @@ impl NativePlatform {
 #[cfg(not(target_arch = "wasm32"))]
 impl Platform for NativePlatform {
     fn file_read(&self, path: &str) -> Result<Vec<u8>, String> {
-        crate::io_words::file_read(path)
+        crate::features::io_words::file_read(path)
     }
     fn file_write(&self, path: &str, data: &[u8]) -> Result<(), String> {
-        crate::io_words::file_write(path, data)
+        crate::features::io_words::file_write(path, data)
     }
     fn file_exists(&self, path: &str) -> bool {
-        crate::io_words::file_exists(path)
+        crate::features::io_words::file_exists(path)
     }
     fn file_list(&self, path: &str) -> Result<Vec<String>, String> {
-        crate::io_words::file_list(path)
+        crate::features::io_words::file_list(path)
     }
     fn file_delete(&self, path: &str) -> Result<(), String> {
-        crate::io_words::file_delete(path)
+        crate::features::io_words::file_delete(path)
     }
     fn http_get(&self, url: &str) -> Result<(Vec<u8>, u16), String> {
-        crate::io_words::http_get(url)
+        crate::features::io_words::http_get(url)
     }
     fn http_post(&self, url: &str, body: &[u8]) -> Result<(Vec<u8>, u16), String> {
-        crate::io_words::http_post(url, body)
+        crate::features::io_words::http_post(url, body)
     }
     fn shell_exec(&self, cmd: &str) -> Result<(Vec<u8>, i32), String> {
-        crate::io_words::shell_exec(cmd)
+        crate::features::io_words::shell_exec(cmd)
     }
     fn env_var(&self, name: &str) -> Option<String> {
-        crate::io_words::env_var(name)
+        crate::features::io_words::env_var(name)
     }
     fn timestamp(&self) -> i64 {
-        crate::io_words::timestamp()
+        crate::features::io_words::timestamp()
     }
     fn sleep_ms(&self, ms: u64) {
         std::thread::sleep(std::time::Duration::from_millis(ms));

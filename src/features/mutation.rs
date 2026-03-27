@@ -12,7 +12,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{Entry, Instruction};
+use crate::types::{Entry, Instruction};
 
 // ---------------------------------------------------------------------------
 // Simple RNG (LCG — Knuth's constants)

@@ -334,9 +334,9 @@ fn handle_ws_client(
 fn serve_http(stream: &mut TcpStream, request: &str) {
     let path = request.split_whitespace().nth(1).unwrap_or("/");
     let (content_type, body) = match path {
-        "/" | "/index.html" => ("text/html; charset=utf-8", &include_bytes!("../web/index.html")[..]),
-        "/unit.js" => ("application/javascript; charset=utf-8", &include_bytes!("../web/unit.js")[..]),
-        "/unit.wasm" => ("application/wasm", &include_bytes!("../web/unit.wasm")[..]),
+        "/" | "/index.html" => ("text/html; charset=utf-8", &include_bytes!("../../web/index.html")[..]),
+        "/unit.js" => ("application/javascript; charset=utf-8", &include_bytes!("../../web/unit.js")[..]),
+        "/unit.wasm" => ("application/wasm", &include_bytes!("../../web/unit.wasm")[..]),
         _ => {
             let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
             let _ = stream.write_all(resp.as_bytes());
@@ -372,7 +372,7 @@ fn handle_ws_upgrade(
     };
 
     // Extract Origin for CORS.
-    let origin = request
+    let _origin = request
         .lines()
         .find(|l| l.to_lowercase().starts_with("origin:"))
         .and_then(|l| l.splitn(2, ':').nth(1))
