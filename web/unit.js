@@ -112,7 +112,7 @@ class MeshClient {
 
     this.ws.onerror = (e) => {
       console.error('[mesh] WebSocket error:', e);
-      this.onStatusChange('error', 'connection failed');
+      this.onStatusChange('error', 'ws:// blocked — use Firefox or Chrome --disable-features=PrivateNetworkAccessRespectPreflightResults');
     };
   }
 

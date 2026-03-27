@@ -312,8 +312,6 @@ fn handle_ws_client(
         _ => return,
     };
     let request = String::from_utf8_lossy(&buf[..n]).to_string();
-
-    // If this is a regular HTTP GET (no Upgrade header), serve the web UI.
     let is_upgrade = request.lines().any(|l| l.to_lowercase().contains("upgrade: websocket"));
 
     // Handle OPTIONS preflight (CORS / Private Network Access).
@@ -438,7 +436,7 @@ fn handle_ws_upgrade(
         // Read from client.
         let mut tmp = [0u8; 4096];
         match stream.read(&mut tmp) {
-            Ok(0) => break, // disconnected
+            Ok(0) => break,
             Ok(n) => {
                 read_buf.extend_from_slice(&tmp[..n]);
                 // Try to decode frames.
@@ -452,8 +450,9 @@ fn handle_ws_upgrade(
                     handle_browser_message(&text, &client_id, &tx, &state);
                 }
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Timeout — no data, check if we should push mesh state.
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut => {
+                // Timeout — no data, this is normal.
             }
             Err(_) => break,
         }

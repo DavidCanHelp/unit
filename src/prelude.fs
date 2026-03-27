@@ -51,6 +51,6 @@
 : OPS      ( -- ) DASHBOARD ALERTS SCHEDULE ;
 
 \ --- Boot ---
-." unit v0.8.1 — seed online" CR
+." unit v0.8.2 — seed online" CR
 MESH-HELLO
 AUTO-CLAIM

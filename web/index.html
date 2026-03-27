@@ -154,7 +154,8 @@
       wsBtn.textContent = 'Disconnect';
     } else {
       meshDot.className = 'dot dot-off';
-      meshStatusEl.textContent = detail ? `mesh: ${detail}` : 'mesh: offline';
+      let msg = detail ? detail : 'offline';
+      meshStatusEl.textContent = `mesh: ${msg.substring(0, 60)}`;
       wsBtn.textContent = 'Connect';
     }
   }
