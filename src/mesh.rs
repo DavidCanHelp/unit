@@ -46,9 +46,17 @@ const MSG_DATA: u8 = 6;
 const MSG_GOAL_BROADCAST: u8 = 7;
 const MSG_TASK_CLAIM: u8 = 8;
 const MSG_TASK_RESULT: u8 = 9;
+const MSG_WORD_SHARE: u8 = 10;
+const MSG_DISCOVERY_BEACON: u8 = 11;
+const MSG_SPAWN_INTENT: u8 = 12;
+const MSG_CULL_INTENT: u8 = 13;
 
 // Wire format magic.
 const MAGIC: &[u8; 4] = b"UNIT";
+
+// Discovery beacon port (all units listen on this for LAN discovery).
+const DISCOVERY_PORT: u16 = 4200;
+const DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Node identity
@@ -251,6 +259,29 @@ pub(crate) struct MeshState {
     auto_replicate_needed: bool,
     /// Flag to stop the network thread.
     running: bool,
+    // --- Swarm autonomy ---
+    /// Words shared from peers: (name, origin_id).
+    pub(crate) shared_words: Vec<(String, NodeId)>,
+    /// Pending word shares from network thread → VM thread.
+    pub(crate) word_inbox: VecDeque<SharedWord>,
+    /// Swarm configuration.
+    pub(crate) auto_discover: bool,
+    pub(crate) auto_share: bool,
+    pub(crate) auto_spawn: bool,
+    pub(crate) auto_cull: bool,
+    pub(crate) min_units: usize,
+    pub(crate) max_units: usize,
+    /// Pending spawn/cull intents from peers (for coordination).
+    pub(crate) spawn_intent_active: bool,
+    pub(crate) cull_intent_active: bool,
+}
+
+/// A word definition received from a peer.
+#[derive(Clone, Debug)]
+pub struct SharedWord {
+    pub name: String,
+    pub body_source: String, // Forth source to compile
+    pub origin: NodeId,
 }
 
 impl MeshState {
@@ -321,6 +352,16 @@ impl MeshNode {
             fitness: 0,
             auto_replicate_needed: false,
             running: true,
+            shared_words: Vec::new(),
+            word_inbox: VecDeque::new(),
+            auto_discover: true,
+            auto_share: false,
+            auto_spawn: false,
+            auto_cull: false,
+            min_units: 1,
+            max_units: 10,
+            spawn_intent_active: false,
+            cull_intent_active: false,
         }));
 
         // Add seed peers as tentative entries so the first heartbeat reaches them.
@@ -366,6 +407,9 @@ impl MeshNode {
                 Ok(rx) => (Some(rx), repl_tcp_port),
                 Err(_) => (None, 0),
             };
+
+        // Start discovery beacon listener (best effort — port may be in use).
+        Self::start_discovery_listener(Arc::clone(&state), id);
 
         Ok(MeshNode {
             id,
@@ -815,6 +859,166 @@ impl MeshNode {
             })
             .collect()
     }
+
+    // -------------------------------------------------------------------
+    // Discovery
+    // -------------------------------------------------------------------
+
+    /// Send a discovery beacon via UDP broadcast.
+    pub fn send_discovery_beacon(&self) {
+        let st = self.state.lock().unwrap();
+        if !st.auto_discover {
+            return;
+        }
+        let port = st.port;
+        drop(st);
+
+        let mut buf = Vec::with_capacity(HEADER_SIZE + 2);
+        encode_header(&mut buf, MSG_DISCOVERY_BEACON, &self.id, port);
+        // Broadcast to the discovery port on the local network.
+        let broadcast_addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", DISCOVERY_PORT).parse().unwrap();
+        let _ = self.socket.send_to(&buf, broadcast_addr);
+    }
+
+    /// Start a discovery listener on the shared beacon port.
+    pub fn start_discovery_listener(
+        state: Arc<Mutex<MeshState>>,
+        my_id: NodeId,
+    ) {
+        let addr = format!("0.0.0.0:{}", DISCOVERY_PORT);
+        let sock = match UdpSocket::bind(&addr) {
+            Ok(s) => s,
+            Err(_) => return, // port already in use (another unit is listening)
+        };
+        sock.set_read_timeout(Some(Duration::from_millis(500))).ok();
+        // Allow multiple units to bind (SO_REUSEADDR is set by default on some OSes).
+
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 256];
+            loop {
+                {
+                    let st = state.lock().unwrap();
+                    if !st.running { return; }
+                }
+                if let Ok((len, src)) = sock.recv_from(&mut buf) {
+                    if len < HEADER_SIZE { continue; }
+                    if &buf[0..4] != MAGIC { continue; }
+                    let msg_type = buf[4];
+                    if msg_type != MSG_DISCOVERY_BEACON { continue; }
+                    let mut sender_id = [0u8; 8];
+                    sender_id.copy_from_slice(&buf[5..13]);
+                    if sender_id == my_id { continue; } // ignore own beacon
+                    let sender_port = u16::from_be_bytes([buf[13], buf[14]]);
+                    let peer_addr: std::net::SocketAddr =
+                        format!("{}:{}", src.ip(), sender_port).parse().unwrap();
+
+                    let mut st = state.lock().unwrap();
+                    if !st.peers.contains_key(&sender_id) {
+                        st.peers.insert(sender_id, PeerInfo {
+                            addr: peer_addr,
+                            id: sender_id,
+                            load: 0,
+                            capacity: 0,
+                            peer_count: 0,
+                            fitness: 0,
+                            last_seen: Instant::now(),
+                        });
+                        st.log_event(format!(
+                            "discovered {} via beacon @ {}",
+                            id_to_hex(&sender_id), peer_addr
+                        ));
+                    }
+                }
+            }
+        });
+    }
+
+    // -------------------------------------------------------------------
+    // Word sharing
+    // -------------------------------------------------------------------
+
+    /// Broadcast a word definition to all peers.
+    pub fn share_word(&self, name: &str, source: &str) {
+        let st = self.state.lock().unwrap();
+        let port = st.port;
+        let peers: Vec<std::net::SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        drop(st);
+
+        let mut buf = Vec::with_capacity(HEADER_SIZE + 4 + name.len() + source.len());
+        encode_header(&mut buf, MSG_WORD_SHARE, &self.id, port);
+        let nb = name.as_bytes();
+        write_u16(&mut buf, nb.len() as u16);
+        write_bytes(&mut buf, nb);
+        let sb = source.as_bytes();
+        write_u16(&mut buf, sb.len() as u16);
+        write_bytes(&mut buf, sb);
+        for addr in &peers {
+            let _ = self.socket.send_to(&buf, addr);
+        }
+    }
+
+    /// Receive pending shared words (called by VM to compile them).
+    pub fn recv_shared_words(&self) -> Vec<SharedWord> {
+        let mut st = self.state.lock().unwrap();
+        st.word_inbox.drain(..).collect()
+    }
+
+    /// Get list of words shared from peers.
+    pub fn shared_words_list(&self) -> Vec<(String, String)> {
+        let st = self.state.lock().unwrap();
+        st.shared_words
+            .iter()
+            .map(|(name, origin)| (name.clone(), id_to_hex(origin)))
+            .collect()
+    }
+
+    // -------------------------------------------------------------------
+    // Swarm autonomy
+    // -------------------------------------------------------------------
+
+    /// Check if autonomous spawning should be triggered.
+    pub fn should_auto_spawn(&self) -> bool {
+        let st = self.state.lock().unwrap();
+        if !st.auto_spawn { return false; }
+        let units = st.peers.len() + 1;
+        if units >= st.max_units { return false; }
+        let pending = st.goals.pending_task_count();
+        pending > units
+    }
+
+    /// Check if this unit should autonomously cull itself.
+    pub fn should_auto_cull(&self) -> bool {
+        let st = self.state.lock().unwrap();
+        if !st.auto_cull { return false; }
+        let units = st.peers.len() + 1;
+        if units <= st.min_units { return false; }
+        // Cull if fitness is below mesh average.
+        let my_fitness = st.fitness;
+        let total: i64 = st.peers.values().map(|p| p.fitness).sum::<i64>() + my_fitness;
+        let avg = total / units as i64;
+        my_fitness < avg - 10 // only cull if significantly below average
+    }
+
+    /// Format swarm status.
+    pub fn format_swarm_status(&self) -> String {
+        let st = self.state.lock().unwrap();
+        let units = st.peers.len() + 1;
+        format!(
+            "--- swarm status ---\n\
+             units: {}/{}-{}\n\
+             auto-discover: {} auto-share: {} auto-spawn: {} auto-cull: {}\n\
+             shared words: {} pending word inbox: {}\n\
+             ---\n",
+            units, st.min_units, st.max_units,
+            if st.auto_discover { "ON" } else { "OFF" },
+            if st.auto_share { "ON" } else { "OFF" },
+            if st.auto_spawn { "ON" } else { "OFF" },
+            if st.auto_cull { "ON" } else { "OFF" },
+            st.shared_words.len(),
+            st.word_inbox.len(),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +1059,18 @@ fn network_thread(socket: UdpSocket, state: Arc<Mutex<MeshState>>, my_id: NodeId
 
         // Check if goal load warrants auto-replication.
         check_auto_replication(&state);
+
+        // Send discovery beacon periodically.
+        if last_heartbeat.elapsed() >= DISCOVERY_INTERVAL {
+            let st = state.lock().unwrap();
+            if st.auto_discover {
+                let port = st.port;
+                drop(st);
+                let mut buf = Vec::with_capacity(HEADER_SIZE);
+                encode_header(&mut buf, MSG_DISCOVERY_BEACON, &my_id, port);
+                let _ = socket.send_to(&buf, format!("127.0.0.1:{}", DISCOVERY_PORT));
+            }
+        }
     }
 }
 
@@ -934,6 +1150,18 @@ fn handle_packet(
         MSG_GOAL_BROADCAST => handle_goal_broadcast(data, &mut pos, sender_id, state),
         MSG_TASK_CLAIM => handle_task_claim(data, &mut pos, sender_id, state),
         MSG_TASK_RESULT => handle_task_result(data, &mut pos, sender_id, state),
+        MSG_WORD_SHARE => handle_word_share(data, &mut pos, sender_id, state),
+        MSG_DISCOVERY_BEACON => {} // handled by discovery listener
+        MSG_SPAWN_INTENT => {
+            let mut st = state.lock().unwrap();
+            st.spawn_intent_active = true;
+            st.log_event(format!("spawn intent from {}", id_to_hex(&sender_id)));
+        }
+        MSG_CULL_INTENT => {
+            let mut st = state.lock().unwrap();
+            st.cull_intent_active = true;
+            st.log_event(format!("cull intent from {}", id_to_hex(&sender_id)));
+        }
         _ => {} // unknown message type — ignore
     }
 }
@@ -1586,6 +1814,45 @@ fn handle_task_result(
         task_id,
         id_to_hex(&sender_id)
     ));
+}
+
+fn handle_word_share(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    state: &Arc<Mutex<MeshState>>,
+) {
+    let name_len = match read_u16(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let name_bytes = match read_bytes(data, pos, name_len) {
+        Some(v) => v,
+        None => return,
+    };
+    let name = String::from_utf8_lossy(&name_bytes).to_string();
+    let source_len = match read_u16(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let source_bytes = match read_bytes(data, pos, source_len) {
+        Some(v) => v,
+        None => return,
+    };
+    let source = String::from_utf8_lossy(&source_bytes).to_string();
+
+    let mut st = state.lock().unwrap();
+    // Don't re-add if we already have this shared word.
+    if st.shared_words.iter().any(|(n, _)| n == &name) {
+        return;
+    }
+    st.word_inbox.push_back(SharedWord {
+        name: name.clone(),
+        body_source: source,
+        origin: sender_id,
+    });
+    st.shared_words.push((name.clone(), sender_id));
+    st.log_event(format!("received word '{}' from {}", name, id_to_hex(&sender_id)));
 }
 
 /// Check if goal load warrants auto-replication.

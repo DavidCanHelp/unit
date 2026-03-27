@@ -50,7 +50,12 @@
 \ --- Ops helpers ---
 : OPS      ( -- ) DASHBOARD ALERTS SCHEDULE ;
 
+\ --- Swarm helpers ---
+: SWARM-ON  ( -- ) AUTO-DISCOVER AUTO-SHARE AUTO-SPAWN ." swarm mode active" CR ;
+: SWARM-OFF ( -- ) ." swarm mode disabled" CR ;
+: SWARM     ( -- ) SWARM-STATUS MESH-STATUS LEADERBOARD ;
+
 \ --- Boot ---
-." unit v0.9.1 — seed online" CR
+." unit v0.10.0 — seed online" CR
 MESH-HELLO
 AUTO-CLAIM

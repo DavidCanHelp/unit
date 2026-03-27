@@ -135,6 +135,59 @@ UNIT_PORT=4203 UNIT_PEERS=127.0.0.1:4201 ./target/release/unit
 85
 ```
 
+## Swarm Intelligence
+
+Units discover each other automatically, share knowledge, and self-scale.
+
+```
+> SWARM-ON
+auto-discover: ON
+auto-share: ON
+auto-spawn: ON
+swarm mode active
+```
+
+After `SWARM-ON`, units on the same machine find each other via UDP
+broadcast on port 4200. No `UNIT_PEERS` needed.
+
+| Word           | Description                                   |
+|----------------|-----------------------------------------------|
+| `SWARM-ON`     | Enable discovery + sharing + auto-spawn       |
+| `SWARM-STATUS` | Show swarm configuration and state            |
+| `DISCOVER`     | Send discovery beacon manually                |
+| `AUTO-DISCOVER`| Toggle auto-discovery (default: ON)           |
+| `SHARE" name"` | Share a word definition with all peers         |
+| `SHARE-ALL`    | Share all non-kernel words                    |
+| `AUTO-SHARE`   | Toggle automatic word sharing                 |
+| `SHARED-WORDS` | List words received from peers                |
+| `AUTO-SPAWN`   | Toggle autonomous spawning on overload        |
+| `AUTO-CULL`    | Toggle autonomous culling of low-fitness units|
+| `MIN-UNITS`    | `( n -- )` set minimum swarm size             |
+| `MAX-UNITS`    | `( n -- )` set maximum swarm size             |
+
+### Zero-config demo
+
+```sh
+# Terminal 1: start a unit
+UNIT_PORT=4201 cargo run
+> SWARM-ON
+
+# Terminal 2: start another unit — they find each other automatically
+UNIT_PORT=4202 cargo run
+> SWARM-ON
+> PEERS .
+1
+
+# Define a word on terminal 1 — it appears on terminal 2
+# Terminal 1:
+> : CUBE DUP DUP * * ;
+> SHARE" CUBE"
+
+# Terminal 2:
+> 3 CUBE .
+27
+```
+
 ## Mesh Networking
 
 UDP gossip with consensus-based replication.

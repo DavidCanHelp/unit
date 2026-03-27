@@ -3,7 +3,7 @@
 // These are the minimum words a Forth needs: stack manipulation,
 // arithmetic, memory access, I/O, and debugging.
 
-use crate::types::{Cell, Entry, Instruction};
+use crate::types::{Cell, Instruction};
 use std::io::{self, Read, Write};
 
 impl super::VM {

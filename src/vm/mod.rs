@@ -181,6 +181,18 @@ pub(crate) const P_WS_STATUS: usize = 320;
 pub(crate) const P_WS_CLIENTS: usize = 321;
 pub(crate) const P_WS_PORT: usize = 322;
 pub(crate) const P_WS_BROADCAST: usize = 323;
+// Swarm
+pub(crate) const P_DISCOVER: usize = 330;
+pub(crate) const P_AUTO_DISCOVER: usize = 331;
+pub(crate) const P_SHARE_WORD: usize = 332;
+pub(crate) const P_SHARE_ALL: usize = 333;
+pub(crate) const P_AUTO_SHARE: usize = 334;
+pub(crate) const P_SHARED_WORDS: usize = 335;
+pub(crate) const P_AUTO_SPAWN_TOGGLE: usize = 336;
+pub(crate) const P_AUTO_CULL_TOGGLE: usize = 337;
+pub(crate) const P_MIN_UNITS: usize = 338;
+pub(crate) const P_MAX_UNITS: usize = 339;
+pub(crate) const P_SWARM_STATUS: usize = 340;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -461,6 +473,18 @@ impl VM {
             ("WS-CLIENTS", P_WS_CLIENTS, false),
             ("WS-PORT", P_WS_PORT, false),
             ("WS-BROADCAST\"", P_WS_BROADCAST, true),
+            // Swarm
+            ("DISCOVER", P_DISCOVER, false),
+            ("AUTO-DISCOVER", P_AUTO_DISCOVER, false),
+            ("SHARE\"", P_SHARE_WORD, true),
+            ("SHARE-ALL", P_SHARE_ALL, false),
+            ("AUTO-SHARE", P_AUTO_SHARE, false),
+            ("SHARED-WORDS", P_SHARED_WORDS, false),
+            ("AUTO-SPAWN", P_AUTO_SPAWN_TOGGLE, false),
+            ("AUTO-CULL", P_AUTO_CULL_TOGGLE, false),
+            ("MIN-UNITS", P_MIN_UNITS, false),
+            ("MAX-UNITS", P_MAX_UNITS, false),
+            ("SWARM-STATUS", P_SWARM_STATUS, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -843,6 +867,18 @@ impl VM {
                 self.stack.push(port);
             }
             P_WS_BROADCAST => self.prim_ws_broadcast(),
+            // Swarm
+            P_DISCOVER => self.prim_discover(),
+            P_AUTO_DISCOVER => self.prim_auto_discover(),
+            P_SHARE_WORD => self.prim_share_word(),
+            P_SHARE_ALL => self.prim_share_all(),
+            P_AUTO_SHARE => self.prim_auto_share(),
+            P_SHARED_WORDS => self.prim_shared_words(),
+            P_AUTO_SPAWN_TOGGLE => self.prim_auto_spawn(),
+            P_AUTO_CULL_TOGGLE => self.prim_auto_cull(),
+            P_MIN_UNITS => self.prim_min_units(),
+            P_MAX_UNITS => self.prim_max_units(),
+            P_SWARM_STATUS => self.prim_swarm_status(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

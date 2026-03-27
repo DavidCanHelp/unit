@@ -708,3 +708,30 @@ fn eval_top(vm: &mut VM, input: &str) -> Cell {
         eval(&mut vm, ": FIB DUP 2 < IF DROP 1 ELSE DUP 1 - RECURSE SWAP 2 - RECURSE + THEN ;");
         assert_eq!(eval_top(&mut vm, "10 FIB"), 89);
     }
+
+    // -----------------------------------------------------------------------
+    // Swarm tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_swarm_status_word() {
+        let mut vm = test_vm();
+        let out = eval(&mut vm, "SWARM-STATUS");
+        // Without mesh, shows offline
+        assert!(out.contains("offline") || out.contains("swarm"));
+    }
+
+    #[test]
+    fn test_shared_words_empty() {
+        let mut vm = test_vm();
+        let out = eval(&mut vm, "SHARED-WORDS");
+        // With no mesh, output is empty (graceful offline behavior).
+        assert!(out.is_empty() || out.contains("no shared"));
+    }
+
+    #[test]
+    fn test_swarm_on_word() {
+        let mut vm = test_vm();
+        let out = eval(&mut vm, "SWARM-ON");
+        assert!(out.contains("swarm mode"));
+    }
