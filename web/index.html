@@ -156,20 +156,84 @@ function emitParticle(fromId, toId, color) {
 }
 
 function updateMeshState(data) {
-  // data: {id, peers, fitness, browsers, goals}
   vizConnected = true;
   if (vizSim) { stopSimulation(); vizNodes = []; vizEdges = []; }
-  vizStats.peers = data.peers || 0;
-  vizStats.fitness = data.fitness || 0;
-  addNode(data.id || 'self', '#00ff88', data.fitness || 0);
-  // Peers come as count only — create placeholder nodes if needed.
-  const peerCount = (data.peers || 0) + (data.browsers || 0);
-  while (vizNodes.length - 1 < peerCount) {
-    const pid = 'peer-' + Math.random().toString(16).substring(2,8);
-    addNode(pid, '#00ccff', Math.floor(Math.random() * 50));
-    vizEdges.push({ from: vizNodes[0].id, to: pid });
+
+  const selfId = data.self_id || data.id || 'self';
+  const selfFitness = data.self_fitness || data.fitness || 0;
+  vizStats.fitness = selfFitness;
+
+  // Self node.
+  addNode(selfId, '#00ff88', selfFitness);
+  const selfNode = vizNodes.find(n => n.id === selfId);
+  if (selfNode) { selfNode.label = 'self'; selfNode.color = '#00ff88'; }
+
+  // Track which peers are current.
+  const currentIds = new Set([selfId]);
+
+  // Peers array (rich data).
+  if (Array.isArray(data.peers)) {
+    vizStats.peers = data.peers.length;
+    for (const p of data.peers) {
+      const pid = p.id || p;
+      currentIds.add(pid);
+      addNode(pid, '#00ccff', p.fitness || 0);
+      // Ensure edge exists.
+      if (!vizEdges.find(e => (e.from===selfId && e.to===pid) || (e.from===pid && e.to===selfId))) {
+        vizEdges.push({ from: selfId, to: pid });
+      }
+    }
+  } else if (typeof data.peers === 'number') {
+    vizStats.peers = data.peers;
   }
-  vizLabel.textContent = '';
+
+  // Children.
+  if (Array.isArray(data.children)) {
+    for (const c of data.children) {
+      currentIds.add(c.id);
+      addNode(c.id, '#88ffcc', 0);
+      const cn = vizNodes.find(n => n.id === c.id);
+      if (cn) cn.label = 'child';
+      if (!vizEdges.find(e => e.from===selfId && e.to===c.id)) {
+        vizEdges.push({ from: selfId, to: c.id });
+      }
+    }
+  }
+
+  // Fade out nodes no longer present.
+  for (const n of vizNodes) {
+    if (!currentIds.has(n.id)) n.alpha = Math.max(0, n.alpha - 0.05);
+  }
+  vizNodes = vizNodes.filter(n => n.alpha > 0.01);
+  vizEdges = vizEdges.filter(e => vizNodes.find(n=>n.id===e.from) && vizNodes.find(n=>n.id===e.to));
+
+  // Goals stats.
+  if (data.goals && typeof data.goals === 'object') {
+    vizStats.goals = `${data.goals.completed||0}/${data.goals.total||0}`;
+  }
+  vizStats.watches = data.watch_count || 0;
+
+  // Process recent events → particles.
+  if (Array.isArray(data.recent_events)) {
+    for (const evt of data.recent_events) {
+      if (typeof evt === 'string') {
+        if (evt.includes('goal') && evt.includes('created')) emitParticle(selfId, selfId, '#ff8800');
+        if (evt.includes('claimed')) {
+          const peer = vizNodes.find(n => n.id !== selfId);
+          if (peer) emitParticle(selfId, peer.id, '#ffcc00');
+        }
+        if (evt.includes('completed') && !evt.includes('goal')) {
+          const peer = vizNodes.find(n => n.id !== selfId);
+          if (peer) emitParticle(peer.id, selfId, '#00ff88');
+        }
+        if (evt.includes('discovered')) {
+          for (const n of vizNodes) n.pulse = 1.3;
+        }
+      }
+    }
+  }
+
+  vizLabel.textContent = `connected to ${selfId.substring(0,8)}`;
 }
 
 // Physics + render loop
@@ -250,7 +314,9 @@ function vizTick() {
 
   // Stats
   ctx.fillStyle = '#333'; ctx.font = '10px monospace'; ctx.textAlign = 'left';
-  ctx.fillText(`peers: ${vizStats.peers} | nodes: ${vizNodes.length} | fitness: ${vizStats.fitness}`, 8, H - 6);
+  const gs = vizStats.goals || '0/0';
+  const ws = vizStats.watches || 0;
+  ctx.fillText(`peers: ${vizStats.peers} | goals: ${gs} | fitness: ${vizStats.fitness} | watches: ${ws}`, 8, H - 6);
 
   requestAnimationFrame(vizTick);
 }

@@ -1567,13 +1567,19 @@ impl VM {
         let id_hex = self.node_id_cache
             .map(|id| mesh::id_to_hex(&id))
             .unwrap_or_default();
-        let peers = self.mesh.as_ref().map(|m| m.peer_count()).unwrap_or(0);
-        let ws_clients = self.ws_state.as_ref()
-            .map(|s| s.lock().unwrap().clients.len()).unwrap_or(0);
-        let goals = self.mesh.as_ref()
-            .map(|m| m.format_goals()).unwrap_or_default();
+        let peer_details = self.mesh.as_ref()
+            .map(|m| m.peer_details()).unwrap_or_default();
+        let goal_stats = self.mesh.as_ref()
+            .map(|m| m.goal_stats()).unwrap_or((0, 0, 0, 0));
+        let recent = self.mesh.as_ref()
+            .map(|m| m.drain_recent_events()).unwrap_or_default();
+        let children: Vec<(String, u32)> = self.spawn_state.children.iter()
+            .map(|c| (mesh::id_to_hex(&c.node_id), self.spawn_state.generation + 1))
+            .collect();
         let json = ws_bridge::build_mesh_json(
-            &id_hex, peers, self.fitness.score, &goals, ws_clients,
+            &id_hex, self.fitness.score, self.spawn_state.generation,
+            &peer_details, goal_stats, &recent, &children,
+            self.monitor.watches.len(), self.monitor.alerts.len(),
         );
         if let Ok(mut j) = self.ws_mesh_json.lock() {
             *j = json;
@@ -2394,7 +2400,7 @@ impl VM {
 // CLI argument parsing
 // ===========================================================================
 
-const VERSION: &str = "unit v0.12.0";
+const VERSION: &str = "unit v0.12.1";
 
 fn print_help() {
     println!("{}", VERSION);

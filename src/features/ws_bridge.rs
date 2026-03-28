@@ -553,17 +553,50 @@ fn extract_json_number(json: &str, key: &str) -> Option<i64> {
 }
 
 /// Build a JSON mesh state string for pushing to browsers.
+/// Build a rich JSON mesh state for the visualizer.
 pub fn build_mesh_json(
-    id: &str,
-    peers: usize,
-    fitness: i64,
-    goals_summary: &str,
-    ws_clients: usize,
+    self_id: &str,
+    self_fitness: i64,
+    self_generation: u32,
+    peers: &[(String, i64, String)], // (id_hex, fitness, addr)
+    goals: (usize, usize, usize, usize), // (total, pending, active, completed)
+    recent_events: &[String],
+    children: &[(String, u32)], // (id_hex, generation)
+    watch_count: usize,
+    alert_count: usize,
 ) -> String {
-    // Escape any quotes in goals summary.
-    let goals_escaped = goals_summary.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
-    format!(
-        r#"{{"type":"mesh_state","id":"{}","peers":{},"fitness":{},"browsers":{},"goals":"{}"}}"#,
-        id, peers, fitness, ws_clients, goals_escaped
-    )
+    let mut json = format!(
+        r#"{{"type":"mesh_state","self_id":"{}","self_fitness":{},"self_generation":{},"#,
+        self_id, self_fitness, self_generation
+    );
+    // Peers array.
+    json.push_str(r#""peers":["#);
+    for (i, (id, fit, addr)) in peers.iter().enumerate() {
+        if i > 0 { json.push(','); }
+        json.push_str(&format!(r#"{{"id":"{}","fitness":{},"addr":"{}"}}"#, id, fit, addr));
+    }
+    json.push_str(r#"],"#);
+    // Goals.
+    json.push_str(&format!(
+        r#""goals":{{"total":{},"pending":{},"active":{},"completed":{}}},"#,
+        goals.0, goals.1, goals.2, goals.3
+    ));
+    // Recent events.
+    json.push_str(r#""recent_events":["#);
+    for (i, evt) in recent_events.iter().enumerate() {
+        if i > 0 { json.push(','); }
+        let escaped = evt.replace('\\', "\\\\").replace('"', "\\\"");
+        json.push_str(&format!(r#""{}""#, escaped));
+    }
+    json.push_str(r#"],"#);
+    // Children.
+    json.push_str(r#""children":["#);
+    for (i, (id, gen)) in children.iter().enumerate() {
+        if i > 0 { json.push(','); }
+        json.push_str(&format!(r#"{{"id":"{}","generation":{}}}"#, id, gen));
+    }
+    json.push_str(r#"],"#);
+    // Counts.
+    json.push_str(&format!(r#""watch_count":{},"alert_count":{}}}"#, watch_count, alert_count));
+    json
 }

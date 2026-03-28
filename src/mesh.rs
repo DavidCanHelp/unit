@@ -926,6 +926,31 @@ impl MeshNode {
             .collect()
     }
 
+    /// Get detailed peer info for the visualizer.
+    pub fn peer_details(&self) -> Vec<(String, i64, String)> {
+        let st = self.state.lock().unwrap();
+        st.peers.values().map(|p| {
+            (id_to_hex(&p.id), p.fitness, p.addr.to_string())
+        }).collect()
+    }
+
+    /// Get goal statistics.
+    pub fn goal_stats(&self) -> (usize, usize, usize, usize) {
+        let st = self.state.lock().unwrap();
+        let total = st.goals.goals.len();
+        let pending = st.goals.goals.values().filter(|g| g.status == crate::goals::GoalStatus::Pending).count();
+        let active = st.goals.goals.values().filter(|g| g.status == crate::goals::GoalStatus::Active).count();
+        let completed = st.goals.goals.values().filter(|g| g.status == crate::goals::GoalStatus::Completed).count();
+        (total, pending, active, completed)
+    }
+
+    /// Drain recent events from the event log (returns up to 20, clearing them).
+    pub fn drain_recent_events(&self) -> Vec<String> {
+        let mut st = self.state.lock().unwrap();
+        let events: Vec<String> = st.event_log.drain(..).collect();
+        events.into_iter().rev().take(20).collect()
+    }
+
     // -------------------------------------------------------------------
     // Discovery
     // -------------------------------------------------------------------
