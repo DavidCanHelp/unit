@@ -58,6 +58,6 @@
 : LOCKDOWN  ( -- ) TRUST-NONE QUARANTINE ." replication locked" CR ;
 
 \ --- Boot ---
-." unit v0.10.4 — seed online" CR
+." unit v0.11.0 — seed online" CR
 MESH-HELLO
 AUTO-CLAIM

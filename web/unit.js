@@ -94,6 +94,8 @@ class MeshClient {
         if (msg.type === 'mesh_state') {
           this.peers = msg.peers || 0;
           this.browsers = msg.browsers || 0;
+          // Feed mesh data to visualizer if available.
+          if (typeof updateMeshState === 'function') updateMeshState(msg);
           this.fitness = msg.fitness || 0;
           this.onStatusChange('connected', null);
         }

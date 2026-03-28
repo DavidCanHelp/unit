@@ -2295,7 +2295,7 @@ impl VM {
 // CLI argument parsing
 // ===========================================================================
 
-const VERSION: &str = "unit v0.10.4";
+const VERSION: &str = "unit v0.11.0";
 
 fn print_help() {
     println!("{}", VERSION);

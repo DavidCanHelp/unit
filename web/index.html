@@ -13,73 +13,34 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%230a0a0a' width='100' height='100' rx='12'/><text x='50' y='72' font-size='64' font-family='monospace' fill='%2300ff88' text-anchor='middle'>u</text></svg>">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #0a0a0a; color: #00ff88; font-family: 'Courier New', monospace;
-    font-size: 14px; height: 100vh; display: flex; flex-direction: column;
-  }
-  a { color: #00ff88; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  #info {
-    padding: 10px 14px 8px; border-bottom: 1px solid #1a1a1a;
-    display: flex; justify-content: space-between; align-items: center;
-    flex-wrap: wrap; gap: 6px;
-  }
+  body { background: #0a0a0a; color: #00ff88; font-family: 'Courier New', monospace; font-size: 14px; height: 100vh; display: flex; flex-direction: column; }
+  a { color: #00ff88; text-decoration: none; } a:hover { text-decoration: underline; }
+  #info { padding: 10px 14px 8px; border-bottom: 1px solid #1a1a1a; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; }
   #info-left { display: flex; align-items: center; gap: 12px; }
-  #info-left .title { color: #00ff88; font-weight: bold; }
-  #info-left .desc { color: #555; font-size: 12px; }
-  #info-right { display: flex; gap: 10px; font-size: 11px; color: #444; }
-  #info-right .badge {
-    background: #111; border: 1px solid #222; padding: 2px 6px;
-    border-radius: 3px; color: #00ff88; font-size: 11px;
-  }
-  #terminal {
-    flex: 1; overflow-y: auto; padding: 12px; white-space: pre-wrap;
-    word-wrap: break-word; font-size: 13px; line-height: 1.4;
-  }
-  #tutorial-bar {
-    padding: 6px 14px; border-top: 1px solid #1a2a1a;
-    border-left: 3px solid #0a4a0a; background: #0a0f0a;
-    font-size: 12px; color: #4a7a4a; display: flex;
-    justify-content: space-between; align-items: center;
-    min-height: 28px;
-  }
+  .title { color: #00ff88; font-weight: bold; } .desc { color: #555; font-size: 12px; }
+  #info-right { display: flex; gap: 10px; font-size: 11px; color: #444; align-items: center; }
+  .badge { background: #111; border: 1px solid #222; padding: 2px 6px; border-radius: 3px; color: #00ff88; font-size: 11px; }
+  .mode-btn { background: #111; border: 1px solid #222; color: #555; font-family: inherit; font-size: 11px; padding: 2px 8px; border-radius: 3px; cursor: pointer; }
+  .mode-btn:hover { color: #00ff88; border-color: #444; }
+  .mode-btn.active { color: #00ff88; border-color: #0a4a0a; }
+  #viz { display: none; border-bottom: 1px solid #111; position: relative; }
+  #viz canvas { display: block; width: 100%; }
+  #viz-label { position: absolute; bottom: 4px; right: 8px; font-size: 9px; color: #333; }
+  #terminal { flex: 1; overflow-y: auto; padding: 12px; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; line-height: 1.4; }
+  #tutorial-bar { padding: 6px 14px; border-top: 1px solid #1a2a1a; border-left: 3px solid #0a4a0a; background: #0a0f0a; font-size: 12px; color: #4a7a4a; display: flex; justify-content: space-between; align-items: center; min-height: 28px; }
   #tutorial-bar .step { color: #2a5a2a; font-size: 10px; }
-  #tutorial-bar .cmd {
-    color: #00ff88; background: #0d1a0d; padding: 1px 6px;
-    border-radius: 2px; cursor: pointer; border: 1px solid #1a3a1a;
-  }
+  #tutorial-bar .cmd { color: #00ff88; background: #0d1a0d; padding: 1px 6px; border-radius: 2px; cursor: pointer; border: 1px solid #1a3a1a; }
   #tutorial-bar .cmd:hover { background: #0a2a0a; }
-  #tutorial-bar .skip {
-    color: #333; cursor: pointer; font-size: 10px;
-    margin-left: 12px;
-  }
+  #tutorial-bar .skip { color: #333; cursor: pointer; font-size: 10px; margin-left: 12px; }
   #tutorial-bar .skip:hover { color: #666; }
   #tutorial-bar .links a { margin: 0 6px; font-size: 11px; }
-  #hints {
-    padding: 4px 14px 6px; border-top: 1px solid #111;
-    font-size: 11px; color: #333; display: flex; gap: 8px;
-    flex-wrap: wrap; align-items: center;
-  }
-  .hint {
-    color: #2a6; cursor: pointer; background: #0d0d0d;
-    padding: 1px 5px; border-radius: 2px; border: 1px solid #1a1a1a;
-  }
+  #hints { padding: 4px 14px 6px; border-top: 1px solid #111; font-size: 11px; color: #333; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .hint { color: #2a6; cursor: pointer; background: #0d0d0d; padding: 1px 5px; border-radius: 2px; border: 1px solid #1a1a1a; }
   .hint:hover { color: #00ff88; border-color: #333; }
-  #input-line {
-    display: flex; padding: 8px 14px; background: #0d0d0d;
-    border-top: 1px solid #222;
-  }
+  #input-line { display: flex; padding: 8px 14px; background: #0d0d0d; border-top: 1px solid #222; }
   #prompt { color: #00ff88; margin-right: 8px; line-height: 24px; }
-  #input {
-    flex: 1; background: transparent; border: none; outline: none;
-    color: #00ff88; font-family: inherit; font-size: 14px;
-    caret-color: #00ff88;
-  }
-  .output { color: #bbb; }
-  .error { color: #ff4444; }
-  .info { color: #555; }
-  .mesh-event { color: #886; }
-  .tutorial-msg { color: #3a6a3a; font-style: italic; }
+  #input { flex: 1; background: transparent; border: none; outline: none; color: #00ff88; font-family: inherit; font-size: 14px; caret-color: #00ff88; }
+  .output { color: #bbb; } .error { color: #ff4444; } .info { color: #555; } .mesh-event { color: #886; } .tutorial-msg { color: #3a6a3a; font-style: italic; }
 </style>
 </head>
 <body>
@@ -90,9 +51,11 @@
   </div>
   <div id="info-right">
     <span class="badge">226KB WASM</span>
+    <button class="mode-btn" id="viz-toggle" onclick="cycleVizMode()">mesh</button>
     <a href="https://github.com/DavidCanHelp/unit">GitHub</a>
   </div>
 </div>
+<div id="viz"><canvas id="viz-canvas"></canvas><span id="viz-label"></span></div>
 <div id="terminal" onclick="document.getElementById('input').focus()"></div>
 <div id="tutorial-bar"></div>
 <div id="hints"></div>
@@ -103,179 +66,283 @@
 
 <script src="unit.js"></script>
 <script>
-  const terminal = document.getElementById('terminal');
-  const input = document.getElementById('input');
-  const tutorialBar = document.getElementById('tutorial-bar');
-  const hintsBar = document.getElementById('hints');
-  let vm = null;
-  let mesh = null;
-  let history = [];
-  let histIdx = -1;
+const terminal = document.getElementById('terminal');
+const input = document.getElementById('input');
+const tutorialBar = document.getElementById('tutorial-bar');
+const hintsBar = document.getElementById('hints');
+const vizDiv = document.getElementById('viz');
+const vizCanvas = document.getElementById('viz-canvas');
+const vizLabel = document.getElementById('viz-label');
+const vizToggle = document.getElementById('viz-toggle');
+const ctx = vizCanvas.getContext('2d');
+let vm = null, mesh = null, history = [], histIdx = -1;
 
-  // -----------------------------------------------------------------------
-  // Tutorial
-  // -----------------------------------------------------------------------
-  const STEPS = [
-    { cmd: '2 3 + .',
-      before: 'Welcome to unit. Type the highlighted command to begin \u2192',
-      after: 'You just used a stack-based language. 2 and 3 go on the stack, + adds them, . prints the result.' },
-    { cmd: ': SQUARE DUP * ;',
-      before: 'Now define a word \u2192',
-      after: 'You created a new word. SQUARE duplicates the top of the stack and multiplies. The language just grew.' },
-    { cmd: '7 SQUARE .',
-      before: 'Use it \u2192',
-      after: '49. Your word works. In unit, everything is built this way \u2014 from simple pieces.' },
-    { cmd: 'SEE SQUARE',
-      before: 'See inside it \u2192',
-      after: 'The dictionary is transparent. Every word can be inspected, modified, even shared across a network.' },
-    { cmd: 'WORDS',
-      before: 'List all words \u2192',
-      after: '~160 words. Stack ops, arithmetic, mesh networking, self-replication, monitoring \u2014 all from a 226KB binary.' },
-    { cmd: '10 0 DO I . LOOP',
-      before: 'Try a loop \u2192',
-      after: 'Control flow works at the REPL \u2014 no compilation step needed. This is a live, interactive system.' },
-    { cmd: 'DASHBOARD',
-      before: 'Check the dashboard \u2192',
-      after: 'In a native mesh, this shows live watches, alerts, peer status, and sparkline trends. This is an ops tool.' },
-    { cmd: '." I am a software nanobot."',
-      before: 'One last thing \u2192',
-      after: null }, // handled specially
-  ];
-  let tutorialStep = 0;
-  let tutorialActive = true;
-  let tutorialComplete = false;
+// =========================================================================
+// Mesh Visualizer
+// =========================================================================
+let vizMode = 0; // 0=terminal, 1=split, 2=full
+let vizNodes = []; // [{id, x, y, vx, vy, fitness, color, alpha, pulse, label}]
+let vizEdges = []; // [{from, to}]
+let vizParticles = []; // [{x, y, tx, ty, age, color}]
+let vizSim = false; // simulation mode
+let vizConnected = false;
+let vizStats = { peers: 0, goals: 0, fitness: 0 };
 
-  function renderTutorial() {
-    if (!tutorialActive || tutorialComplete) {
-      tutorialBar.style.display = 'none';
-      renderHints();
-      return;
-    }
-    tutorialBar.style.display = 'flex';
-    const step = STEPS[tutorialStep];
-    tutorialBar.innerHTML = `
-      <div>
-        <span class="step">${tutorialStep + 1}/8</span>
-        ${step.before}
-        <span class="cmd" onclick="pasteCmd('${step.cmd.replace(/'/g, "\\'")}')">${step.cmd}</span>
-        <span class="skip" onclick="skipTutorial()">skip tutorial</span>
-      </div>`;
-    renderHints();
+function cycleVizMode() {
+  vizMode = (vizMode + 1) % 3;
+  applyVizMode();
+  if (vizMode > 0 && vizNodes.length === 0) startSimulation();
+}
+
+function applyVizMode() {
+  vizToggle.className = vizMode > 0 ? 'mode-btn active' : 'mode-btn';
+  if (vizMode === 0) {
+    vizDiv.style.display = 'none';
+    terminal.style.flex = '1';
+  } else if (vizMode === 1) {
+    vizDiv.style.display = 'block';
+    vizDiv.style.height = '40vh';
+    terminal.style.flex = '1';
+  } else {
+    vizDiv.style.display = 'block';
+    vizDiv.style.height = 'calc(100vh - 90px)';
+    terminal.style.flex = '0';
+    terminal.style.height = '0';
+    terminal.style.overflow = 'hidden';
   }
+  if (vizMode < 2) { terminal.style.flex = '1'; terminal.style.height = ''; terminal.style.overflow = ''; }
+  resizeCanvas();
+}
 
-  function renderHints() {
-    if (tutorialActive && !tutorialComplete && tutorialStep < STEPS.length) {
-      const step = STEPS[tutorialStep];
-      hintsBar.innerHTML = `<span class="hint" onclick="pasteCmd('${step.cmd.replace(/'/g, "\\'")}')">${step.cmd}</span>`;
-    } else {
-      hintsBar.innerHTML = `
-        <span style="color:#444">try:</span>
-        <span class="hint" onclick="paste(this)">2 3 + .</span>
-        <span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span>
-        <span class="hint" onclick="paste(this)">WORDS</span>
-        <span class="hint" onclick="paste(this)">10 0 DO I . LOOP</span>
-        <span class="hint" onclick="paste(this)">DASHBOARD</span>`;
-    }
-  }
+function resizeCanvas() {
+  const r = vizDiv.getBoundingClientRect();
+  vizCanvas.width = r.width * devicePixelRatio;
+  vizCanvas.height = r.height * devicePixelRatio;
+  vizCanvas.style.height = r.height + 'px';
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+}
 
-  function advanceTutorial(line) {
-    if (!tutorialActive || tutorialComplete) return;
-    const step = STEPS[tutorialStep];
-    if (line.trim() === step.cmd.trim()) {
-      tutorialStep++;
-      if (tutorialStep >= STEPS.length) {
-        finishTutorial();
-      } else {
-        // Show the "after" message for the step we just completed.
-        appendOutput(step.after + '\n\n', 'tutorial-msg');
-        renderTutorial();
-      }
-    }
-  }
-
-  function finishTutorial() {
-    tutorialComplete = true;
-    tutorialBar.innerHTML = `
-      <div>
-        Tutorial complete. You're inside a software nanobot.
-        <span class="links">
-          <a href="https://github.com/DavidCanHelp/unit">GitHub</a>
-          <a href="https://crates.io/crates/unit">crates.io</a>
-          <a href="#">cargo install unit</a>
-        </span>
-      </div>`;
-    tutorialBar.style.display = 'flex';
-    setTimeout(() => { tutorialBar.style.display = 'none'; renderHints(); }, 12000);
-    appendOutput("And that's unit. A self-replicating Forth interpreter that is also a networked mesh agent.\ncargo install unit to run it for real.\n\n", 'tutorial-msg');
-  }
-
-  function skipTutorial() {
-    tutorialActive = false;
-    renderTutorial();
-  }
-
-  function pasteCmd(cmd) {
-    input.value = cmd;
-    input.focus();
-  }
-
-  // -----------------------------------------------------------------------
-  // Core
-  // -----------------------------------------------------------------------
-
-  function appendOutput(text, className) {
-    if (!text) return;
-    const span = document.createElement('span');
-    span.className = className || 'output';
-    span.textContent = text;
-    terminal.appendChild(span);
-    terminal.scrollTop = terminal.scrollHeight;
-  }
-
-  function paste(el) {
-    input.value = el.textContent;
-    input.focus();
-  }
-
-  async function init() {
-    try {
-      vm = await UnitVM.create('unit.wasm');
-      renderTutorial();
-    } catch (e) {
-      appendOutput('Failed to load WASM: ' + e.message + '\n', 'error');
-      appendOutput('Build with: make build-wasm\n', 'info');
-    }
-  }
-
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowUp') {
-      if (histIdx < history.length - 1) { histIdx++; input.value = history[history.length - 1 - histIdx]; }
-      e.preventDefault(); return;
-    }
-    if (e.key === 'ArrowDown') {
-      if (histIdx > 0) { histIdx--; input.value = history[history.length - 1 - histIdx]; }
-      else { histIdx = -1; input.value = ''; }
-      e.preventDefault(); return;
-    }
-    if (e.key !== 'Enter' || !vm) return;
-    const line = input.value;
-    input.value = '';
-    if (line.trim()) { history.push(line); histIdx = -1; }
-    appendOutput('> ' + line + '\n', 'info');
-
-    const result = vm.eval(line);
-    if (result) appendOutput(result);
-    appendOutput(' ok\n', 'info');
-
-    advanceTutorial(line);
-
-    if (!vm.isRunning()) {
-      appendOutput('\n[unit exited]\n', 'info');
-      input.disabled = true;
-    }
+function addNode(id, color, fitness) {
+  const W = vizCanvas.width / devicePixelRatio || 400;
+  const H = vizCanvas.height / devicePixelRatio || 300;
+  const existing = vizNodes.find(n => n.id === id);
+  if (existing) { existing.fitness = fitness; existing.alpha = 1; return; }
+  vizNodes.push({
+    id, x: W/2 + (Math.random()-0.5)*100, y: H/2 + (Math.random()-0.5)*80,
+    vx: 0, vy: 0, fitness: fitness || 0, color, alpha: 0, pulse: 1, label: id.substring(0,6)
   });
+}
 
-  init();
+function startSimulation() {
+  if (vizSim || vizConnected) return;
+  vizSim = true;
+  vizNodes = []; vizEdges = [];
+  addNode('self-wasm', '#00ff88', 0);
+  setTimeout(() => { addNode('native-a1b2', '#00ccff', 30); vizEdges.push({from:'self-wasm',to:'native-a1b2'}); }, 800);
+  setTimeout(() => { addNode('native-c3d4', '#00ccff', 45); vizEdges.push({from:'native-a1b2',to:'native-c3d4'}); vizEdges.push({from:'self-wasm',to:'native-c3d4'}); }, 2000);
+  setTimeout(() => { addNode('native-e5f6', '#00ccff', 15); vizEdges.push({from:'native-c3d4',to:'native-e5f6'}); emitParticle('native-a1b2','native-c3d4','#ff8800'); }, 4000);
+  setTimeout(() => { addNode('spawn-7890', '#88ffcc', 5); vizEdges.push({from:'native-a1b2',to:'spawn-7890'}); emitParticle('native-a1b2','spawn-7890','#00ff88'); }, 6000);
+  vizLabel.textContent = 'simulation — not connected to real mesh';
+}
+
+function stopSimulation() { vizSim = false; vizLabel.textContent = ''; }
+
+function emitParticle(fromId, toId, color) {
+  const from = vizNodes.find(n => n.id === fromId);
+  const to = vizNodes.find(n => n.id === toId);
+  if (!from || !to) return;
+  vizParticles.push({ x: from.x, y: from.y, tx: to.x, ty: to.y, age: 0, color: color || '#ff8800' });
+  from.pulse = 1.5;
+}
+
+function updateMeshState(data) {
+  // data: {id, peers, fitness, browsers, goals}
+  vizConnected = true;
+  if (vizSim) { stopSimulation(); vizNodes = []; vizEdges = []; }
+  vizStats.peers = data.peers || 0;
+  vizStats.fitness = data.fitness || 0;
+  addNode(data.id || 'self', '#00ff88', data.fitness || 0);
+  // Peers come as count only — create placeholder nodes if needed.
+  const peerCount = (data.peers || 0) + (data.browsers || 0);
+  while (vizNodes.length - 1 < peerCount) {
+    const pid = 'peer-' + Math.random().toString(16).substring(2,8);
+    addNode(pid, '#00ccff', Math.floor(Math.random() * 50));
+    vizEdges.push({ from: vizNodes[0].id, to: pid });
+  }
+  vizLabel.textContent = '';
+}
+
+// Physics + render loop
+function vizTick() {
+  if (vizMode === 0) { requestAnimationFrame(vizTick); return; }
+  const W = vizCanvas.width / devicePixelRatio || 400;
+  const H = vizCanvas.height / devicePixelRatio || 300;
+  ctx.clearRect(0, 0, W, H);
+
+  // Background
+  ctx.fillStyle = '#0a0a14';
+  ctx.fillRect(0, 0, W, H);
+
+  // Physics: repulsion + center attraction + damping
+  for (const n of vizNodes) {
+    n.vx *= 0.95; n.vy *= 0.95;
+    n.vx += (W/2 - n.x) * 0.001; n.vy += (H/2 - n.y) * 0.001;
+    for (const m of vizNodes) {
+      if (m === n) continue;
+      const dx = n.x - m.x, dy = n.y - m.y;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      if (dist < 120) { const f = (120 - dist) * 0.003; n.vx += dx/dist * f; n.vy += dy/dist * f; }
+    }
+    n.x += n.vx + (Math.random()-0.5)*0.3;
+    n.y += n.vy + (Math.random()-0.5)*0.3;
+    n.x = Math.max(30, Math.min(W-30, n.x));
+    n.y = Math.max(30, Math.min(H-30, n.y));
+    if (n.alpha < 1) n.alpha = Math.min(1, n.alpha + 0.02);
+    if (n.pulse > 1) n.pulse -= 0.02;
+  }
+
+  // Edges
+  for (const e of vizEdges) {
+    const a = vizNodes.find(n => n.id === e.from);
+    const b = vizNodes.find(n => n.id === e.to);
+    if (!a || !b) continue;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = `rgba(0,180,120,${0.08 + Math.sin(Date.now()/1000)*0.04})`;
+    ctx.lineWidth = 1; ctx.stroke();
+  }
+
+  // Particles
+  for (let i = vizParticles.length-1; i >= 0; i--) {
+    const p = vizParticles[i];
+    p.age += 0.02;
+    p.x += (p.tx - p.x) * 0.04;
+    p.y += (p.ty - p.y) * 0.04;
+    const alpha = Math.max(0, 1 - p.age);
+    if (alpha <= 0) { vizParticles.splice(i, 1); continue; }
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, Math.PI*2);
+    ctx.fillStyle = p.color.replace(')', `,${alpha})`).replace('rgb','rgba');
+    ctx.shadowColor = p.color; ctx.shadowBlur = 8;
+    ctx.fill(); ctx.shadowBlur = 0;
+  }
+
+  // Nodes
+  for (const n of vizNodes) {
+    const r = 8 + Math.min(n.fitness, 50) * 0.15;
+    const pr = r * n.pulse;
+    // Glow
+    ctx.beginPath(); ctx.arc(n.x, n.y, pr + 6, 0, Math.PI*2);
+    ctx.fillStyle = n.color.replace(')', `,${0.05 * n.alpha})`).replace('#', '');
+    const gc = ctx.createRadialGradient(n.x, n.y, pr, n.x, n.y, pr+10);
+    gc.addColorStop(0, n.color + '22'); gc.addColorStop(1, 'transparent');
+    ctx.fillStyle = gc; ctx.fill();
+    // Circle
+    ctx.beginPath(); ctx.arc(n.x, n.y, pr, 0, Math.PI*2);
+    ctx.fillStyle = n.color + Math.floor(n.alpha * 200).toString(16).padStart(2,'0');
+    ctx.fill();
+    ctx.strokeStyle = n.color + '44'; ctx.lineWidth = 1; ctx.stroke();
+    // Label
+    ctx.fillStyle = '#888'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(n.label, n.x, n.y + pr + 12);
+    if (n.fitness > 0) ctx.fillText('f:' + n.fitness, n.x, n.y + pr + 21);
+  }
+
+  // Stats
+  ctx.fillStyle = '#333'; ctx.font = '10px monospace'; ctx.textAlign = 'left';
+  ctx.fillText(`peers: ${vizStats.peers} | nodes: ${vizNodes.length} | fitness: ${vizStats.fitness}`, 8, H - 6);
+
+  requestAnimationFrame(vizTick);
+}
+requestAnimationFrame(vizTick);
+window.addEventListener('resize', () => { if (vizMode > 0) resizeCanvas(); });
+
+// =========================================================================
+// Tutorial (unchanged)
+// =========================================================================
+const STEPS = [
+  { cmd: '2 3 + .', before: 'Welcome to unit. Type the highlighted command to begin \u2192', after: 'You just used a stack-based language. 2 and 3 go on the stack, + adds them, . prints the result.' },
+  { cmd: ': SQUARE DUP * ;', before: 'Now define a word \u2192', after: 'You created a new word. SQUARE duplicates the top of the stack and multiplies. The language just grew.' },
+  { cmd: '7 SQUARE .', before: 'Use it \u2192', after: '49. Your word works. In unit, everything is built this way \u2014 from simple pieces.' },
+  { cmd: 'SEE SQUARE', before: 'See inside it \u2192', after: 'The dictionary is transparent. Every word can be inspected, modified, even shared across a network.' },
+  { cmd: 'WORDS', before: 'List all words \u2192', after: '~160 words. Stack ops, arithmetic, mesh networking, self-replication, monitoring \u2014 all from a 226KB binary.' },
+  { cmd: '10 0 DO I . LOOP', before: 'Try a loop \u2192', after: 'Control flow works at the REPL \u2014 no compilation step needed. This is a live, interactive system.' },
+  { cmd: 'DASHBOARD', before: 'Check the dashboard \u2192', after: 'In a native mesh, this shows live watches, alerts, peer status, and sparkline trends. This is an ops tool.' },
+  { cmd: '." I am a software nanobot."', before: 'One last thing \u2192', after: null },
+];
+let tutorialStep = 0, tutorialActive = true, tutorialComplete = false;
+
+function renderTutorial() {
+  if (!tutorialActive || tutorialComplete) { tutorialBar.style.display = 'none'; renderHints(); return; }
+  tutorialBar.style.display = 'flex';
+  const s = STEPS[tutorialStep];
+  tutorialBar.innerHTML = `<div><span class="step">${tutorialStep+1}/8</span> ${s.before} <span class="cmd" onclick="pasteCmd('${s.cmd.replace(/'/g,"\\'")}')">${s.cmd}</span><span class="skip" onclick="skipTutorial()">skip tutorial</span></div>`;
+  renderHints();
+}
+function renderHints() {
+  if (tutorialActive && !tutorialComplete && tutorialStep < STEPS.length) {
+    const s = STEPS[tutorialStep];
+    hintsBar.innerHTML = `<span class="hint" onclick="pasteCmd('${s.cmd.replace(/'/g,"\\'")}')">${s.cmd}</span>`;
+  } else {
+    hintsBar.innerHTML = `<span style="color:#444">try:</span><span class="hint" onclick="paste(this)">2 3 + .</span><span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span><span class="hint" onclick="paste(this)">WORDS</span><span class="hint" onclick="paste(this)">10 0 DO I . LOOP</span><span class="hint" onclick="paste(this)">DASHBOARD</span>`;
+  }
+}
+function advanceTutorial(line) {
+  if (!tutorialActive || tutorialComplete) return;
+  const s = STEPS[tutorialStep];
+  if (line.trim() === s.cmd.trim()) {
+    tutorialStep++;
+    if (tutorialStep >= STEPS.length) { finishTutorial(); }
+    else { appendOutput(s.after + '\n\n', 'tutorial-msg'); renderTutorial(); }
+  }
+}
+function finishTutorial() {
+  tutorialComplete = true;
+  tutorialBar.innerHTML = `<div>Tutorial complete. You're inside a software nanobot. <span class="links"><a href="https://github.com/DavidCanHelp/unit">GitHub</a> <a href="https://crates.io/crates/unit">crates.io</a></span></div>`;
+  tutorialBar.style.display = 'flex';
+  setTimeout(() => { tutorialBar.style.display = 'none'; renderHints(); }, 12000);
+  appendOutput("And that's unit. A self-replicating Forth interpreter that is also a networked mesh agent.\ncargo install unit to run it for real.\n\n", 'tutorial-msg');
+}
+function skipTutorial() { tutorialActive = false; renderTutorial(); }
+function pasteCmd(cmd) { input.value = cmd; input.focus(); }
+
+// =========================================================================
+// Core
+// =========================================================================
+function appendOutput(text, className) {
+  if (!text) return;
+  const span = document.createElement('span');
+  span.className = className || 'output';
+  span.textContent = text;
+  terminal.appendChild(span);
+  terminal.scrollTop = terminal.scrollHeight;
+}
+function paste(el) { input.value = el.textContent; input.focus(); }
+
+async function init() {
+  try {
+    vm = await UnitVM.create('unit.wasm');
+    renderTutorial();
+  } catch (e) {
+    appendOutput('Failed to load WASM: ' + e.message + '\n', 'error');
+  }
+}
+
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowUp') { if (histIdx < history.length-1) { histIdx++; input.value = history[history.length-1-histIdx]; } e.preventDefault(); return; }
+  if (e.key === 'ArrowDown') { if (histIdx > 0) { histIdx--; input.value = history[history.length-1-histIdx]; } else { histIdx=-1; input.value=''; } e.preventDefault(); return; }
+  if (e.key !== 'Enter' || !vm) return;
+  const line = input.value; input.value = '';
+  if (line.trim()) { history.push(line); histIdx = -1; }
+  appendOutput('> ' + line + '\n', 'info');
+  const result = vm.eval(line);
+  if (result) appendOutput(result);
+  appendOutput(' ok\n', 'info');
+  advanceTutorial(line);
+  if (!vm.isRunning()) { appendOutput('\n[unit exited]\n', 'info'); input.disabled = true; }
+});
+
+init();
 </script>
 </body>
 </html>
