@@ -1,9 +1,9 @@
 [package]
 name = "unit"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2021"
 description = "A self-replicating software nanobot — minimal Forth interpreter that is also a networked mesh agent"
-license = "CC0-1.0"
+license = "MIT"
 repository = "https://github.com/DavidCanHelp/unit"
 homepage = "https://davidcanhelp.github.io/unit/"
 documentation = "https://github.com/DavidCanHelp/unit#readme"

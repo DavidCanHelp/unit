@@ -1,184 +1,69 @@
 # unit
 
+A self-replicating software nanobot. The Forth interpreter *is* the agent.
+
 [![CI](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml/badge.svg)](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml)
+&ensp;
+**[Try it in your browser](https://davidcanhelp.github.io/unit/)**
 
-A software nanobot. The Forth interpreter *is* the agent.
-
-**[Try it in your browser](https://davidcanhelp.github.io/unit/)** — 226KB WASM, loads instantly.
-
-**unit** is a zero-dependency Forth interpreter that doubles as a self-replicating,
-self-healing distributed ops agent. Every instance can monitor services, alert on
-failures, self-remediate, replicate itself across machines, mutate and evolve its
-own code, and compile to WebAssembly — all from a 673KB native binary.
-
-### Binary Sizes
-
-| Target | Size |
-|--------|------|
-| Native (Linux/macOS) | 673KB |
-| WASM (browser) | 226KB |
-
-## Quick Start
-
-```sh
-cargo build --release
-UNIT_PORT=4201 ./target/release/unit
-```
+## Install
 
 ```
-unit v0.7.0 — seed online
+cargo install unit
+```
+
+## What Happens
+
+```
+$ unit
+unit v0.10.2 — seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
 auto-claim: ON
-> 10 WATCH" http://myapp.local:8080/health"
-watch #1 created (every 10s)
-> 1 ON-ALERT" SHELL-ENABLE SHELL\" systemctl restart myapp\" DROP DROP DROP"
-alert handler set for watch #1
-> DASHBOARD
+> 2 3 + .
+5 ok
+> : SQUARE DUP * ;
+ ok
+> 7 SQUARE .
+49 ok
 ```
 
-## Monitoring & Ops
+## The Idea
 
-The primary use case: infrastructure that manages itself.
+A unit is the smallest self-replicating piece of software. It boots from
+a handful of kernel primitives, builds its own language, networks with
+peers over UDP gossip, packages its own binary, and spawns copies of
+itself. It monitors services, heals failures, mutates its own code, and
+evolves toward higher fitness. Zero external dependencies. The language
+builds itself. The agent *is* the language.
 
-### Watches
+## The Four Concerns
 
-| Word                     | Stack effect             | Description                    |
-|--------------------------|--------------------------|--------------------------------|
-| `WATCH" <url>"`         | `( interval -- id )`     | Monitor a URL periodically     |
-| `WATCH-FILE" <path>"`   | `( interval -- id )`     | Monitor a file for changes     |
-| `WATCH-PROC" <name>"`   | `( interval -- id )`     | Monitor a process              |
-| `WATCHES`                | `( -- )`                 | List all watches + status      |
-| `UNWATCH`                | `( id -- )`              | Remove a watch                 |
-| `WATCH-LOG`              | `( id -- )`              | Show history for a watch       |
-| `UPTIME`                 | `( id -- )`              | Show uptime percentage         |
+| Concern | Mechanism |
+|---------|-----------|
+| **Execute** | Forth VM — stacks, dictionary, inner interpreter |
+| **Communicate** | UDP gossip mesh with consensus-based replication |
+| **Replicate** | Reads own binary, packages state, spawns child processes |
+| **Mutate** | Rewrites word definitions, fitness-driven evolution |
 
-### Alerting
-
-| Word                      | Description                                    |
-|---------------------------|------------------------------------------------|
-| `ON-ALERT" <code>"`      | `( watch-id -- )` Forth code to run on alert   |
-| `ALERTS`                  | Show active alerts                             |
-| `ACK`                     | `( alert-id -- )` acknowledge an alert         |
-| `ALERT-HISTORY`           | Show past alerts                               |
-| `HEAL`                    | Run handlers for all active alerts             |
-
-### Dashboard
-
-```
-> DASHBOARD
-╔══════════════════════════════════════╗
-║         UNIT OPS DASHBOARD           ║
-╚══════════════════════════════════════╝
-─── watches ───
-  #1 [UP  ] ▁▂▃▂▁▂▃▂ 45 myapp.local:8080/health
-  #2 [DOWN] ▇▇▇▇▇▇▇▇ 0  database:5432
-─── alerts ───
-  [CRIT] watch #2: connection refused
-─── mesh ───
-  peers: 2  fitness: 45
-```
-
-| Word        | Description                                      |
-|-------------|--------------------------------------------------|
-| `DASHBOARD` | Formatted overview with sparkline trends         |
-| `HEALTH`    | `( -- n )` overall health score 0-100            |
-| `OPS`       | Combined: DASHBOARD + ALERTS + SCHEDULE          |
-
-### Scheduler
-
-| Word            | Description                                     |
-|-----------------|-------------------------------------------------|
-| `EVERY`         | `( secs -- id )` schedule recurring Forth code  |
-| `SCHEDULE`      | List scheduled tasks                            |
-| `UNSCHED`       | `( id -- )` cancel a scheduled task             |
-
-```
-> 30 EVERY DASHBOARD
-schedule #5 every 30s: DASHBOARD
-```
-
-### Self-Healing
-
-When a watch triggers a critical alert:
-1. The alert broadcasts to the mesh
-2. The local unit runs the ON-ALERT handler
-3. If remediation fails, a GOAL is submitted to the mesh
-4. Other units attempt the fix
-5. Next check auto-resolves if the service recovers
-
-```
-> 10 WATCH" http://myapp:8080/health"
-> 1 ON-ALERT" ." restarting..." CR"
-> HEAL
---- heal cycle ---
-  running handler for alert #2
-  restarting...
---- heal done ---
-```
-
-### Example: Three-Node Monitoring
+## Swarm Mode
 
 ```sh
-# Node 1: seed + monitor
-UNIT_PORT=4201 ./target/release/unit
-> 10 WATCH" http://myapp:8080"
-
-# Node 2: joins mesh, shares watch data
-UNIT_PORT=4202 UNIT_PEERS=127.0.0.1:4201 ./target/release/unit
-
-# Node 3: joins mesh
-UNIT_PORT=4203 UNIT_PEERS=127.0.0.1:4201 ./target/release/unit
-
-# Any node can view the dashboard:
-> DASHBOARD
-> HEALTH .
-85
-```
-
-## Swarm Intelligence
-
-Units discover each other automatically, share knowledge, and self-scale.
-
-```
+# Terminal 1
+UNIT_PORT=4201 unit
 > SWARM-ON
-auto-discover: ON
-auto-share: ON
-auto-spawn: ON
 swarm mode active
 ```
 
-After `SWARM-ON`, units on the same machine find each other via UDP
-broadcast on port 4200. No `UNIT_PEERS` needed.
-
-| Word           | Description                                   |
-|----------------|-----------------------------------------------|
-| `SWARM-ON`     | Enable discovery + sharing + auto-spawn       |
-| `SWARM-STATUS` | Show swarm configuration and state            |
-| `DISCOVER`     | Send discovery beacon manually                |
-| `AUTO-DISCOVER`| Toggle auto-discovery (default: ON)           |
-| `SHARE" name"` | Share a word definition with all peers         |
-| `SHARE-ALL`    | Share all non-kernel words                    |
-| `AUTO-SHARE`   | Toggle automatic word sharing                 |
-| `SHARED-WORDS` | List words received from peers                |
-| `AUTO-SPAWN`   | Toggle autonomous spawning on overload        |
-| `AUTO-CULL`    | Toggle autonomous culling of low-fitness units|
-| `MIN-UNITS`    | `( n -- )` set minimum swarm size             |
-| `MAX-UNITS`    | `( n -- )` set maximum swarm size             |
-
-### Zero-config demo
-
 ```sh
-# Terminal 1: start a unit
-UNIT_PORT=4201 cargo run
-> SWARM-ON
-
-# Terminal 2: start another unit — they find each other automatically
-UNIT_PORT=4202 cargo run
-> SWARM-ON
+# Terminal 2 — discovers Terminal 1 automatically
+UNIT_PORT=4202 unit
 > PEERS .
 1
+```
 
-# Define a word on terminal 1 — it appears on terminal 2
+Define a word on one unit. It appears on the other:
+
+```
 # Terminal 1:
 > : CUBE DUP DUP * * ;
 > SHARE" CUBE"
@@ -188,153 +73,234 @@ UNIT_PORT=4202 cargo run
 27
 ```
 
-## Mesh Networking
+Submit work on one. The other executes it:
 
-UDP gossip with consensus-based replication.
+```
+# Terminal 1 (auto-claim off):
+> AUTO-CLAIM
+> 5 GOAL{ 6 7 * }
+goal #101 created [exec]: 6 7 *
 
-```sh
-UNIT_PORT=4201 cargo run                           # seed
-UNIT_PORT=4202 UNIT_PEERS=127.0.0.1:4201 cargo run # join
+# Terminal 2 (auto-claim on) picks it up:
+[auto] claimed task #102 (goal #101): 6 7 *
+[auto] stack: 42
+[auto] task #102 done
 ```
 
-## True Self-Replication
+Too much work? The mesh spawns a child. Underperforming units cull
+themselves. One command: `SWARM-ON`.
+
+## Goals — Human Guidance
+
+Humans set direction, the mesh navigates.
+
+```
+> 5 GOAL{ 6 7 * }
+goal #101 created [exec]: 6 7 *
+[auto] stack: 42
+
+> 5 GOAL{ 1000 10 SPLIT DO I LOOP }
+goal #103 created [split 10×100]: DO I LOOP
+
+> DASHBOARD
+╔══════════════════════════════════════╗
+║         UNIT OPS DASHBOARD           ║
+╚══════════════════════════════════════╝
+─── watches ───
+  #1 [UP  ] ▁▂▃▂▁▂▃▂ 45 myapp:8080/health
+─── alerts ───
+  all clear
+─── mesh ───
+  peers: 2  fitness: 45
+```
+
+## Self-Replication
+
+A unit reads its own executable, serializes its state, and births a new
+process. The child boots with the parent's dictionary, goals, fitness,
+and mutations — then gets its own identity and joins the mesh.
 
 ```
 > SPAWN
 spawned child pid=12345 id=cafe0123deadbeef
-> CHILDREN
-  pid=12345 id=cafe0123deadbeef age=5s
+> FAMILY
+id: a1b2c3d4e5f67890 gen: 0 parent: none children: 1
+> PACKAGE-SIZE .
+644440
 ```
 
-A 624KB binary that reads itself, packages its state, and births new processes.
+Trust levels control who can replicate to you:
 
-## Executable Goals & Task Decomposition
+| Level | Behavior |
+|-------|----------|
+| `TRUST-ALL` | Auto-accept everything (default) |
+| `TRUST-MESH` | Auto-accept known peers |
+| `TRUST-FAMILY` | Auto-accept parent/children only |
+| `TRUST-NONE` | Manual approval for all |
 
-```
-> 5 GOAL{ 2 3 + 4 * }                    \ distributed computation
-> 5 GOAL{ 1000 10 SPLIT DO I LOOP }      \ 10 subtasks across mesh
-```
-
-## Persistence
-
-```
-> SAVE                  \ ~/.unit/<id>/state.bin
-> SNAPSHOT              \ timestamped backup
-$ ./target/release/unit
-resumed identity a1b2c3d4e5f67890
-restored from ~/.unit/a1b2c3d4e5f67890/state.bin
-```
-
-## Host I/O & Security
-
-File, HTTP, shell, env. Sandbox by default for remote code.
-
-## Mutation & Evolution
-
-Self-mutating code with fitness-driven evolution.
-
-## Browser Mesh
-
-Browser WASM units join the same mesh as native units via WebSocket.
-
-### Architecture
+## Monitoring & Ops
 
 ```
-browser (WASM) ↔ WebSocket ↔ native unit ↔ UDP gossip ↔ native units
+> 10 WATCH" http://myapp:8080/health"
+watch #1 created (every 10s)
+
+> 1 ON-ALERT" ." service down!" CR"
+alert handler set for watch #1
+
+> HEAL
+--- heal cycle ---
+  running handler for alert #2
+  service down!
+--- heal done ---
 ```
 
-Each native unit runs a WebSocket server on `UNIT_PORT + 2000`. Browser
-units connect and appear as peers — they submit goals, receive results,
-and show in PEERS and DASHBOARD.
-
-### Demo
-
-```sh
-# Terminal: start a native unit
-UNIT_PORT=4201 cargo run
-# ws-bridge: listening on port 6201
-```
-
-Open https://davidcanhelp.github.io/unit/ (or localhost:8080).
-Click "Connect" with `ws://localhost:6201`.
-
-```
-# In browser:
-> 5 GOAL{ 6 7 * }
-[submitted to mesh: 6 7 *]
-
-# Native terminal auto-claims:
-[ws] goal #101 from browser: 6 7 *
-[auto] claimed task #102 (goal #101): 6 7 *
-[auto] stack: 42
-```
-
-### WebSocket words (native)
-
-| Word                    | Description                        |
-|-------------------------|------------------------------------|
-| `WS-STATUS`             | Show bridge: port, clients, relay count |
-| `WS-CLIENTS`            | List connected browsers            |
-| `WS-PORT`               | `( -- n )` push WS port           |
-| `WS-BROADCAST" <msg>"`  | Send message to all browsers       |
-
-### Configuration
-
-| Env var       | Default          | Description              |
-|---------------|------------------|--------------------------|
-| `UNIT_WS_PORT`| `UNIT_PORT+2000` | WebSocket server port    |
-
-The WS bridge also serves the web UI — browse to `http://localhost:<WS_PORT>/`
-to load the REPL and connect from the same origin.
-
-### Browser compatibility
-
-The WS bridge uses plain `ws://` (no TLS). Chrome 104+ blocks `ws://`
-connections to localhost under its Private Network Access policy. Use
-**Firefox** for local mesh testing, or launch Chrome with:
-
-```sh
-open -a "Google Chrome" --args --disable-features=PrivateNetworkAccessRespectPreflightResults
-```
-
-The protocol is correct (verified against RFC 6455). Future versions may
-add TLS support for full Chrome compatibility.
-
-## WASM Target
-
-```sh
-make build-wasm    # browser REPL in web/
-```
-
-## Testing
-
-```sh
-cargo test          # 69 Rust unit tests
-./tests/integration.sh  # 104 bash integration tests
-```
+Service goes down. Alert fires. Handler runs. Mesh fixes it. Next check
+auto-resolves.
 
 ## Architecture
 
-Zero external dependencies. ~9000 lines of Rust + Forth.
-
 ```
 src/
-├── main.rs              — VM struct, REPL, primitive dispatch
-├── types.rs             — shared types: Cell, Entry, Instruction
-├── mesh.rs              — UDP gossip, consensus, replication
-├── goals.rs             — goal registry, task management
-├── persist.rs           — state serialization, snapshots
-├── spawn.rs             — self-replication, package format
+├── vm/              the seed — standalone Forth interpreter
+│   ├── mod.rs       VM struct, constants, interpreter, dispatch
+│   ├── primitives.rs  stack, arithmetic, memory, I/O
+│   ├── compiler.rs  definitions, control flow, prelude
+│   └── tests.rs     82 unit tests
+├── types.rs         Cell, Entry, Instruction
+├── mesh.rs          UDP gossip, consensus, discovery, word sharing
+├── goals.rs         goal registry, task decomposition
+├── spawn.rs         self-replication, UREP package format
+├── persist.rs       state serialization, snapshots
 ├── features/
-│   ├── io_words.rs      — file, HTTP, shell operations
-│   ├── mutation.rs      — self-mutation engine
-│   ├── fitness.rs       — fitness tracking, evolution
-│   ├── monitor.rs       — watches, alerts, dashboard, scheduler
-│   └── ws_bridge.rs     — WebSocket bridge for browser units
-├── platform.rs          — native/WASM abstraction
-└── wasm_entry.rs        — WASM FFI entry point
+│   ├── io_words.rs  file, HTTP, shell
+│   ├── mutation.rs  self-mutation engine
+│   ├── fitness.rs   fitness tracking, evolution
+│   ├── monitor.rs   watches, alerts, dashboard
+│   └── ws_bridge.rs WebSocket bridge for browsers
+└── main.rs          feature wiring, REPL, entry point
 ```
+
+198 tests. Zero dependencies. ~10,000 lines of Rust + Forth.
+
+## All the Words
+
+### Stack
+
+| Word | Effect | | Word | Effect |
+|------|--------|-|------|--------|
+| `DUP` | `( a -- a a )` | | `2DUP` | `( a b -- a b a b )` |
+| `DROP` | `( a -- )` | | `2DROP` | `( a b -- )` |
+| `SWAP` | `( a b -- b a )` | | `NIP` | `( a b -- b )` |
+| `OVER` | `( a b -- a b a )` | | `TUCK` | `( a b -- b a b )` |
+| `ROT` | `( a b c -- b c a )` | | `.S` | print stack |
+
+### Arithmetic & Logic
+
+| Word | Effect | | Word | Effect |
+|------|--------|-|------|--------|
+| `+` `-` `*` `/` `MOD` | arithmetic | | `=` `<` `>` | comparison |
+| `AND` `OR` `NOT` | bitwise logic | | `ABS` `NEGATE` `MIN` `MAX` | prelude |
+| `1+` `1-` `2*` `2/` | shortcuts | | `0=` `0<` `<>` | predicates |
+
+### I/O
+
+| Word | Description |
+|------|-------------|
+| `.` `.S` `EMIT` `CR` `SPACE` `SPACES` `TYPE` | output |
+| `KEY` | read one character |
+| `."` | print string literal |
+| `FILE-READ"` `FILE-WRITE"` `FILE-EXISTS"` `FILE-LIST"` `FILE-DELETE"` | filesystem |
+| `HTTP-GET"` `HTTP-POST"` | raw HTTP/1.1 |
+| `SHELL"` `ENV"` `TIMESTAMP` `SLEEP` | system |
+| `IO-LOG` `SANDBOX-ON` `SANDBOX-OFF` `SHELL-ENABLE` | security |
+
+### Control Flow
+
+| Word | Description |
+|------|-------------|
+| `IF` `ELSE` `THEN` | conditional |
+| `DO` `LOOP` `I` `J` | counted loop |
+| `BEGIN` `UNTIL` `WHILE` `REPEAT` | indefinite loop |
+| `:` `;` `RECURSE` | word definitions |
+| `VARIABLE` `CONSTANT` `CREATE` `DOES>` | data words |
+| `WORDS` `SEE` | introspection |
+| `EVAL"` | evaluate a string of Forth |
+
+### Mesh & Gossip
+
+| Word | Description |
+|------|-------------|
+| `PEERS` `MESH-STATUS` `ID` | mesh info |
+| `SEND` `RECV` | raw messaging |
+| `REPLICATE` `PROPOSE` | consensus replication |
+| `DISCOVER` `AUTO-DISCOVER` | LAN discovery |
+| `SHARE"` `SHARE-ALL` `AUTO-SHARE` `SHARED-WORDS` | word sharing |
+| `SWARM-ON` `SWARM-OFF` `SWARM-STATUS` `SWARM` | swarm mode |
+
+### Goals & Tasks
+
+| Word | Description |
+|------|-------------|
+| `GOAL"` | `( priority -- id )` description-only goal |
+| `GOAL{` `}` | `( priority -- id )` executable Forth goal |
+| `GOALS` `TASKS` `REPORT` `CLAIM` `COMPLETE` | lifecycle |
+| `CANCEL` `STEER` `RESULT` `GOAL-RESULT` | management |
+| `SPLIT` `FORK` `SUBTASK{` `RESULTS` `REDUCE"` `PROGRESS` | decomposition |
+| `AUTO-CLAIM` `TIMEOUT` | execution control |
+
+### Monitoring
+
+| Word | Description |
+|------|-------------|
+| `WATCH"` `WATCH-FILE"` `WATCH-PROC"` | create watches |
+| `WATCHES` `UNWATCH` `WATCH-LOG` `UPTIME` | manage watches |
+| `ON-ALERT"` `ALERTS` `ACK` `ALERT-HISTORY` `HEAL` | alerting |
+| `DASHBOARD` `HEALTH` `OPS` | overview |
+| `EVERY` `SCHEDULE` `UNSCHED` | scheduling |
+
+### Fitness & Evolution
+
+| Word | Description |
+|------|-------------|
+| `FITNESS` `LEADERBOARD` `RATE` | scoring |
+| `MUTATE` `MUTATE-WORD"` `UNDO-MUTATE` `MUTATIONS` | mutation |
+| `EVOLVE` `AUTO-EVOLVE` `BENCHMARK"` | evolution |
+
+### Spawn & Replication
+
+| Word | Description |
+|------|-------------|
+| `SPAWN` `SPAWN-N` | local replication |
+| `PACKAGE` `PACKAGE-SIZE` | build UREP package |
+| `REPLICATE-TO"` | remote replication |
+| `CHILDREN` `FAMILY` `GENERATION` `KILL-CHILD` | lineage |
+| `ACCEPT-REPLICATE` `DENY-REPLICATE` `QUARANTINE` `MAX-CHILDREN` | safety |
+
+### Trust & Consent
+
+| Word | Description |
+|------|-------------|
+| `TRUST-ALL` `TRUST-MESH` `TRUST-FAMILY` `TRUST-NONE` | trust levels |
+| `TRUST-LEVEL` `REQUESTS` `ACCEPT` `DENY` `DENY-ALL` | consent flow |
+| `REPLICATION-LOG` | audit trail |
+| `SECURE-SWARM` `LOCKDOWN` | presets |
+
+### Persistence
+
+| Word | Description |
+|------|-------------|
+| `SAVE` `LOAD-STATE` `RESET` | state management |
+| `SNAPSHOT` `SNAPSHOTS` `RESTORE` | versioned backups |
+| `AUTO-SAVE` `REIDENTIFY` | automation |
+
+## Binary Sizes
+
+| Target | Size |
+|--------|------|
+| Native (Linux/macOS) | ~700KB |
+| WASM (browser) | ~230KB |
+| UREP replication package | ~650KB |
 
 ## License
 
-CC0 1.0 Universal — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
