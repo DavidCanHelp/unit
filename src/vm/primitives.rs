@@ -99,7 +99,7 @@ impl super::VM {
         let b = self.pop();
         let a = self.pop();
         if b == 0 {
-            eprintln!("division by zero");
+            self.emit_str("error: division by zero\n");
             self.stack.push(0);
         } else {
             self.stack.push(a / b);
@@ -110,7 +110,7 @@ impl super::VM {
         let b = self.pop();
         let a = self.pop();
         if b == 0 {
-            eprintln!("division by zero");
+            self.emit_str("error: division by zero\n");
             self.stack.push(0);
         } else {
             self.stack.push(a % b);

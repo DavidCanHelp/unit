@@ -320,6 +320,45 @@ run_test "string-in-def"    ': MSG ." hello world" ; MSG'   "hello world"   cont
 rm -rf ~/.unit 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+# 19. CLI ARGUMENTS
+# ---------------------------------------------------------------------------
+
+echo "--- 19. CLI Arguments ---"
+
+# Direct CLI tests (not piped input).
+cli_test() {
+    local name="$1" result="$2"
+    TOTAL=$((TOTAL + 1))
+    if [ "$result" -eq 0 ]; then
+        echo "  PASS  $name"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL  $name"
+        FAIL=$((FAIL + 1))
+        FAILURES="$FAILURES\n  FAIL  $name"
+    fi
+}
+
+"$BINARY" --version 2>&1 | grep -qF 'unit v'
+cli_test "cli-version" $?
+
+"$BINARY" --help 2>&1 | grep -qF 'USAGE'
+cli_test "cli-help" $?
+
+"$BINARY" --quiet --eval "2 3 + ." 2>/dev/null | grep -qF '5'
+cli_test "cli-eval" $?
+
+"$BINARY" --quiet --eval ": SQ DUP * ; 7 SQ ." 2>/dev/null | grep -qF '49'
+cli_test "cli-eval-word" $?
+
+"$BINARY" --quiet --no-mesh --no-prelude --eval "BLARG" 2>/dev/null | grep -qF "error: unknown word"
+cli_test "cli-eval-error" $?
+
+QUIET_OUT=$(echo 'BYE' | "$BINARY" --quiet --no-mesh --no-prelude 2>/dev/null)
+echo "$QUIET_OUT" | grep -qvF 'seed online'
+cli_test "cli-quiet" $?
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 

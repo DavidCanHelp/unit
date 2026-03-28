@@ -22,7 +22,7 @@ impl super::VM {
                 body: Vec::new(),
             });
         } else {
-            eprintln!("expected word name after :");
+            self.emit_str("error: expected word name after ':'\n");
         }
     }
 
@@ -31,7 +31,7 @@ impl super::VM {
             self.dictionary.push(def);
             self.compiling = false;
         } else {
-            eprintln!("; without matching :");
+            self.emit_str("error: ; without matching ':'\n");
         }
     }
 
@@ -46,7 +46,7 @@ impl super::VM {
                 body: vec![Instruction::Literal(addr)],
             });
         } else {
-            eprintln!("expected word name after CREATE");
+            self.emit_str("error: expected word name after CREATE\n");
         }
     }
 
@@ -68,7 +68,7 @@ impl super::VM {
                 body: vec![Instruction::Literal(addr as Cell)],
             });
         } else {
-            eprintln!("expected word name after VARIABLE");
+            self.emit_str("error: expected word name after VARIABLE\n");
         }
     }
 
@@ -82,7 +82,7 @@ impl super::VM {
                 body: vec![Instruction::Literal(val)],
             });
         } else {
-            eprintln!("expected word name after CONSTANT");
+            self.emit_str("error: expected word name after CONSTANT\n");
         }
     }
 

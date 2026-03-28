@@ -607,7 +607,7 @@ impl VM {
             return;
         }
         if !self.silent {
-            eprintln!("{}?", word);
+            self.emit_str(&format!("error: unknown word '{}'\n", word));
         }
     }
 
@@ -628,7 +628,7 @@ impl VM {
             }
             return;
         }
-        eprintln!("{}?", word);
+        self.emit_str(&format!("error: unknown word '{}'\n", word));
         self.compiling = false;
         self.current_def = None;
     }
@@ -927,14 +927,14 @@ impl VM {
     // -----------------------------------------------------------------------
     pub(crate) fn pop(&mut self) -> Cell {
         self.stack.pop().unwrap_or_else(|| {
-            eprintln!("stack underflow");
+            self.emit_str("error: stack underflow\n");
             0
         })
     }
 
     pub(crate) fn rpop(&mut self) -> Cell {
         self.rstack.pop().unwrap_or_else(|| {
-            eprintln!("return stack underflow");
+            self.emit_str("error: return stack underflow\n");
             0
         })
     }

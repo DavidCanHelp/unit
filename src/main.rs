@@ -2292,107 +2292,169 @@ impl VM {
 }
 
 // ===========================================================================
+// CLI argument parsing
+// ===========================================================================
+
+const VERSION: &str = "unit v0.10.4";
+
+fn print_help() {
+    println!("{}", VERSION);
+    println!("A self-replicating software nanobot.\n");
+    println!("USAGE:");
+    println!("  unit                        Start interactive REPL");
+    println!("  unit --eval \"2 3 + .\"       Evaluate and print result");
+    println!("  unit --port 4201 --swarm    Start swarm node on port 4201");
+    println!("  unit --file script.fs       Load a Forth script\n");
+    println!("OPTIONS:");
+    println!("  -h, --help                  Show this help");
+    println!("  -v, --version               Print version and exit");
+    println!("  -q, --quiet                 Suppress boot banner");
+    println!("  --port PORT                 Set mesh UDP port (or UNIT_PORT env)");
+    println!("  --peers HOST:PORT,...       Set seed peers (or UNIT_PEERS env)");
+    println!("  --ws-port PORT             Set WebSocket bridge port");
+    println!("  --eval \"FORTH CODE\"         Evaluate code, print output, exit");
+    println!("  --file PATH                Load a .fs file, then start REPL");
+    println!("  --no-mesh                  Start without mesh networking");
+    println!("  --no-prelude               Start without loading prelude.fs");
+    println!("  --swarm                    Start with SWARM-ON");
+    println!("  --trust LEVEL              Set trust: all, mesh, family, none");
+}
+
+struct CliArgs {
+    port: Option<u16>,
+    peers: Option<String>,
+    ws_port: Option<u16>,
+    eval_code: Option<String>,
+    file_path: Option<String>,
+    no_mesh: bool,
+    no_prelude: bool,
+    swarm: bool,
+    trust: Option<String>,
+    quiet: bool,
+}
+
+fn parse_args() -> Option<CliArgs> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut cli = CliArgs {
+        port: None, peers: None, ws_port: None, eval_code: None,
+        file_path: None, no_mesh: false, no_prelude: false,
+        swarm: false, trust: None, quiet: false,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-h" | "--help" => { print_help(); std::process::exit(0); }
+            "-v" | "--version" => { println!("{}", VERSION); std::process::exit(0); }
+            "-q" | "--quiet" => cli.quiet = true,
+            "--port" => { i += 1; cli.port = args.get(i).and_then(|s| s.parse().ok()); }
+            "--peers" => { i += 1; cli.peers = args.get(i).cloned(); }
+            "--ws-port" => { i += 1; cli.ws_port = args.get(i).and_then(|s| s.parse().ok()); }
+            "--eval" => { i += 1; cli.eval_code = args.get(i).cloned(); }
+            "--file" => { i += 1; cli.file_path = args.get(i).cloned(); }
+            "--no-mesh" => cli.no_mesh = true,
+            "--no-prelude" => cli.no_prelude = true,
+            "--swarm" => cli.swarm = true,
+            "--trust" => { i += 1; cli.trust = args.get(i).cloned(); }
+            other => { eprintln!("unknown option: {}", other); std::process::exit(1); }
+        }
+        i += 1;
+    }
+    Some(cli)
+}
+
+// ===========================================================================
 // Entry point
 // ===========================================================================
 
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 fn main() {
+    let cli = parse_args().unwrap();
     let mut vm = VM::new();
+    vm.silent = cli.quiet;
 
-    // Parse mesh configuration from environment.
-    let port: u16 = std::env::var("UNIT_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
+    // Port: CLI flag > env var > default 0.
+    let port: u16 = cli.port
+        .or_else(|| std::env::var("UNIT_PORT").ok().and_then(|s| s.parse().ok()))
         .unwrap_or(0);
 
-    let seed_peers: Vec<SocketAddr> = std::env::var("UNIT_PEERS")
-        .unwrap_or_default()
+    let peers_str = cli.peers
+        .or_else(|| std::env::var("UNIT_PEERS").ok())
+        .unwrap_or_default();
+    let seed_peers: Vec<SocketAddr> = peers_str
         .split(',')
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.trim().parse().ok())
         .collect();
 
-    // Load or generate a persistent node identity.
-    // Check for forced node ID from environment (set by parent during spawn).
-    let env_node_id: Option<[u8; 8]> = std::env::var("UNIT_NODE_ID").ok().and_then(|hex| {
-        if hex.len() != 16 { return None; }
-        let mut id = [0u8; 8];
-        for i in 0..8 {
-            id[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
-        }
-        Some(id)
-    });
-
-    let persisted_id = env_node_id.or_else(persist::load_node_id);
-    let resumed = persisted_id.is_some() && env_node_id.is_none();
-
-    // Start the mesh networking layer with the stable identity.
-    match mesh::MeshNode::start_with_id(persisted_id, port, seed_peers) {
-        Ok(node) => {
-            let id = node.id_bytes();
-            let seed = u64::from_be_bytes(id);
-            vm.rng = mutation::SimpleRng::new(seed);
-            vm.node_id_cache = Some(id);
-            // Save the ID for next boot (no-op if already saved).
-            let _ = persist::save_node_id(&id);
-            if resumed {
-                eprintln!("resumed identity {}", mesh::id_to_hex(&id));
+    // Start mesh unless --no-mesh.
+    if !cli.no_mesh {
+        let env_node_id: Option<[u8; 8]> = std::env::var("UNIT_NODE_ID").ok().and_then(|hex| {
+            if hex.len() != 16 { return None; }
+            let mut id = [0u8; 8];
+            for i in 0..8 {
+                id[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
             }
-            vm.mesh = Some(node);
+            Some(id)
+        });
 
-            // Start WebSocket bridge for browser connectivity.
-            let ws_port: u16 = std::env::var("UNIT_WS_PORT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_else(|| if port > 0 { port + 2000 } else { 0 });
-            if ws_port > 0 {
-                match ws_bridge::start_ws_bridge(ws_port, vm.ws_mesh_json.clone()) {
-                    Ok((ws_st, ws_rx)) => {
-                        vm.ws_state = Some(ws_st);
-                        vm.ws_events = Some(ws_rx);
-                        eprintln!("ws-bridge: listening on port {}", ws_port);
-                    }
-                    Err(e) => eprintln!("ws-bridge: {}", e),
+        let persisted_id = env_node_id.or_else(persist::load_node_id);
+        let resumed = persisted_id.is_some() && env_node_id.is_none();
+
+        match mesh::MeshNode::start_with_id(persisted_id, port, seed_peers) {
+            Ok(node) => {
+                let id = node.id_bytes();
+                let seed = u64::from_be_bytes(id);
+                vm.rng = mutation::SimpleRng::new(seed);
+                vm.node_id_cache = Some(id);
+                let _ = persist::save_node_id(&id);
+                if resumed && !cli.quiet {
+                    eprintln!("resumed identity {}", mesh::id_to_hex(&id));
                 }
-            }
+                vm.mesh = Some(node);
 
-            // Parse generation and parent ID from environment (set by parent during spawn).
-            if let Ok(gen_str) = std::env::var("UNIT_GENERATION") {
-                if let Ok(gen) = gen_str.parse::<u32>() {
-                    vm.spawn_state.generation = gen;
-                }
-            }
-            if let Ok(parent_hex) = std::env::var("UNIT_PARENT_ID") {
-                if parent_hex.len() == 16 {
-                    let mut pid = [0u8; 8];
-                    let mut ok = true;
-                    for i in 0..8 {
-                        match u8::from_str_radix(&parent_hex[i * 2..i * 2 + 2], 16) {
-                            Ok(b) => pid[i] = b,
-                            Err(_) => { ok = false; break; }
+                let ws_port: u16 = cli.ws_port
+                    .or_else(|| std::env::var("UNIT_WS_PORT").ok().and_then(|s| s.parse().ok()))
+                    .unwrap_or_else(|| if port > 0 { port + 2000 } else { 0 });
+                if ws_port > 0 {
+                    match ws_bridge::start_ws_bridge(ws_port, vm.ws_mesh_json.clone()) {
+                        Ok((ws_st, ws_rx)) => {
+                            vm.ws_state = Some(ws_st);
+                            vm.ws_events = Some(ws_rx);
+                            if !cli.quiet { eprintln!("ws-bridge: listening on port {}", ws_port); }
                         }
+                        Err(e) => { if !cli.quiet { eprintln!("ws-bridge: {}", e); } }
                     }
-                    if ok {
-                        vm.spawn_state.parent_id = Some(pid);
+                }
+
+                if let Ok(gen_str) = std::env::var("UNIT_GENERATION") {
+                    if let Ok(gen) = gen_str.parse::<u32>() {
+                        vm.spawn_state.generation = gen;
+                    }
+                }
+                if let Ok(parent_hex) = std::env::var("UNIT_PARENT_ID") {
+                    if parent_hex.len() == 16 {
+                        let mut pid = [0u8; 8];
+                        let mut ok = true;
+                        for i in 0..8 {
+                            match u8::from_str_radix(&parent_hex[i * 2..i * 2 + 2], 16) {
+                                Ok(b) => pid[i] = b,
+                                Err(_) => { ok = false; break; }
+                            }
+                        }
+                        if ok { vm.spawn_state.parent_id = Some(pid); }
                     }
                 }
             }
-        }
-        Err(e) => {
-            eprintln!("mesh: failed to start: {}", e);
+            Err(e) => {
+                if !cli.quiet { eprintln!("mesh: failed to start: {}", e); }
+            }
         }
     }
 
-    // Update the load metric (dictionary size) now that mesh is running.
     if let Some(ref m) = vm.mesh {
         m.set_load(vm.dictionary.len() as u32);
     }
 
-    // Attempt to restore saved state.
+    // Restore state or load prelude.
     let mut restored = false;
     if let Some(id) = vm.node_id_cache {
         if let Some(data) = persist::load_state(&id) {
@@ -2407,13 +2469,61 @@ fn main() {
                     st.goals = snap.goals;
                 }
                 restored = true;
-                eprintln!("restored from {}/state.bin", persist::state_dir(&id));
+                if !cli.quiet {
+                    eprintln!("restored from {}/state.bin", persist::state_dir(&id));
+                }
             }
         }
     }
 
-    if !restored {
+    if !restored && !cli.no_prelude {
+        // Suppress prelude output for --eval and --quiet modes.
+        let suppress = cli.eval_code.is_some() || cli.quiet;
+        if suppress { vm.output_buffer = Some(String::new()); }
         vm.load_prelude();
+        if suppress { vm.output_buffer = None; }
     }
+    vm.silent = false;
+
+    // Apply --trust.
+    if let Some(ref level) = cli.trust {
+        match level.as_str() {
+            "all" => vm.interpret_line("TRUST-ALL"),
+            "mesh" => vm.interpret_line("TRUST-MESH"),
+            "family" => vm.interpret_line("TRUST-FAMILY"),
+            "none" => vm.interpret_line("TRUST-NONE"),
+            _ => eprintln!("unknown trust level: {}", level),
+        }
+    }
+
+    // Apply --swarm.
+    if cli.swarm {
+        vm.interpret_line("SWARM-ON");
+    }
+
+    // --file: load a Forth script.
+    if let Some(ref path) = cli.file_path {
+        match std::fs::read_to_string(path) {
+            Ok(source) => {
+                for line in source.lines() {
+                    vm.interpret_line(line);
+                }
+            }
+            Err(e) => {
+                eprintln!("error: cannot read {}: {}", path, e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // --eval: evaluate and exit.
+    if let Some(ref code) = cli.eval_code {
+        let output = vm.eval(code);
+        if !output.is_empty() {
+            print!("{}", output);
+        }
+        return;
+    }
+
     vm.repl();
 }
