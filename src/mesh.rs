@@ -948,7 +948,7 @@ impl MeshNode {
     }
 
     /// Start a discovery listener on the shared beacon port.
-    pub fn start_discovery_listener(
+    pub(crate) fn start_discovery_listener(
         state: Arc<Mutex<MeshState>>,
         my_id: NodeId,
     ) {

@@ -52,7 +52,7 @@ unsafe fn libc_kill(pid: i32, sig: i32) -> i32 {
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use types::{Cell, Entry, Instruction, PAD};
+use types::{Cell, Instruction, PAD};
 use features::{fitness, io_words, mutation, monitor, ws_bridge};
 use vm::VM;
 use vm::*; // import P_* constants
@@ -88,7 +88,7 @@ impl VM {
         let upper = name.to_uppercase();
         // Find the word and reconstruct its source (simplified: use SEE-like decompilation).
         if let Some(idx) = self.find_word(&upper) {
-            let entry = &self.dictionary[idx];
+            let _entry = &self.dictionary[idx];
             // Build a Forth source representation.
             let source = format!(": {} ;", upper); // simplified — real impl would decompile
             if let Some(ref m) = self.mesh {

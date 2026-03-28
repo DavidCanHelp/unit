@@ -12,7 +12,7 @@ mod tests;
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, Write};
 use std::time::Instant;
-use crate::types::{Cell, Entry, Instruction, PAD};
+use crate::types::{Cell, Entry, Instruction};
 
 // ---------------------------------------------------------------------------
 // Primitive IDs — assigned in registration order

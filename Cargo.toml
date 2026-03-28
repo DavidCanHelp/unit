@@ -2,8 +2,21 @@
 name = "unit"
 version = "0.10.1"
 edition = "2021"
-description = "A software nanobot — minimal Forth interpreter that is also a self-replicating networked agent"
+description = "A self-replicating software nanobot — minimal Forth interpreter that is also a networked mesh agent"
 license = "CC0-1.0"
+repository = "https://github.com/DavidCanHelp/unit"
+homepage = "https://davidcanhelp.github.io/unit/"
+documentation = "https://github.com/DavidCanHelp/unit#readme"
+readme = "README.md"
+keywords = ["forth", "mesh", "self-replicating", "distributed", "nanobot"]
+categories = ["command-line-utilities", "network-programming"]
+authors = ["David Liedle <david.liedle@protonmail.com>"]
+exclude = [
+  "web/*",
+  "tests/*",
+  "target/*",
+  ".github/*",
+]
 
 [dependencies]
 

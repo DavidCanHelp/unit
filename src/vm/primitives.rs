@@ -4,7 +4,7 @@
 // arithmetic, memory access, I/O, and debugging.
 
 use crate::types::{Cell, Instruction};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 
 impl super::VM {
     // -----------------------------------------------------------------------
