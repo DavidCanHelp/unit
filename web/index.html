@@ -32,39 +32,34 @@
     background: #111; border: 1px solid #222; padding: 2px 6px;
     border-radius: 3px; color: #00ff88; font-size: 11px;
   }
-  #mesh-bar {
-    padding: 4px 14px; border-bottom: 1px solid #111;
-    display: flex; gap: 8px; align-items: center; font-size: 11px;
-  }
-  #mesh-bar .dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    display: inline-block; margin-right: 2px;
-  }
-  .dot-off { background: #600; }
-  .dot-on { background: #0a0; }
-  #ws-url {
-    background: #111; border: 1px solid #222; color: #888;
-    font-family: inherit; font-size: 11px; padding: 1px 6px;
-    border-radius: 2px; width: 220px; outline: none;
-  }
-  #ws-url:focus { border-color: #444; color: #00ff88; }
-  #ws-btn {
-    background: #111; border: 1px solid #222; color: #555;
-    font-family: inherit; font-size: 11px; padding: 1px 8px;
-    border-radius: 2px; cursor: pointer;
-  }
-  #ws-btn:hover { color: #00ff88; border-color: #444; }
-  #mesh-status { color: #555; }
   #terminal {
     flex: 1; overflow-y: auto; padding: 12px; white-space: pre-wrap;
     word-wrap: break-word; font-size: 13px; line-height: 1.4;
   }
+  #tutorial-bar {
+    padding: 6px 14px; border-top: 1px solid #1a2a1a;
+    border-left: 3px solid #0a4a0a; background: #0a0f0a;
+    font-size: 12px; color: #4a7a4a; display: flex;
+    justify-content: space-between; align-items: center;
+    min-height: 28px;
+  }
+  #tutorial-bar .step { color: #2a5a2a; font-size: 10px; }
+  #tutorial-bar .cmd {
+    color: #00ff88; background: #0d1a0d; padding: 1px 6px;
+    border-radius: 2px; cursor: pointer; border: 1px solid #1a3a1a;
+  }
+  #tutorial-bar .cmd:hover { background: #0a2a0a; }
+  #tutorial-bar .skip {
+    color: #333; cursor: pointer; font-size: 10px;
+    margin-left: 12px;
+  }
+  #tutorial-bar .skip:hover { color: #666; }
+  #tutorial-bar .links a { margin: 0 6px; font-size: 11px; }
   #hints {
     padding: 4px 14px 6px; border-top: 1px solid #111;
     font-size: 11px; color: #333; display: flex; gap: 8px;
     flex-wrap: wrap; align-items: center;
   }
-  #hints span { color: #444; }
   .hint {
     color: #2a6; cursor: pointer; background: #0d0d0d;
     padding: 1px 5px; border-radius: 2px; border: 1px solid #1a1a1a;
@@ -84,35 +79,23 @@
   .error { color: #ff4444; }
   .info { color: #555; }
   .mesh-event { color: #886; }
+  .tutorial-msg { color: #3a6a3a; font-style: italic; }
 </style>
 </head>
 <body>
 <div id="info">
   <div id="info-left">
     <span class="title">unit</span>
-    <span class="desc">A self-replicating Forth mesh agent. Type Forth below.</span>
+    <span class="desc">A self-replicating Forth mesh agent.</span>
   </div>
   <div id="info-right">
     <span class="badge">226KB WASM</span>
     <a href="https://github.com/DavidCanHelp/unit">GitHub</a>
   </div>
 </div>
-<div id="mesh-bar">
-  <span class="dot dot-off" id="mesh-dot"></span>
-  <span id="mesh-status">mesh: offline</span>
-  <input id="ws-url" type="text" value="" spellcheck="false" placeholder="ws://localhost:6201">
-  <button id="ws-btn" onclick="toggleMesh()">Connect</button>
-</div>
 <div id="terminal" onclick="document.getElementById('input').focus()"></div>
-<div id="hints">
-  <span>try:</span>
-  <span class="hint" onclick="paste(this)">2 3 + .</span>
-  <span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span>
-  <span class="hint" onclick="paste(this)">WORDS</span>
-  <span class="hint" onclick="paste(this)">10 0 DO I . LOOP</span>
-  <span class="hint" onclick="paste(this)">5 3 > IF ." yes" ELSE ." no" THEN</span>
-  <span class="hint" onclick="paste(this)">DASHBOARD</span>
-</div>
+<div id="tutorial-bar"></div>
+<div id="hints"></div>
 <div id="input-line">
   <span id="prompt">&gt;</span>
   <input id="input" type="text" autofocus autocomplete="off" spellcheck="false">
@@ -122,14 +105,123 @@
 <script>
   const terminal = document.getElementById('terminal');
   const input = document.getElementById('input');
-  const meshDot = document.getElementById('mesh-dot');
-  const meshStatusEl = document.getElementById('mesh-status');
-  const wsUrlInput = document.getElementById('ws-url');
-  const wsBtn = document.getElementById('ws-btn');
+  const tutorialBar = document.getElementById('tutorial-bar');
+  const hintsBar = document.getElementById('hints');
   let vm = null;
   let mesh = null;
   let history = [];
   let histIdx = -1;
+
+  // -----------------------------------------------------------------------
+  // Tutorial
+  // -----------------------------------------------------------------------
+  const STEPS = [
+    { cmd: '2 3 + .',
+      before: 'Welcome to unit. Type the highlighted command to begin \u2192',
+      after: 'You just used a stack-based language. 2 and 3 go on the stack, + adds them, . prints the result.' },
+    { cmd: ': SQUARE DUP * ;',
+      before: 'Now define a word \u2192',
+      after: 'You created a new word. SQUARE duplicates the top of the stack and multiplies. The language just grew.' },
+    { cmd: '7 SQUARE .',
+      before: 'Use it \u2192',
+      after: '49. Your word works. In unit, everything is built this way \u2014 from simple pieces.' },
+    { cmd: 'SEE SQUARE',
+      before: 'See inside it \u2192',
+      after: 'The dictionary is transparent. Every word can be inspected, modified, even shared across a network.' },
+    { cmd: 'WORDS',
+      before: 'List all words \u2192',
+      after: '~160 words. Stack ops, arithmetic, mesh networking, self-replication, monitoring \u2014 all from a 226KB binary.' },
+    { cmd: '10 0 DO I . LOOP',
+      before: 'Try a loop \u2192',
+      after: 'Control flow works at the REPL \u2014 no compilation step needed. This is a live, interactive system.' },
+    { cmd: 'DASHBOARD',
+      before: 'Check the dashboard \u2192',
+      after: 'In a native mesh, this shows live watches, alerts, peer status, and sparkline trends. This is an ops tool.' },
+    { cmd: '." I am a software nanobot."',
+      before: 'One last thing \u2192',
+      after: null }, // handled specially
+  ];
+  let tutorialStep = 0;
+  let tutorialActive = true;
+  let tutorialComplete = false;
+
+  function renderTutorial() {
+    if (!tutorialActive || tutorialComplete) {
+      tutorialBar.style.display = 'none';
+      renderHints();
+      return;
+    }
+    tutorialBar.style.display = 'flex';
+    const step = STEPS[tutorialStep];
+    tutorialBar.innerHTML = `
+      <div>
+        <span class="step">${tutorialStep + 1}/8</span>
+        ${step.before}
+        <span class="cmd" onclick="pasteCmd('${step.cmd.replace(/'/g, "\\'")}')">${step.cmd}</span>
+        <span class="skip" onclick="skipTutorial()">skip tutorial</span>
+      </div>`;
+    renderHints();
+  }
+
+  function renderHints() {
+    if (tutorialActive && !tutorialComplete && tutorialStep < STEPS.length) {
+      const step = STEPS[tutorialStep];
+      hintsBar.innerHTML = `<span class="hint" onclick="pasteCmd('${step.cmd.replace(/'/g, "\\'")}')">${step.cmd}</span>`;
+    } else {
+      hintsBar.innerHTML = `
+        <span style="color:#444">try:</span>
+        <span class="hint" onclick="paste(this)">2 3 + .</span>
+        <span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span>
+        <span class="hint" onclick="paste(this)">WORDS</span>
+        <span class="hint" onclick="paste(this)">10 0 DO I . LOOP</span>
+        <span class="hint" onclick="paste(this)">DASHBOARD</span>`;
+    }
+  }
+
+  function advanceTutorial(line) {
+    if (!tutorialActive || tutorialComplete) return;
+    const step = STEPS[tutorialStep];
+    if (line.trim() === step.cmd.trim()) {
+      tutorialStep++;
+      if (tutorialStep >= STEPS.length) {
+        finishTutorial();
+      } else {
+        // Show the "after" message for the step we just completed.
+        appendOutput(step.after + '\n\n', 'tutorial-msg');
+        renderTutorial();
+      }
+    }
+  }
+
+  function finishTutorial() {
+    tutorialComplete = true;
+    tutorialBar.innerHTML = `
+      <div>
+        Tutorial complete. You're inside a software nanobot.
+        <span class="links">
+          <a href="https://github.com/DavidCanHelp/unit">GitHub</a>
+          <a href="https://crates.io/crates/unit">crates.io</a>
+          <a href="#">cargo install unit</a>
+        </span>
+      </div>`;
+    tutorialBar.style.display = 'flex';
+    setTimeout(() => { tutorialBar.style.display = 'none'; renderHints(); }, 12000);
+    appendOutput("And that's unit. A self-replicating Forth interpreter that is also a networked mesh agent.\ncargo install unit to run it for real.\n\n", 'tutorial-msg');
+  }
+
+  function skipTutorial() {
+    tutorialActive = false;
+    renderTutorial();
+  }
+
+  function pasteCmd(cmd) {
+    input.value = cmd;
+    input.focus();
+  }
+
+  // -----------------------------------------------------------------------
+  // Core
+  // -----------------------------------------------------------------------
 
   function appendOutput(text, className) {
     if (!text) return;
@@ -145,53 +237,10 @@
     input.focus();
   }
 
-  function updateMeshUI(status, detail) {
-    if (status === 'connected') {
-      meshDot.className = 'dot dot-on';
-      const p = mesh ? mesh.peers : 0;
-      const b = mesh ? mesh.browsers : 0;
-      meshStatusEl.textContent = `mesh: connected (${p} peers, ${b} browsers)`;
-      wsBtn.textContent = 'Disconnect';
-    } else {
-      meshDot.className = 'dot dot-off';
-      let msg = detail ? detail : 'offline';
-      meshStatusEl.textContent = `mesh: ${msg.substring(0, 60)}`;
-      wsBtn.textContent = 'Connect';
-    }
-  }
-
-  function toggleMesh() {
-    if (mesh && mesh.isConnected()) {
-      mesh.disconnect();
-      appendOutput('[mesh disconnected]\n', 'mesh-event');
-    } else {
-      let url = wsUrlInput.value.trim();
-      if (!url) {
-        // Auto-detect: connect to WS on the same host:port we were loaded from.
-        url = 'ws://' + location.host + '/';
-        wsUrlInput.value = url;
-      }
-      if (!mesh) {
-        mesh = new MeshClient(
-          (msg) => {
-            // Handle mesh messages.
-            if (msg.type === 'broadcast' && msg.message) {
-              appendOutput(`[mesh] ${msg.message}\n`, 'mesh-event');
-            }
-          },
-          (status, detail) => updateMeshUI(status, detail)
-        );
-      }
-      mesh.connect(url);
-      appendOutput(`[connecting to ${url}...]\n`, 'mesh-event');
-    }
-  }
-
   async function init() {
     try {
       vm = await UnitVM.create('unit.wasm');
-      appendOutput('unit v0.8.0 \u2014 WASM seed online\n', 'info');
-      appendOutput('Type Forth commands. Connect to a native mesh above.\n\n', 'info');
+      renderTutorial();
     } catch (e) {
       appendOutput('Failed to load WASM: ' + e.message + '\n', 'error');
       appendOutput('Build with: make build-wasm\n', 'info');
@@ -214,18 +263,12 @@
     if (line.trim()) { history.push(line); histIdx = -1; }
     appendOutput('> ' + line + '\n', 'info');
 
-    // Check if this is a GOAL{ } submission — forward to mesh if connected.
-    if (mesh && mesh.isConnected() && line.includes('GOAL{')) {
-      const match = line.match(/(\d+)\s+GOAL\{\s*(.*?)\s*\}/);
-      if (match) {
-        mesh.submitGoal(match[2], parseInt(match[1]));
-        appendOutput(`[submitted to mesh: ${match[2]}]\n`, 'mesh-event');
-      }
-    }
-
     const result = vm.eval(line);
     if (result) appendOutput(result);
     appendOutput(' ok\n', 'info');
+
+    advanceTutorial(line);
+
     if (!vm.isRunning()) {
       appendOutput('\n[unit exited]\n', 'info');
       input.disabled = true;

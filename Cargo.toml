@@ -1,6 +1,6 @@
 [package]
 name = "unit"
-version = "0.10.2"
+version = "0.10.3"
 edition = "2021"
 description = "A self-replicating software nanobot — minimal Forth interpreter that is also a networked mesh agent"
 license = "MIT"
