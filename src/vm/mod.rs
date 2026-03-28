@@ -204,6 +204,19 @@ pub(crate) const P_ACCEPT_REQ: usize = 356;
 pub(crate) const P_DENY_REQ: usize = 357;
 pub(crate) const P_DENY_ALL_REQ: usize = 358;
 pub(crate) const P_REPLICATION_LOG: usize = 359;
+// Atom primitives (raw data for Forth-level orchestration)
+pub(crate) const P_GOAL_COUNT: usize = 400;
+pub(crate) const P_TASK_COUNT: usize = 401;
+pub(crate) const P_WATCH_COUNT: usize = 402;
+pub(crate) const P_ALERT_COUNT: usize = 403;
+pub(crate) const P_CHILD_COUNT: usize = 404;
+pub(crate) const P_MESH_AVG_FITNESS: usize = 405;
+pub(crate) const P_CHECK_WATCHES: usize = 406;
+pub(crate) const P_RUN_HANDLERS: usize = 407;
+pub(crate) const P_RUN_BENCHMARK: usize = 408;
+pub(crate) const P_MUTATE_RANDOM: usize = 409;
+pub(crate) const P_UNDO_LAST_MUTATION: usize = 410;
+pub(crate) const P_PEER_COUNT: usize = 411;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -507,6 +520,19 @@ impl VM {
             ("DENY", P_DENY_REQ, false),
             ("DENY-ALL", P_DENY_ALL_REQ, false),
             ("REPLICATION-LOG", P_REPLICATION_LOG, false),
+            // Atom primitives (raw data for Forth orchestration)
+            ("GOAL-COUNT", P_GOAL_COUNT, false),
+            ("TASK-COUNT", P_TASK_COUNT, false),
+            ("WATCH-COUNT", P_WATCH_COUNT, false),
+            ("ALERT-COUNT", P_ALERT_COUNT, false),
+            ("CHILD-COUNT", P_CHILD_COUNT, false),
+            ("MESH-AVG-FITNESS", P_MESH_AVG_FITNESS, false),
+            ("CHECK-WATCHES", P_CHECK_WATCHES, false),
+            ("RUN-HANDLERS", P_RUN_HANDLERS, false),
+            ("RUN-BENCHMARK", P_RUN_BENCHMARK, false),
+            ("MUTATE-RANDOM", P_MUTATE_RANDOM, false),
+            ("UNDO-LAST-MUTATION", P_UNDO_LAST_MUTATION, false),
+            ("PEER-COUNT", P_PEER_COUNT, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -912,6 +938,19 @@ impl VM {
             P_DENY_REQ => self.prim_deny_req(),
             P_DENY_ALL_REQ => self.prim_deny_all_req(),
             P_REPLICATION_LOG => self.prim_replication_log(),
+            // Atom primitives
+            P_GOAL_COUNT => self.prim_goal_count(),
+            P_TASK_COUNT => self.prim_task_count(),
+            P_WATCH_COUNT => { let n = self.monitor.watches.len() as Cell; self.stack.push(n); }
+            P_ALERT_COUNT => { let n = self.monitor.alerts.len() as Cell; self.stack.push(n); }
+            P_CHILD_COUNT => { let n = self.spawn_state.children.len() as Cell; self.stack.push(n); }
+            P_MESH_AVG_FITNESS => self.prim_mesh_avg_fitness(),
+            P_CHECK_WATCHES => self.prim_check_watches(),
+            P_RUN_HANDLERS => self.prim_run_handlers(),
+            P_RUN_BENCHMARK => { let s = self.run_benchmark(); self.stack.push(s); }
+            P_MUTATE_RANDOM => self.prim_mutate_random_atom(),
+            P_UNDO_LAST_MUTATION => self.prim_undo_mutate(),
+            P_PEER_COUNT => { let n = self.mesh.as_ref().map(|m| m.peer_count()).unwrap_or(0) as Cell; self.stack.push(n); }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

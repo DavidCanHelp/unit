@@ -32,7 +32,53 @@
 \ --- Mesh helpers ---
 : MESH-HELLO ." Mesh node " ID TYPE ."  gen=" GENERATION . ." peers=" PEERS . ." fitness=" FITNESS . CR ;
 
-\ --- Goal helpers ---
+\ --- Orchestration (Forth-level composition of atom primitives) ---
+
+: REPORT ( -- )
+  CR ." --- mesh progress ---" CR
+  GOAL-COUNT
+  ." goals: " 4 0 DO . ." / " LOOP . ."  (total/pend/active/done/fail)" CR
+  TASK-COUNT
+  ." tasks: " 4 0 DO . ." / " LOOP . ."  (total/wait/run/done/fail)" CR
+  ." ---" CR
+;
+
+: FAMILY ( -- )
+  ." id: " ID TYPE ."  gen: " GENERATION .
+  ."  children: " CHILD-COUNT . CR
+;
+
+: DASHBOARD ( -- )
+  CR ." === UNIT OPS ===" CR
+  ." watches: " WATCH-COUNT . ."  alerts: " ALERT-COUNT . CR
+  ." peers: " PEER-COUNT . ."  fitness: " FITNESS . CR
+  GOAL-COUNT ." goals: " 4 0 DO . ." / " LOOP . CR
+  ." ---" CR
+;
+
+: HEAL ( -- )
+  ." --- heal ---" CR
+  CHECK-WATCHES
+  RUN-HANDLERS
+  ." --- done ---" CR
+;
+
+: >= ( a b -- flag ) < NOT ;
+
+: EVOLVE ( -- )
+  RUN-BENCHMARK
+  MUTATE-RANDOM IF
+    RUN-BENCHMARK
+    2DUP >= IF
+      ." kept (" . ." -> " . ." )" CR
+    ELSE
+      ." reverted (" . ." -> " . ." )" CR UNDO-LAST-MUTATION
+    THEN
+  ELSE
+    DROP ." no mutation" CR
+  THEN
+;
+
 : STATUS  ( -- ) MESH-STATUS GOALS TASKS FAMILY ;
 
 \ --- Built-in executable goals ---
@@ -54,6 +100,9 @@
 : SWARM-ON  ( -- ) AUTO-DISCOVER AUTO-SHARE AUTO-SPAWN TRUST-ALL ." swarm mode active" CR ;
 : SWARM-OFF ( -- ) ." swarm mode disabled" CR ;
 : SWARM     ( -- ) SWARM-STATUS MESH-STATUS LEADERBOARD ;
+
+\ --- OPS (recomposed from atoms) ---
+: OPS  ( -- ) DASHBOARD ALERTS SCHEDULE ;
 : SECURE-SWARM ( -- ) SWARM-ON TRUST-MESH ." swarm with mesh trust" CR ;
 : LOCKDOWN  ( -- ) TRUST-NONE QUARANTINE ." replication locked" CR ;
 
@@ -211,6 +260,6 @@
 ;
 
 \ --- Boot ---
-." unit v0.11.1 -- seed online" CR
+." unit v0.12.0 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
