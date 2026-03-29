@@ -40,6 +40,14 @@
   #input-line { display: flex; padding: 8px 14px; background: #0d0d0d; border-top: 1px solid #222; }
   #prompt { color: #00ff88; margin-right: 8px; line-height: 24px; }
   #input { flex: 1; background: transparent; border: none; outline: none; color: #00ff88; font-family: inherit; font-size: 14px; caret-color: #00ff88; }
+  #mesh-bar { padding: 4px 14px; border-bottom: 1px solid #111; display: flex; gap: 8px; align-items: center; font-size: 11px; }
+  #mesh-bar .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .dot-off { background: #600; } .dot-on { background: #0a0; }
+  #ws-url { background: #111; border: 1px solid #222; color: #888; font-family: inherit; font-size: 11px; padding: 1px 6px; border-radius: 2px; width: 200px; outline: none; }
+  #ws-url:focus { border-color: #444; color: #00ff88; }
+  #ws-btn { background: #111; border: 1px solid #222; color: #555; font-family: inherit; font-size: 11px; padding: 1px 8px; border-radius: 2px; cursor: pointer; }
+  #ws-btn:hover { color: #00ff88; border-color: #444; }
+  #mesh-status { color: #555; }
   .output { color: #bbb; } .error { color: #ff4444; } .info { color: #555; } .mesh-event { color: #886; } .tutorial-msg { color: #3a6a3a; font-style: italic; }
 </style>
 </head>
@@ -54,6 +62,12 @@
     <button class="mode-btn" id="viz-toggle" onclick="cycleVizMode()">mesh</button>
     <a href="https://github.com/DavidCanHelp/unit">GitHub</a>
   </div>
+</div>
+<div id="mesh-bar">
+  <span class="dot dot-off" id="mesh-dot"></span>
+  <span id="mesh-status">mesh: offline</span>
+  <input id="ws-url" type="text" value="" placeholder="ws://localhost:6201" spellcheck="false">
+  <button id="ws-btn" onclick="toggleMesh()">Connect</button>
 </div>
 <div id="viz"><canvas id="viz-canvas"></canvas><span id="viz-label"></span></div>
 <div id="terminal" onclick="document.getElementById('input').focus()"></div>
@@ -75,7 +89,77 @@ const vizCanvas = document.getElementById('viz-canvas');
 const vizLabel = document.getElementById('viz-label');
 const vizToggle = document.getElementById('viz-toggle');
 const ctx = vizCanvas.getContext('2d');
-let vm = null, mesh = null, history = [], histIdx = -1;
+const meshDot = document.getElementById('mesh-dot');
+const meshStatusEl = document.getElementById('mesh-status');
+const wsUrlInput = document.getElementById('ws-url');
+const wsBtn = document.getElementById('ws-btn');
+let vm = null, history = [], histIdx = -1;
+
+// =========================================================================
+// WebSocket Connection
+// =========================================================================
+let ws = null, wsReconnectTimer = null, wsReconnectDelay = 1000;
+
+function toggleMesh() {
+  if (ws && ws.readyState <= 1) {
+    // Disconnect
+    if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    ws.close();
+    ws = null;
+    updateMeshUI('offline');
+  } else {
+    // Connect
+    let url = wsUrlInput.value.trim();
+    if (!url) {
+      // Auto-detect: same host, port 6201 or page port
+      const port = location.port ? parseInt(location.port) : 6201;
+      url = 'ws://' + location.hostname + ':' + port + '/';
+      wsUrlInput.value = url;
+    }
+    wsConnect(url);
+  }
+}
+
+function wsConnect(url) {
+  try { ws = new WebSocket(url); } catch(e) { updateMeshUI('offline'); return; }
+  ws.onopen = () => {
+    wsReconnectDelay = 1000;
+    updateMeshUI('connected');
+    console.log('[mesh] connected');
+  };
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'mesh_state') {
+        updateMeshState(msg);
+        const n = (msg.peers || []).length;
+        updateMeshUI('connected', n);
+      }
+    } catch(err) {}
+  };
+  ws.onclose = () => {
+    console.log('[mesh] disconnected');
+    updateMeshUI('offline');
+    // Auto-reconnect with backoff
+    wsReconnectTimer = setTimeout(() => {
+      if (wsUrlInput.value.trim()) wsConnect(wsUrlInput.value.trim());
+    }, wsReconnectDelay);
+    wsReconnectDelay = Math.min(wsReconnectDelay * 1.5, 30000);
+  };
+  ws.onerror = () => { updateMeshUI('error'); };
+}
+
+function updateMeshUI(status, peerCount) {
+  if (status === 'connected') {
+    meshDot.className = 'dot dot-on';
+    meshStatusEl.textContent = peerCount !== undefined ? `mesh: connected (${peerCount} peers)` : 'mesh: connected';
+    wsBtn.textContent = 'Disconnect';
+  } else {
+    meshDot.className = 'dot dot-off';
+    meshStatusEl.textContent = status === 'error' ? 'mesh: connection failed' : 'mesh: offline';
+    wsBtn.textContent = 'Connect';
+  }
+}
 
 // =========================================================================
 // Mesh Visualizer
