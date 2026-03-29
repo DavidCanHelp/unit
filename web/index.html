@@ -67,7 +67,7 @@
   <span class="dot dot-off" id="mesh-dot"></span>
   <span id="mesh-status">mesh: offline</span>
   <input id="ws-url" type="text" value="" placeholder="ws://localhost:6201" spellcheck="false">
-  <button id="ws-btn" onclick="toggleMesh()">Connect</button>
+  <button id="ws-btn" onclick="wsToggle()">Connect</button>
 </div>
 <div id="viz"><canvas id="viz-canvas"></canvas><span id="viz-label"></span></div>
 <div id="terminal" onclick="document.getElementById('input').focus()"></div>
@@ -100,7 +100,13 @@ let vm = null, history = [], histIdx = -1;
 // =========================================================================
 let ws = null, wsReconnectTimer = null, wsReconnectDelay = 1000;
 
-function toggleMesh() {
+// Auto-detect WS URL on page load (not on every click).
+if (!wsUrlInput.value && location.hostname) {
+  const port = location.port ? parseInt(location.port) : 6201;
+  wsUrlInput.value = 'ws://' + location.hostname + ':' + port + '/';
+}
+
+function wsToggle() {
   if (ws && ws.readyState <= 1) {
     // Disconnect
     if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
@@ -108,14 +114,9 @@ function toggleMesh() {
     ws = null;
     updateMeshUI('offline');
   } else {
-    // Connect
-    let url = wsUrlInput.value.trim();
-    if (!url) {
-      // Auto-detect: same host, port 6201 or page port
-      const port = location.port ? parseInt(location.port) : 6201;
-      url = 'ws://' + location.hostname + ':' + port + '/';
-      wsUrlInput.value = url;
-    }
+    // Connect using whatever URL is in the input
+    const url = wsUrlInput.value.trim();
+    if (!url) return;
     wsConnect(url);
   }
 }

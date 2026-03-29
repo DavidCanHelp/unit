@@ -330,14 +330,14 @@ fn handle_ws_client(
     handle_ws_upgrade(stream, request, tx, state, mesh_json);
 }
 
-/// Minimal embedded HTML for the WS health/info endpoint.
-const EMBEDDED_HTML: &[u8] = b"<!DOCTYPE html><html><head><title>unit</title></head><body style='background:#0a0a0a;color:#0f8;font-family:monospace'><h3>unit mesh node</h3><p>WebSocket bridge active. Connect from the <a href='https://davidcanhelp.github.io/unit/'>browser REPL</a>.</p></body></html>";
-
-/// Serve embedded web assets over plain HTTP.
+/// Serve the full WASM REPL from the same port as the WebSocket.
+/// This makes the WS connection same-origin, bypassing browser security policies.
 fn serve_http(stream: &mut TcpStream, request: &str) {
     let path = request.split_whitespace().nth(1).unwrap_or("/");
     let (content_type, body): (&str, &[u8]) = match path {
-        "/" | "/index.html" => ("text/html; charset=utf-8", EMBEDDED_HTML),
+        "/" | "/index.html" => ("text/html; charset=utf-8", include_bytes!("../../web/index.html")),
+        "/unit.js" => ("application/javascript; charset=utf-8", include_bytes!("../../web/unit.js")),
+        "/unit.wasm" => ("application/wasm", include_bytes!("../../web/unit.wasm")),
         _ => {
             let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
             let _ = stream.write_all(resp.as_bytes());
