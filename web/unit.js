@@ -1,4 +1,4 @@
-// unit.js — WASM glue for the unit Forth nanobot
+// unit.js — WASM glue + browser mesh for the unit Forth nanobot
 
 class UnitVM {
   constructor(instance) {
@@ -30,12 +30,110 @@ class UnitVM {
     return output;
   }
 
-  isRunning() {
-    return this.exports.is_running(this.vmPtr) !== 0;
+  isRunning() { return this.exports.is_running(this.vmPtr) !== 0; }
+  destroy() { this.exports.destroy(this.vmPtr); this.vmPtr = null; }
+}
+
+// =========================================================================
+// Browser Mesh — multiple WASM VMs communicating via JS message bus
+// =========================================================================
+
+class BrowserUnit {
+  constructor(vm, id) {
+    this.vm = vm;
+    this.id = id;
+    this.fitness = 0;
+    this.tasksCompleted = 0;
+    this.busy = false;
+  }
+}
+
+class BrowserMesh {
+  constructor() {
+    this.units = [];       // BrowserUnit[]
+    this.wasmBytes = null;  // cached WASM binary for spawning
+    this.maxUnits = 5;
+    this.onEvent = null;    // callback for mesh events
+    this.goalQueue = [];    // pending goals
   }
 
-  destroy() {
-    this.exports.destroy(this.vmPtr);
-    this.vmPtr = null;
+  async init(wasmPath) {
+    const response = await fetch(wasmPath);
+    this.wasmBytes = await response.arrayBuffer();
+    // Create the first unit.
+    const unit = await this._spawn();
+    return unit;
+  }
+
+  async _spawn() {
+    if (this.units.length >= this.maxUnits) return null;
+    const { instance } = await WebAssembly.instantiate(this.wasmBytes.slice(0), { env: {} });
+    const vm = new UnitVM(instance);
+    const id = this._genId();
+    const unit = new BrowserUnit(vm, id);
+    this.units.push(unit);
+    this._emit('spawn', { id, count: this.units.length });
+    return unit;
+  }
+
+  async spawn() {
+    if (this.units.length >= this.maxUnits) return null;
+    return this._spawn();
+  }
+
+  _genId() {
+    return Math.random().toString(16).substring(2, 6);
+  }
+
+  _emit(type, data) {
+    if (this.onEvent) this.onEvent(type, data);
+  }
+
+  // Pick the least-busy unit (excluding unit 0 which is the REPL).
+  _pickWorker() {
+    let best = null, bestScore = Infinity;
+    for (let i = 0; i < this.units.length; i++) {
+      const u = this.units[i];
+      if (u.busy) continue;
+      const score = u.tasksCompleted;
+      if (score < bestScore) { bestScore = score; best = u; }
+    }
+    return best || this.units[0];
+  }
+
+  // Execute a goal on the best available unit. Returns {unitId, output, stack}.
+  executeGoal(code) {
+    const worker = this._pickWorker();
+    worker.busy = true;
+    this._emit('goal_start', { unitId: worker.id, code });
+
+    const output = worker.vm.eval(code);
+    // Get stack top by evaluating DEPTH.
+    const depthOut = worker.vm.eval('.S');
+
+    worker.busy = false;
+    worker.tasksCompleted++;
+    worker.fitness += 15;
+    this._emit('goal_done', { unitId: worker.id, code, output, stack: depthOut });
+    return { unitId: worker.id, output, stack: depthOut };
+  }
+
+  // Share a word definition with all units.
+  shareWord(definition) {
+    for (const u of this.units) {
+      u.vm.eval(definition);
+    }
+    this._emit('word_shared', { definition, count: this.units.length });
+  }
+
+  // Get mesh status.
+  status() {
+    return {
+      count: this.units.length,
+      units: this.units.map(u => ({
+        id: u.id, fitness: u.fitness,
+        tasks: u.tasksCompleted, busy: u.busy
+      }))
+    };
   }
 }
