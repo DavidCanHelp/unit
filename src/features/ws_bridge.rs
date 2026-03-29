@@ -301,17 +301,26 @@ fn handle_ws_client(
     state: Arc<Mutex<WsBridgeState>>,
     mesh_json: Arc<Mutex<String>>,
 ) {
-    // Use a longer timeout for the initial handshake read.
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
 
-    // Read HTTP upgrade request.
-    let mut buf = [0u8; 4096];
-    let n = match stream.read(&mut buf) {
-        Ok(n) if n > 0 => n,
-        _ => return,
-    };
-    let request = String::from_utf8_lossy(&buf[..n]).to_string();
+    // Read the FULL HTTP request (all headers up to \r\n\r\n).
+    // TCP may fragment the data, so we loop until we see the header terminator.
+    let mut buf = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 4096];
+    loop {
+        match stream.read(&mut tmp) {
+            Ok(0) => return,
+            Ok(n) => {
+                buf.extend_from_slice(&tmp[..n]);
+                // Check if we have the complete headers.
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                if buf.len() > 8192 { return; } // safety limit
+            }
+            Err(_) => return,
+        }
+    }
+    let request = String::from_utf8_lossy(&buf).to_string();
     let is_upgrade = request.lines().any(|l| l.to_lowercase().contains("upgrade: websocket"));
 
     // Handle OPTIONS preflight (CORS / Private Network Access).
@@ -434,14 +443,11 @@ fn handle_ws_upgrade(
     let mut read_buf = Vec::new();
     let mut last_mesh_push = Instant::now();
     loop {
-        // Read from client.
         let mut tmp = [0u8; 4096];
         match stream.read(&mut tmp) {
-            Ok(0) => break, // EOF
+            Ok(0) => break,
             Ok(n) => {
-                // Check for close frame (opcode 8) at the raw level.
                 if tmp[0] & 0x0F == 8 { break; }
-
                 read_buf.extend_from_slice(&tmp[..n]);
                 while let Some((text, consumed)) = ws_decode_frame(&read_buf) {
                     read_buf.drain(..consumed);
@@ -449,9 +455,7 @@ fn handle_ws_upgrade(
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut => {
-                // Timeout — no data, this is normal.
-            }
+                || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(_) => break,
         }
 
