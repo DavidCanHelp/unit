@@ -437,17 +437,14 @@ fn handle_ws_upgrade(
         // Read from client.
         let mut tmp = [0u8; 4096];
         match stream.read(&mut tmp) {
-            Ok(0) => break,
+            Ok(0) => break, // EOF
             Ok(n) => {
+                // Check for close frame (opcode 8) at the raw level.
+                if tmp[0] & 0x0F == 8 { break; }
+
                 read_buf.extend_from_slice(&tmp[..n]);
-                // Try to decode frames.
                 while let Some((text, consumed)) = ws_decode_frame(&read_buf) {
                     read_buf.drain(..consumed);
-                    // Check for close frame (opcode 8).
-                    if read_buf.first().map(|b| b & 0x0F == 8).unwrap_or(false) {
-                        break;
-                    }
-                    // Parse JSON message from browser.
                     handle_browser_message(&text, &client_id, &tx, &state);
                 }
             }
