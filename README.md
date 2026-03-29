@@ -4,7 +4,7 @@ A self-replicating software nanobot. The Forth interpreter *is* the agent.
 
 [![CI](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml/badge.svg)](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml)
 &ensp;
-**[Try it in your browser](https://davidcanhelp.github.io/unit/)**
+**[Try the Forth REPL in your browser](https://davidcanhelp.github.io/unit/)** — interactive tutorial, mesh visualizer demo
 
 ## Install
 
