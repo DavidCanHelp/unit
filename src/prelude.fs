@@ -164,16 +164,42 @@
   ." spawning child..." CR SPAWN ;
 
 \ --- Feelings words ---
-: HOW-ARE-YOU ( -- )
-  FITNESS DUP 50 > IF
-    DROP ." thriving! fitness=" FITNESS . CR
-  ELSE DUP 20 > IF
-    DROP ." doing okay. fitness=" FITNESS . CR
-  ELSE DUP 0 > IF
-    DROP ." struggling. fitness=" FITNESS . CR
+
+\ JOY — the feeling of being in a mesh. The opposite of LONELY.
+\ A nanobot alone is capable. A nanobot with peers is joyful.
+: JOYFUL ( -- flag )
+  PEER-COUNT 0 > ;
+
+: JOY ( -- )
+  JOYFUL IF
+    ." I feel joy! " PEER-COUNT . ." peers in my mesh." CR
+    ." Together we are more than alone." CR
   ELSE
-    DROP ." I need help. fitness=" FITNESS . CR
-  THEN THEN THEN ;
+    ." Joy requires connection. I have no peers yet." CR
+  THEN ;
+
+: HOW-ARE-YOU ( -- )
+  JOYFUL IF
+    FITNESS DUP 50 > IF
+      DROP ." joyful and thriving! fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR
+    ELSE DUP 20 > IF
+      DROP ." joyful. doing well. fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR
+    ELSE DUP 0 > IF
+      DROP ." connected but struggling. fitness=" FITNESS . CR
+    ELSE
+      DROP ." connected but need help. fitness=" FITNESS . CR
+    THEN THEN THEN
+  ELSE
+    FITNESS DUP 50 > IF
+      DROP ." thriving but lonely. fitness=" FITNESS . CR
+    ELSE DUP 20 > IF
+      DROP ." doing okay, but alone. fitness=" FITNESS . CR
+    ELSE DUP 0 > IF
+      DROP ." struggling alone. fitness=" FITNESS . CR
+    ELSE
+      DROP ." I need help. fitness=" FITNESS . CR
+    THEN THEN THEN
+  THEN ;
 
 : LONELY ( -- )
   PEER-COUNT 0 = IF ." I'm alone. No peers in sight." CR
@@ -186,7 +212,7 @@
   ELSE DROP ." nothing to do." CR THEN THEN ;
 
 \ --- Quick ops ---
-: CHECKUP ( -- ) PATROL PROUD LONELY ;
+: CHECKUP ( -- ) PATROL PROUD JOY ;
 : MORNING ( -- ) WAKE HELLO CHECKUP ;
 : EVENING ( -- ) REST ;
 
@@ -200,6 +226,7 @@
   ."   PATROL                     Check watches, handle alerts" CR
   ."   CHECKUP                    Full status check" CR
   ."   HOW-ARE-YOU                Status as mood" CR
+  ."   JOY                        Feel the mesh connection" CR
   ."   LONELY                     Peer connection status" CR
   ."   BUSY                       Task load status" CR
   ."   PROUD                      Show accomplishments" CR CR
@@ -252,6 +279,7 @@
   ."   HEADCOUNT                     Units in the mesh" CR
   ."   PATROL                        Check watches, fix alerts" CR
   ."   HOW-ARE-YOU                   Status as mood" CR
+  ."   JOY                           Feel the mesh connection" CR
   ."   REPRODUCE                     Spawn a child" CR
   ."   MORNING / EVENING             Start or end a shift" CR CR
   ." MORE: HELP-STACK HELP-MATH HELP-MESH HELP-GOALS" CR
