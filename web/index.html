@@ -308,7 +308,17 @@ function autoTick() {
     return;
   }
 
-  const output = unit.vm.eval(behavior.cmd).trim();
+  // Intercept behaviors that use native-mesh primitives (ID, FITNESS, etc.)
+  // and compose output from JS data instead of eval'ing into the Forth VM.
+  let output;
+  const peers = mesh.units.length - 1;
+  if (behavior.cmd === 'HELLO') {
+    output = `Hi! I'm unit #${unit.id}, generation 0 with ${peers} peers and fitness ${unit.fitness}`;
+  } else if (behavior.cmd === 'PROUD') {
+    output = `fitness: ${unit.fitness} | tasks: ${unit.tasksCompleted}`;
+  } else {
+    output = unit.vm.eval(behavior.cmd).trim();
+  }
   if (output) {
     const color = behavior.dream ? '#a080cc' : null;
     setBubble(unit.id, output, color);
