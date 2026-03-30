@@ -97,6 +97,76 @@ impl MutationRecord {
     }
 }
 
+/// Classification of a mutation's effect.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MutationClass {
+    Neutral,    // output unchanged — possible dead code
+    Beneficial, // output changed, benchmark improved or held
+    Harmful,    // output changed, benchmark worsened
+    Lethal,     // word crashed or errored
+}
+
+impl MutationClass {
+    pub fn label(&self) -> &str {
+        match self {
+            MutationClass::Neutral => "neutral",
+            MutationClass::Beneficial => "beneficial",
+            MutationClass::Harmful => "harmful",
+            MutationClass::Lethal => "lethal",
+        }
+    }
+}
+
+/// Cumulative mutation statistics.
+#[derive(Clone, Debug, Default)]
+pub struct MutationStats {
+    pub total: u32,
+    pub neutral: u32,
+    pub beneficial: u32,
+    pub harmful: u32,
+    pub lethal: u32,
+}
+
+impl MutationStats {
+    pub fn record(&mut self, class: &MutationClass) {
+        self.total += 1;
+        match class {
+            MutationClass::Neutral => self.neutral += 1,
+            MutationClass::Beneficial => self.beneficial += 1,
+            MutationClass::Harmful => self.harmful += 1,
+            MutationClass::Lethal => self.lethal += 1,
+        }
+    }
+
+    pub fn format(&self) -> String {
+        format!(
+            "mutations: {} total ({} neutral, {} beneficial, {} harmful, {} lethal)",
+            self.total, self.neutral, self.beneficial, self.harmful, self.lethal
+        )
+    }
+}
+
+/// Result of a smart mutation with classification.
+#[derive(Clone, Debug)]
+pub struct SmartMutationResult {
+    pub word_name: String,
+    pub strategy: MutationStrategy,
+    pub class: MutationClass,
+    pub before_hash: u64,
+    pub after_hash: u64,
+    pub kept: bool,
+    pub description: String,
+}
+
+/// Simple hash of a string (for comparing outputs).
+pub fn hash_output(s: &str) -> u64 {
+    let mut h: u64 = 5381;
+    for b in s.bytes() {
+        h = h.wrapping_mul(33).wrapping_add(b as u64);
+    }
+    h
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

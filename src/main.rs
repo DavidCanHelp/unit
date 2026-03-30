@@ -162,6 +162,84 @@ impl VM {
     }
 
     // -----------------------------------------------------------------------
+    // Smart mutation
+    // -----------------------------------------------------------------------
+
+    fn snapshot_word(&mut self, idx: usize) -> u64 {
+        let body = self.dictionary[idx].body.clone();
+        let mut combined = String::new();
+        for test_stack in &[vec![], vec![1i64], vec![1, 2, 3]] {
+            let saved = std::mem::take(&mut self.stack);
+            self.stack = test_stack.clone();
+            self.output_buffer = Some(String::new());
+            self.timed_out = false;
+            self.deadline = Some(Instant::now() + Duration::from_millis(100));
+            self.execute_body(&body);
+            combined.push_str(&self.output_buffer.take().unwrap_or_default());
+            combined.push_str(&format!("{:?}", self.stack));
+            self.stack = saved;
+            self.deadline = None;
+            self.timed_out = false;
+        }
+        mutation::hash_output(&combined)
+    }
+
+    fn prim_smart_mutate(&mut self) {
+        let mutable_indices: Vec<usize> = self.dictionary.iter().enumerate()
+            .filter(|(_, e)| mutation::is_mutable(e))
+            .map(|(i, _)| i).collect();
+        if mutable_indices.is_empty() {
+            self.emit_str("no mutable words\n");
+            self.stack.push(0);
+            return;
+        }
+        let idx = mutable_indices[self.rng.next_usize(mutable_indices.len())];
+        let word_name = self.dictionary[idx].name.clone();
+        let before_hash = self.snapshot_word(idx);
+
+        let dict_len = self.dictionary.len();
+        let record = match mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
+            Some(mut r) => { r.word_index = idx; r }
+            None => { self.stack.push(0); return; }
+        };
+
+        let after_hash = self.snapshot_word(idx);
+        let class = if after_hash == before_hash {
+            mutation::MutationClass::Neutral
+        } else {
+            let score = self.run_benchmark();
+            if score >= 0 { mutation::MutationClass::Beneficial }
+            else { mutation::MutationClass::Harmful }
+        };
+
+        let kept = matches!(class, mutation::MutationClass::Neutral | mutation::MutationClass::Beneficial);
+        if kept {
+            self.mutation_history.push(record.clone());
+        } else {
+            mutation::undo_mutation(&mut self.dictionary[idx], &record);
+        }
+
+        self.mutation_stats.record(&class);
+        self.last_mutation_result = Some(mutation::SmartMutationResult {
+            word_name, strategy: record.strategy.clone(), class,
+            before_hash, after_hash, kept, description: record.description,
+        });
+        self.stack.push(if kept { -1 } else { 0 });
+    }
+
+    fn prim_mutation_report(&mut self) {
+        if let Some(ref r) = self.last_mutation_result {
+            self.emit_str(&format!(
+                "last: {} [{}] {} {}\n",
+                r.word_name, r.strategy.label(), r.class.label(),
+                if r.kept { "(kept)" } else { "(reverted)" }
+            ));
+        } else {
+            self.emit_str("no mutations yet\n");
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Swarm primitives
     // -----------------------------------------------------------------------
 
@@ -2400,7 +2478,7 @@ impl VM {
 // CLI argument parsing
 // ===========================================================================
 
-const VERSION: &str = "unit v0.15.0";
+const VERSION: &str = "unit v0.15.1";
 
 fn print_help() {
     println!("{}", VERSION);

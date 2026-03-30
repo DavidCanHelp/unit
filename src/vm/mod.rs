@@ -217,6 +217,9 @@ pub(crate) const P_RUN_BENCHMARK: usize = 408;
 pub(crate) const P_MUTATE_RANDOM: usize = 409;
 pub(crate) const P_UNDO_LAST_MUTATION: usize = 410;
 pub(crate) const P_PEER_COUNT: usize = 411;
+pub(crate) const P_SMART_MUTATE: usize = 412;
+pub(crate) const P_MUTATION_REPORT: usize = 413;
+pub(crate) const P_MUTATION_STATS: usize = 414;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -271,6 +274,8 @@ pub struct VM {
     pub io_log: VecDeque<String>,
     // --- Mutation ---
     pub mutation_history: Vec<crate::features::mutation::MutationRecord>,
+    pub mutation_stats: crate::features::mutation::MutationStats,
+    pub last_mutation_result: Option<crate::features::mutation::SmartMutationResult>,
     pub rng: crate::features::mutation::SimpleRng,
     // --- Fitness ---
     pub fitness: crate::features::fitness::FitnessTracker,
@@ -318,6 +323,8 @@ impl VM {
             trusted_peers: HashSet::new(),
             io_log: VecDeque::new(),
             mutation_history: Vec::new(),
+            mutation_stats: crate::features::mutation::MutationStats::default(),
+            last_mutation_result: None,
             rng: crate::features::mutation::SimpleRng::new(0), // re-seeded from node ID in main()
             fitness: crate::features::fitness::FitnessTracker::new(),
             spawn_state: crate::spawn::SpawnState::new(),
@@ -533,6 +540,9 @@ impl VM {
             ("MUTATE-RANDOM", P_MUTATE_RANDOM, false),
             ("UNDO-LAST-MUTATION", P_UNDO_LAST_MUTATION, false),
             ("PEER-COUNT", P_PEER_COUNT, false),
+            ("SMART-MUTATE", P_SMART_MUTATE, false),
+            ("MUTATION-REPORT", P_MUTATION_REPORT, false),
+            ("MUTATION-STATS", P_MUTATION_STATS, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -951,6 +961,9 @@ impl VM {
             P_MUTATE_RANDOM => self.prim_mutate_random_atom(),
             P_UNDO_LAST_MUTATION => self.prim_undo_mutate(),
             P_PEER_COUNT => { let n = self.mesh.as_ref().map(|m| m.peer_count()).unwrap_or(0) as Cell; self.stack.push(n); }
+            P_SMART_MUTATE => self.prim_smart_mutate(),
+            P_MUTATION_REPORT => self.prim_mutation_report(),
+            P_MUTATION_STATS => { let s = self.mutation_stats.format(); self.emit_str(&s); self.emit_str("\n"); }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

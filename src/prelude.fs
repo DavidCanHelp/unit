@@ -66,17 +66,12 @@
 : >= ( a b -- flag ) < NOT ;
 
 : EVOLVE ( -- )
-  RUN-BENCHMARK
-  MUTATE-RANDOM IF
-    RUN-BENCHMARK
-    2DUP >= IF
-      ." kept (" . ." -> " . ." )" CR
-    ELSE
-      ." reverted (" . ." -> " . ." )" CR UNDO-LAST-MUTATION
-    THEN
+  SMART-MUTATE IF
+    ." mutation accepted" CR
   ELSE
-    DROP ." no mutation" CR
+    ." mutation rejected" CR
   THEN
+  MUTATION-REPORT
 ;
 
 : STATUS  ( -- ) MESH-STATUS GOALS TASKS FAMILY ;
@@ -275,6 +270,8 @@ VARIABLE OBS-COUNT
 : DREAM ( -- )
   ." dreaming..." CR
   REFLECT
+  SMART-MUTATE IF ." evolved." CR ELSE ." held steady." CR THEN
+  MUTATION-REPORT
   PEER-COUNT 0 > IF TEACH THEN
   ." waking. I am changed." CR ;
 
@@ -472,6 +469,6 @@ VARIABLE OBS-COUNT
 ;
 
 \ --- Boot ---
-." unit v0.15.0 -- seed online" CR
+." unit v0.15.1 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
