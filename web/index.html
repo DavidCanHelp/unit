@@ -147,11 +147,11 @@ function syncVizFromMesh() {
   vizLabel.textContent = `${st.count} unit${st.count>1?'s':''} | browser mesh`;
 }
 
-function setBubble(unitId, text) {
+function setBubble(unitId, text, color) {
   const existing = vizBubbles.find(b => b.id === unitId);
   const short = text.split('\n')[0].substring(0, 35);
-  if (existing) { existing.text = short; existing.age = 0; }
-  else vizBubbles.push({ id: unitId, text: short, age: 0 });
+  if (existing) { existing.text = short; existing.age = 0; existing.color = color || '#6a8'; }
+  else vizBubbles.push({ id: unitId, text: short, age: 0, color: color || '#6a8' });
 }
 
 function addChatter(unitId, text) {
@@ -244,7 +244,7 @@ function vizTick() {
     ctx.beginPath();
     ctx.roundRect ? ctx.roundRect(bx-bw/2, by-bh, bw, bh, 3) : ctx.rect(bx-bw/2, by-bh, bw, bh);
     ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#6a8'; ctx.font = '8px monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = b.color || '#6a8'; ctx.font = '8px monospace'; ctx.textAlign = 'center';
     ctx.fillText(b.text, bx, by-3);
     ctx.globalAlpha = 1;
   }
@@ -261,35 +261,43 @@ window.addEventListener('resize', () => { if (vizMode > 0) resizeCanvas(); });
 // =========================================================================
 const BEHAVIORS = [
   { weight: 10, cmd: 'HELLO' },
-  { weight: 20, cmd: 'HOW-ARE-YOU' },
-  { weight: 15, cmd: 'PATROL' },
-  { weight: 10, cmd: 'STRETCH' },
-  { weight: 15, cmd: 'JOY' },
+  { weight: 15, cmd: 'HOW-ARE-YOU' },
+  { weight: 10, cmd: 'PATROL' },
+  { weight: 8,  cmd: 'STRETCH' },
+  { weight: 12, cmd: 'JOY' },
   { weight: 5,  cmd: 'BUSY' },
-  { weight: 10, cmd: 'PROUD' },
-  { weight: 20, cmd: null }, // idle
+  { weight: 8,  cmd: 'PROUD' },
+  { weight: 5,  cmd: 'ADAPT', dream: false },
+  { weight: 5,  cmd: 'REFLECT', dream: false },
+  { weight: 3,  cmd: 'DREAM', dream: true },
+  { weight: 7,  cmd: null }, // idle
 ];
 const totalWeight = BEHAVIORS.reduce((s,b) => s+b.weight, 0);
 let autoIdx = 0; // round-robin index for which unit acts next
 
 function pickBehavior() {
   let r = Math.random() * totalWeight;
-  for (const b of BEHAVIORS) { r -= b.weight; if (r <= 0) return b.cmd; }
-  return null;
+  for (const b of BEHAVIORS) { r -= b.weight; if (r <= 0) return b; }
+  return { cmd: null };
 }
 
 function autoTick() {
   if (!mesh || !chatterOn || mesh.units.length < 2) return;
-  // Round-robin: skip unit 0 (the REPL).
   autoIdx = ((autoIdx) % (mesh.units.length - 1)) + 1;
   if (autoIdx >= mesh.units.length) autoIdx = 1;
   const unit = mesh.units[autoIdx];
-  const cmd = pickBehavior();
-  if (!cmd) return; // idle
-  const output = unit.vm.eval(cmd).trim();
+  const behavior = pickBehavior();
+  if (!behavior.cmd) return;
+  const output = unit.vm.eval(behavior.cmd).trim();
   if (output) {
-    setBubble(unit.id, output);
+    const dreamColor = behavior.dream ? '#a080cc' : null;
+    setBubble(unit.id, output, dreamColor);
     addChatter(unit.id, output);
+    // Dream makes the node pulse gently.
+    if (behavior.dream) {
+      const n = vizNodes.find(nd => nd.id === unit.id);
+      if (n) { n.pulse = 1.4; n.glowColor = '#8060aa'; }
+    }
   }
 }
 setInterval(autoTick, 5000);

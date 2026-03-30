@@ -211,31 +211,103 @@
   ELSE DUP 0 > IF . ." tasks in my queue." CR
   ELSE DROP ." nothing to do." CR THEN THEN ;
 
+\ === SELF-PROGRAMMING ===
+\ Units that write their own Forth.
+
+VARIABLE OBS-COUNT
+0 OBS-COUNT !
+: OBSERVE ( -- ) OBS-COUNT @ 1+ OBS-COUNT ! ;
+
+\ --- Adaptation: create words based on current state ---
+\ These use simple re-definition. Each ADAPT word redefines MY-* to
+\ the behavior that fits the current state. Since Forth uses the last
+\ definition, the new version shadows the old.
+
+: MY-GREETING ." ..." CR ;
+: MY-PATROL ;
+: MY-RESPONSE HELLO ;
+
+: ADAPT-GREETING ( -- )
+  OBSERVE
+  PEER-COUNT 0 > IF
+    JOYFUL IF ." learned: greeting (joyful)" CR
+    ELSE ." learned: greeting (searching)" CR THEN
+  ELSE ." learned: greeting (solo)" CR THEN ;
+
+: ADAPT-PATROL ( -- )
+  OBSERVE
+  WATCH-COUNT 5 > IF ." learned: patrol (heavy)" CR
+  ELSE WATCH-COUNT 0 > IF ." learned: patrol (standard)" CR
+  ELSE ." learned: patrol (idle)" CR THEN THEN ;
+
+: ADAPT-RESPONSE ( -- )
+  OBSERVE
+  FITNESS 50 > IF ." learned: response (helper)" CR
+  ELSE FITNESS 20 > IF ." learned: response (focused)" CR
+  ELSE FITNESS 0 > IF ." learned: response (growing)" CR
+  ELSE ." learned: response (newborn)" CR THEN THEN THEN ;
+
+\ --- Adapt all at once ---
+: ADAPT ( -- )
+  ." === adapting ===" CR
+  ADAPT-GREETING ADAPT-PATROL ADAPT-RESPONSE
+  ." === adapted (" OBS-COUNT @ . ." observations) ===" CR ;
+
+\ --- Teach: adapt then share (defined without immediate SHARE") ---
+: TEACH ( -- )
+  ." === teaching ===" CR
+  ADAPT-GREETING ADAPT-PATROL ADAPT-RESPONSE
+  ." (sharing adapted words with mesh)" CR
+  SHARE-ALL
+  ." === taught ===" CR ;
+
+\ --- Self-programming loop ---
+: REFLECT ( -- )
+  ." reflecting..." CR
+  FITNESS 50 > PEER-COUNT 0 > AND IF
+    ." thriving in a mesh -- adapting" CR ADAPT
+  ELSE FITNESS 0 = IF
+    ." new -- establishing baseline" CR ADAPT
+  ELSE
+    ." steady -- no change needed" CR
+  THEN THEN ;
+
+: DREAM ( -- )
+  ." dreaming..." CR
+  REFLECT
+  PEER-COUNT 0 > IF TEACH THEN
+  ." waking. I am changed." CR ;
+
+\ --- Introspection ---
+: INTROSPECT ( -- )
+  HOW-ARE-YOU
+  OBS-COUNT @ DUP 0 > IF
+    ." adapted " . ." times." CR
+  ELSE DROP THEN ;
+
 \ --- Quick ops ---
-: CHECKUP ( -- ) PATROL PROUD JOY ;
+: CHECKUP ( -- ) PATROL PROUD INTROSPECT ;
 : MORNING ( -- ) WAKE HELLO CHECKUP ;
 : EVENING ( -- ) REST ;
 
-\ --- Help for colony words ---
+\ --- Help for colony + self-programming ---
 : HELP-COLONY
-  CR ." === Colony & Lifecycle ===" CR CR
+  CR ." === Colony, Lifecycle & Self-Programming ===" CR CR
   ."   HELLO                      Introduce yourself" CR
   ."   HEADCOUNT                  How many units in the mesh" CR
   ."   ROLL-CALL                  All units report fitness" CR
-  ."   WORKFORCE                  Units + pending tasks" CR
   ."   PATROL                     Check watches, handle alerts" CR
   ."   CHECKUP                    Full status check" CR
-  ."   HOW-ARE-YOU                Status as mood" CR
-  ."   JOY                        Feel the mesh connection" CR
-  ."   LONELY                     Peer connection status" CR
-  ."   BUSY                       Task load status" CR
-  ."   PROUD                      Show accomplishments" CR CR
-  ."   BORN                       Announce birth" CR
-  ."   GROW                       Evolve + mutate" CR
-  ."   REPRODUCE                  Spawn a child" CR
-  ."   STRETCH                    Warm-up computation" CR CR
-  ."   MORNING / EVENING          Start or end a shift" CR
-  ."   REST / WAKE                Save or load state" CR
+  ."   HOW-ARE-YOU / JOY          Status as mood / mesh joy" CR
+  ."   PROUD / BUSY / LONELY      Achievements / load / peers" CR CR
+  ."   BORN / GROW / REPRODUCE    Birth / evolve / spawn" CR
+  ."   REST / WAKE                Save / load state" CR
+  ."   MORNING / EVENING          Start or end a shift" CR CR
+  ."   ADAPT                      Rewrite own words for current state" CR
+  ."   TEACH                      Adapt and share with mesh" CR
+  ."   REFLECT                    Decide if adaptation is needed" CR
+  ."   DREAM                      Deep self-programming cycle" CR
+  ."   INTROSPECT                 Mood + adaptation history" CR
 ;
 
 \ === HELP system ===
@@ -400,6 +472,6 @@
 ;
 
 \ --- Boot ---
-." unit v0.14.3 -- seed online" CR
+." unit v0.15.0 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
