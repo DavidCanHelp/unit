@@ -106,6 +106,111 @@
 : SECURE-SWARM ( -- ) SWARM-ON TRUST-MESH ." swarm with mesh trust" CR ;
 : LOCKDOWN  ( -- ) TRUST-NONE QUARANTINE ." replication locked" CR ;
 
+\ === NANOBOT VOCABULARY ===
+\ Units aren't processes. They're creatures.
+
+\ --- Mission words ---
+: PATROL ( -- )
+  ." patrolling..." CR
+  CHECK-WATCHES
+  ALERT-COUNT DUP 0 > IF
+    ." ! " . ." alerts detected" CR RUN-HANDLERS
+  ELSE DROP ." all clear" CR THEN
+;
+
+\ --- Personality words ---
+: HELLO ( -- )
+  ." Hi! I'm unit " ID TYPE ." , generation " GENERATION .
+  ." with " PEER-COUNT . ." peers and fitness " FITNESS . CR ;
+
+: PROUD ( -- )
+  ." fitness: " FITNESS .
+  ." | generation: " GENERATION .
+  ." | children: " CHILD-COUNT . CR ;
+
+: STRETCH ( -- )
+  ." warming up..." CR 10000 0 DO I DROP LOOP ." ready!" CR ;
+
+\ --- Colony words ---
+: HEADCOUNT ( -- ) PEER-COUNT 1 + . ." units in the mesh" CR ;
+
+: ROLL-CALL ( -- )
+  ." === roll call ===" CR
+  ." self: " ID TYPE ."  fitness=" FITNESS . CR
+  LEADERBOARD ;
+
+: WORKFORCE ( -- )
+  PEER-COUNT 1 + DUP . ." units available" CR
+  TASK-COUNT DROP DROP DROP DROP DUP 0 > IF
+    ." with " . ." pending tasks" CR
+  ELSE DROP ." no pending work" CR THEN ;
+
+\ --- Lifecycle words ---
+: BORN ( -- )
+  ." unit " ID TYPE ."  born, generation " GENERATION . CR
+  ." ready to serve" CR ;
+
+: GROW ( -- )
+  ." evolving..." CR EVOLVE
+  ." mutating..." CR MUTATE
+  ." fitness now: " FITNESS . CR ;
+
+: REST ( -- ) ." saving state..." CR SAVE ." goodnight" CR ;
+: WAKE ( -- ) ." loading state..." CR LOAD-STATE ." good morning! fitness=" FITNESS . CR ;
+
+: REPRODUCE ( -- )
+  ." preparing to replicate..." CR
+  PACKAGE-SIZE . ." bytes to transmit" CR
+  ." spawning child..." CR SPAWN ;
+
+\ --- Feelings words ---
+: HOW-ARE-YOU ( -- )
+  FITNESS DUP 50 > IF
+    DROP ." thriving! fitness=" FITNESS . CR
+  ELSE DUP 20 > IF
+    DROP ." doing okay. fitness=" FITNESS . CR
+  ELSE DUP 0 > IF
+    DROP ." struggling. fitness=" FITNESS . CR
+  ELSE
+    DROP ." I need help. fitness=" FITNESS . CR
+  THEN THEN THEN ;
+
+: LONELY ( -- )
+  PEER-COUNT 0 = IF ." I'm alone. No peers in sight." CR
+  ELSE ." I have " PEER-COUNT . ." friends!" CR THEN ;
+
+: BUSY ( -- )
+  TASK-COUNT DROP DROP DROP DROP
+  DUP 5 > IF DROP ." swamped! So many tasks!" CR
+  ELSE DUP 0 > IF . ." tasks in my queue." CR
+  ELSE DROP ." nothing to do." CR THEN THEN ;
+
+\ --- Quick ops ---
+: CHECKUP ( -- ) PATROL PROUD LONELY ;
+: MORNING ( -- ) WAKE HELLO CHECKUP ;
+: EVENING ( -- ) REST ;
+
+\ --- Help for colony words ---
+: HELP-COLONY
+  CR ." === Colony & Lifecycle ===" CR CR
+  ."   HELLO                      Introduce yourself" CR
+  ."   HEADCOUNT                  How many units in the mesh" CR
+  ."   ROLL-CALL                  All units report fitness" CR
+  ."   WORKFORCE                  Units + pending tasks" CR
+  ."   PATROL                     Check watches, handle alerts" CR
+  ."   CHECKUP                    Full status check" CR
+  ."   HOW-ARE-YOU                Status as mood" CR
+  ."   LONELY                     Peer connection status" CR
+  ."   BUSY                       Task load status" CR
+  ."   PROUD                      Show accomplishments" CR CR
+  ."   BORN                       Announce birth" CR
+  ."   GROW                       Evolve + mutate" CR
+  ."   REPRODUCE                  Spawn a child" CR
+  ."   STRETCH                    Warm-up computation" CR CR
+  ."   MORNING / EVENING          Start or end a shift" CR
+  ."   REST / WAKE                Save or load state" CR
+;
+
 \ === HELP system ===
 
 : HELP
@@ -142,8 +247,15 @@
   ."   SPAWN                         Birth a child process" CR
   ."   SAVE / SNAPSHOT               Persist state to disk" CR
   ."   TRUST-LEVEL                   Show trust setting" CR CR
+  ." COLONY" CR
+  ."   HELLO                         Introduce yourself" CR
+  ."   HEADCOUNT                     Units in the mesh" CR
+  ."   PATROL                        Check watches, fix alerts" CR
+  ."   HOW-ARE-YOU                   Status as mood" CR
+  ."   REPRODUCE                     Spawn a child" CR
+  ."   MORNING / EVENING             Start or end a shift" CR CR
   ." MORE: HELP-STACK HELP-MATH HELP-MESH HELP-GOALS" CR
-  ."       HELP-MONITOR HELP-SPAWN HELP-IO" CR
+  ."       HELP-MONITOR HELP-SPAWN HELP-IO HELP-COLONY" CR
 ;
 
 : HELP-STACK
@@ -260,6 +372,6 @@
 ;
 
 \ --- Boot ---
-." unit v0.14.0 -- seed online" CR
+." unit v0.14.1 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
