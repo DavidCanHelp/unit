@@ -400,6 +400,6 @@
 ;
 
 \ --- Boot ---
-." unit v0.14.2 -- seed online" CR
+." unit v0.14.3 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
