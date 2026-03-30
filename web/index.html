@@ -422,6 +422,60 @@ input.addEventListener('keydown', (e) => {
   if (line.trim()) { history.push(line); histIdx = -1; }
   appendOutput('> ' + line + '\n', 'info');
 
+  // Intercept mesh-aware words so they reflect the browser mesh.
+  if (mesh) {
+    const cmd = line.trim().toUpperCase();
+    const peers = mesh.units.length - 1;
+    const totalFitness = mesh.units.reduce((s, u) => s + u.fitness, 0);
+    const totalTasks = mesh.units.reduce((s, u) => s + u.tasksCompleted, 0);
+    let handled = true;
+    switch (cmd) {
+      case 'PEERS':
+      case 'PEERS .':
+      case 'PEER-COUNT .':
+        appendOutput(`${peers} `, 'output'); break;
+      case 'HEADCOUNT':
+        appendOutput(`${mesh.units.length} units in the mesh\n`, 'output'); break;
+      case 'LONELY':
+        appendOutput(peers > 0 ? `I have ${peers} friends!\n` : `I'm alone. No peers in sight.\n`, 'output'); break;
+      case 'JOY':
+        if (peers > 0) appendOutput(`joy! ${peers} peers sharing the work. fitness=${totalFitness}\n`, 'output');
+        else appendOutput(`joy requires connection. spawn a peer!\n`, 'output');
+        break;
+      case 'HOW-ARE-YOU':
+        if (totalFitness > 50) appendOutput(`thriving! fitness=${totalFitness}\n`, 'output');
+        else if (totalFitness > 20) appendOutput(`doing okay. fitness=${totalFitness}\n`, 'output');
+        else if (totalFitness > 0) appendOutput(`growing. fitness=${totalFitness}\n`, 'output');
+        else appendOutput(`new here. fitness=${totalFitness}\n`, 'output');
+        break;
+      case 'HELLO':
+        appendOutput(`Hi! I'm unit self, generation 0 with ${peers} peers and fitness ${totalFitness}\n`, 'output'); break;
+      case 'ROLL-CALL':
+        appendOutput('=== roll call ===\n', 'output');
+        for (const u of mesh.units) appendOutput(`  #${u.id} fitness=${u.fitness} tasks=${u.tasksCompleted}\n`, 'output');
+        break;
+      case 'WORKFORCE':
+        appendOutput(`${mesh.units.length} units available\n`, 'output');
+        if (totalTasks > 0) appendOutput(`${totalTasks} tasks completed so far\n`, 'output');
+        else appendOutput('no tasks yet\n', 'output');
+        break;
+      case 'MESH-STATUS':
+        appendOutput(`--- browser mesh ---\n`, 'output');
+        appendOutput(`units: ${mesh.units.length}/${mesh.maxUnits}\n`, 'output');
+        for (const u of mesh.units) appendOutput(`  #${u.id} fitness=${u.fitness} tasks=${u.tasksCompleted}${u.busy?' [busy]':''}\n`, 'output');
+        appendOutput('---\n', 'output');
+        break;
+      case 'INTROSPECT':
+        if (totalFitness > 50) appendOutput(`thriving! fitness=${totalFitness}\n`, 'output');
+        else if (totalFitness > 0) appendOutput(`growing. fitness=${totalFitness}\n`, 'output');
+        else appendOutput(`new here. fitness=${totalFitness}\n`, 'output');
+        break;
+      default:
+        handled = false;
+    }
+    if (handled) { appendOutput(' ok\n', 'info'); advanceTutorial(line); return; }
+  }
+
   const goalMatch = line.match(/\d+\s+GOAL\{\s*(.*?)\s*\}/);
   if (goalMatch && mesh && mesh.units.length > 1) {
     const code = goalMatch[1];
