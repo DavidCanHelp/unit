@@ -73,7 +73,11 @@ class BrowserMesh {
     const vm = new UnitVM(instance);
     const id = this._genId();
     const unit = new BrowserUnit(vm, id);
+    // Inject browser mesh peer count into the Forth VM so JOY, LONELY, etc. work.
+    vm.eval('VARIABLE BROWSER-PEERS 0 BROWSER-PEERS !');
+    vm.eval(': PEER-COUNT BROWSER-PEERS @ ;');
     this.units.push(unit);
+    this._updatePeerCounts();
     this._emit('spawn', { id, count: this.units.length });
     return unit;
   }
@@ -85,6 +89,13 @@ class BrowserMesh {
 
   _genId() {
     return Math.random().toString(16).substring(2, 6);
+  }
+
+  _updatePeerCounts() {
+    const peers = this.units.length - 1;
+    for (const u of this.units) {
+      u.vm.eval(`${peers} BROWSER-PEERS !`);
+    }
   }
 
   _emit(type, data) {

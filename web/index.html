@@ -284,6 +284,7 @@ function pickBehavior() {
 
 function autoTick() {
   if (!mesh || !chatterOn || mesh.units.length < 2) return;
+  mesh._updatePeerCounts();
   autoIdx = ((autoIdx) % (mesh.units.length - 1)) + 1;
   if (autoIdx >= mesh.units.length) autoIdx = 1;
   const unit = mesh.units[autoIdx];
@@ -505,6 +506,8 @@ input.addEventListener('keydown', (e) => {
     }
     if (handled) { appendOutput(' ok\n', 'info'); advanceTutorial(line); return; }
   }
+
+  if (mesh) mesh._updatePeerCounts();
 
   const goalMatch = line.match(/\d+\s+GOAL\{\s*(.*?)\s*\}/);
   if (goalMatch && mesh && mesh.units.length > 1) {
