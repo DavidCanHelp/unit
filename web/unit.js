@@ -76,6 +76,15 @@ class BrowserMesh {
     // Inject browser mesh peer count into the Forth VM so JOY, LONELY, etc. work.
     vm.eval('VARIABLE BROWSER-PEERS 0 BROWSER-PEERS !');
     vm.eval(': PEER-COUNT BROWSER-PEERS @ ;');
+    // Re-eval words that captured old PEER-COUNT at compile time (standard Forth
+    // behavior — redefining a word doesn't patch existing references).
+    vm.eval(': JOYFUL PEER-COUNT 0 > ;');
+    vm.eval(': JOY JOYFUL IF ." I feel joy! " PEER-COUNT . ." peers in my mesh." CR ." Together we are more than alone." CR ELSE ." Joy requires connection. I have no peers yet." CR THEN ;');
+    vm.eval(': HOW-ARE-YOU JOYFUL IF FITNESS DUP 50 > IF DROP ." joyful and thriving! fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR ELSE DUP 20 > IF DROP ." joyful. doing well. fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR ELSE DUP 0 > IF DROP ." connected but struggling. fitness=" FITNESS . CR ELSE DROP ." connected but need help. fitness=" FITNESS . CR THEN THEN THEN ELSE FITNESS DUP 50 > IF DROP ." thriving but lonely. fitness=" FITNESS . CR ELSE DUP 20 > IF DROP ." doing okay, but alone. fitness=" FITNESS . CR ELSE DUP 0 > IF DROP ." struggling alone. fitness=" FITNESS . CR ELSE DROP ." I need help. fitness=" FITNESS . CR THEN THEN THEN THEN ;');
+    vm.eval(': LONELY PEER-COUNT 0 = IF ." I\'m alone. No peers in sight." CR ELSE ." I have " PEER-COUNT . ." friends!" CR THEN ;');
+    vm.eval(': HEADCOUNT PEER-COUNT 1 + . ." units in the mesh" CR ;');
+    vm.eval(': HELLO ." Hi! I\'m unit " ID TYPE ." , generation " GENERATION . ." with " PEER-COUNT . ." peers and fitness " FITNESS . CR ;');
+    vm.eval(': INTROSPECT HOW-ARE-YOU OBS-COUNT @ DUP 0 > IF ." adapted " . ." times." CR ELSE DROP THEN ;');
     this.units.push(unit);
     this._updatePeerCounts();
     this._emit('spawn', { id, count: this.units.length });
