@@ -45,16 +45,18 @@ class BrowserUnit {
     this.fitness = 0;
     this.tasksCompleted = 0;
     this.busy = false;
+    this.learned = [];     // words received from other units
+    this.personality = ''; // specialist/balanced/solo
   }
 }
 
 class BrowserMesh {
   constructor() {
-    this.units = [];       // BrowserUnit[]
-    this.wasmBytes = null;  // cached WASM binary for spawning
+    this.units = [];
+    this.wasmBytes = null;
     this.maxUnits = 5;
-    this.onEvent = null;    // callback for mesh events
-    this.goalQueue = [];    // pending goals
+    this.onEvent = null;
+    this.goalQueue = [];
   }
 
   async init(wasmPath) {
@@ -126,13 +128,41 @@ class BrowserMesh {
     this._emit('word_shared', { definition, count: this.units.length });
   }
 
+  // Teach: one unit shares words it invented with all others.
+  teachFrom(sourceUnit) {
+    const wordsToShare = ['MY-ROUTINE', 'GREET', 'MY-STRATEGY'];
+    let taught = [];
+    for (const wordName of wordsToShare) {
+      const seeDef = sourceUnit.vm.eval('SEE ' + wordName);
+      if (seeDef.includes(':') && seeDef.includes(';')) {
+        for (const target of this.units) {
+          if (target === sourceUnit) continue;
+          target.vm.eval(seeDef.trim());
+          if (!target.learned.includes(wordName)) target.learned.push(wordName);
+        }
+        taught.push(wordName);
+      }
+    }
+    // Detect personality from strategy output.
+    const stratOut = sourceUnit.vm.eval('INVENT-STRATEGY');
+    if (stratOut.includes('specialist')) sourceUnit.personality = 'specialist';
+    else if (stratOut.includes('balanced')) sourceUnit.personality = 'balanced';
+    else sourceUnit.personality = 'solo';
+
+    if (taught.length > 0) {
+      this._emit('teach', { from: sourceUnit.id, words: taught });
+    }
+    return taught;
+  }
+
   // Get mesh status.
   status() {
     return {
       count: this.units.length,
       units: this.units.map(u => ({
         id: u.id, fitness: u.fitness,
-        tasks: u.tasksCompleted, busy: u.busy
+        tasks: u.tasksCompleted, busy: u.busy,
+        personality: u.personality, learned: u.learned.length
       }))
     };
   }

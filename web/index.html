@@ -260,17 +260,18 @@ window.addEventListener('resize', () => { if (vizMode > 0) resizeCanvas(); });
 // Autonomous Behavior — units come alive
 // =========================================================================
 const BEHAVIORS = [
-  { weight: 10, cmd: 'HELLO' },
-  { weight: 15, cmd: 'HOW-ARE-YOU' },
-  { weight: 10, cmd: 'PATROL' },
-  { weight: 8,  cmd: 'STRETCH' },
-  { weight: 12, cmd: 'JOY' },
-  { weight: 5,  cmd: 'BUSY' },
-  { weight: 8,  cmd: 'PROUD' },
-  { weight: 5,  cmd: 'ADAPT', dream: false },
-  { weight: 5,  cmd: 'REFLECT', dream: false },
-  { weight: 3,  cmd: 'DREAM', dream: true },
-  { weight: 7,  cmd: null }, // idle
+  { weight: 8,  cmd: 'HELLO' },
+  { weight: 12, cmd: 'HOW-ARE-YOU' },
+  { weight: 8,  cmd: 'PATROL' },
+  { weight: 5,  cmd: 'STRETCH' },
+  { weight: 10, cmd: 'JOY' },
+  { weight: 5,  cmd: 'PROUD' },
+  { weight: 8,  cmd: 'ADAPT' },
+  { weight: 5,  cmd: 'TEACH', teach: true },
+  { weight: 4,  cmd: 'DREAM', dream: true },
+  { weight: 3,  cmd: 'COMPOSE-ROUTINE' },
+  { weight: 3,  cmd: 'INVENT-STRATEGY' },
+  { weight: 12, cmd: null }, // idle
 ];
 const totalWeight = BEHAVIORS.reduce((s,b) => s+b.weight, 0);
 let autoIdx = 0; // round-robin index for which unit acts next
@@ -288,16 +289,39 @@ function autoTick() {
   const unit = mesh.units[autoIdx];
   const behavior = pickBehavior();
   if (!behavior.cmd) return;
+
+  // TEACH: actually share words with other units.
+  if (behavior.teach && mesh.units.length > 1) {
+    const output = unit.vm.eval('ADAPT').trim();
+    const taught = mesh.teachFrom(unit);
+    if (taught.length > 0) {
+      const msg = `taught ${taught.join(', ')} to colony`;
+      setBubble(unit.id, msg, '#cc8800');
+      addChatter(unit.id, msg);
+      // Flash all edges.
+      for (const n of vizNodes) n.pulse = 1.3;
+    } else if (output) {
+      setBubble(unit.id, output);
+      addChatter(unit.id, output);
+    }
+    return;
+  }
+
   const output = unit.vm.eval(behavior.cmd).trim();
   if (output) {
-    const dreamColor = behavior.dream ? '#a080cc' : null;
-    setBubble(unit.id, output, dreamColor);
+    const color = behavior.dream ? '#a080cc' : null;
+    setBubble(unit.id, output, color);
     addChatter(unit.id, output);
-    // Dream makes the node pulse gently.
     if (behavior.dream) {
       const n = vizNodes.find(nd => nd.id === unit.id);
       if (n) { n.pulse = 1.4; n.glowColor = '#8060aa'; }
     }
+  }
+
+  // Update personality label on the viz node.
+  if (unit.personality) {
+    const n = vizNodes.find(nd => nd.id === unit.id);
+    if (n) n.label = unit.id + ' ' + unit.personality;
   }
 }
 setInterval(autoTick, 5000);
@@ -401,6 +425,12 @@ async function init() {
         emitParticle(data.unitId, vizNodes[0].id, '#00ff88');
         const n = vizNodes.find(n => n.id === data.unitId);
         if (n) n.pulse = 1.8;
+      }
+      if (type === 'teach' && vizNodes.length > 1) {
+        // Flash particles from teacher to all other nodes.
+        for (const n of vizNodes) {
+          if (n.id !== data.from) emitParticle(data.from, n.id, '#cc8800');
+        }
       }
     };
     const firstUnit = await mesh.init('unit.wasm');

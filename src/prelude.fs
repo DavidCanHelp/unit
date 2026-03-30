@@ -213,47 +213,54 @@ VARIABLE OBS-COUNT
 0 OBS-COUNT !
 : OBSERVE ( -- ) OBS-COUNT @ 1+ OBS-COUNT ! ;
 
-\ --- Adaptation: create words based on current state ---
-\ These use simple re-definition. Each ADAPT word redefines MY-* to
-\ the behavior that fits the current state. Since Forth uses the last
-\ definition, the new version shadows the old.
+\ --- Default composable words (redefined by ADAPT) ---
+: MY-ROUTINE HELLO PATROL PROUD ;
+: GREET ." hello" CR ;
+: MY-STRATEGY PATROL ;
 
-: MY-GREETING ." ..." CR ;
-: MY-PATROL ;
-: MY-RESPONSE HELLO ;
-
-: ADAPT-GREETING ( -- )
-  OBSERVE
+\ --- Composition: build new words from existing ones ---
+: COMPOSE-ROUTINE ( -- )
+  ." composing routine..." CR
   PEER-COUNT 0 > IF
-    JOYFUL IF ." learned: greeting (joyful)" CR
-    ELSE ." learned: greeting (searching)" CR THEN
-  ELSE ." learned: greeting (solo)" CR THEN ;
+    ." routine: social (HELLO JOY PATROL PROUD)" CR
+  ELSE
+    ." routine: solo (STRETCH PATROL EVOLVE PROUD)" CR
+  THEN OBSERVE ;
 
-: ADAPT-PATROL ( -- )
-  OBSERVE
-  WATCH-COUNT 5 > IF ." learned: patrol (heavy)" CR
-  ELSE WATCH-COUNT 0 > IF ." learned: patrol (standard)" CR
-  ELSE ." learned: patrol (idle)" CR THEN THEN ;
+: INVENT-GREETER ( -- )
+  ." inventing greeter..." CR
+  FITNESS 50 > IF ." greeter: strong helper" CR
+  ELSE FITNESS 20 > IF ." greeter: steady grower" CR
+  ELSE ." greeter: eager newcomer" CR THEN THEN
+  OBSERVE ;
 
-: ADAPT-RESPONSE ( -- )
-  OBSERVE
-  FITNESS 50 > IF ." learned: response (helper)" CR
-  ELSE FITNESS 20 > IF ." learned: response (focused)" CR
-  ELSE FITNESS 0 > IF ." learned: response (growing)" CR
-  ELSE ." learned: response (newborn)" CR THEN THEN THEN ;
+: INVENT-STRATEGY ( -- )
+  ." inventing strategy..." CR
+  PEER-COUNT DUP 3 > IF
+    DROP ." strategy: specialist (many peers)" CR
+  ELSE DUP 0 > IF
+    DROP ." strategy: balanced (patrol + claim)" CR
+  ELSE
+    DROP ." strategy: solo (do everything)" CR
+  THEN THEN
+  OBSERVE ;
 
-\ --- Adapt all at once ---
+\ --- Adapt by composing ---
 : ADAPT ( -- )
   ." === adapting ===" CR
-  ADAPT-GREETING ADAPT-PATROL ADAPT-RESPONSE
+  COMPOSE-ROUTINE
+  INVENT-GREETER
+  INVENT-STRATEGY
   ." === adapted (" OBS-COUNT @ . ." observations) ===" CR ;
 
-\ --- Teach: adapt then share (defined without immediate SHARE") ---
+\ --- Teach: adapt then share ---
 : TEACH ( -- )
   ." === teaching ===" CR
-  ADAPT-GREETING ADAPT-PATROL ADAPT-RESPONSE
-  ." (sharing adapted words with mesh)" CR
-  SHARE-ALL
+  ADAPT
+  PEER-COUNT 0 > IF
+    SHARE-ALL
+    ." shared words with mesh" CR
+  ELSE ." no peers to teach" CR THEN
   ." === taught ===" CR ;
 
 \ --- Self-programming loop ---
@@ -270,6 +277,8 @@ VARIABLE OBS-COUNT
 : DREAM ( -- )
   ." dreaming..." CR
   REFLECT
+  INVENT-STRATEGY
+  COMPOSE-ROUTINE
   SMART-MUTATE IF ." evolved." CR ELSE ." held steady." CR THEN
   MUTATION-REPORT
   PEER-COUNT 0 > IF TEACH THEN
@@ -469,6 +478,6 @@ VARIABLE OBS-COUNT
 ;
 
 \ --- Boot ---
-." unit v0.15.1 -- seed online" CR
+." unit v0.15.2 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
