@@ -252,7 +252,13 @@ impl VM {
         match crate::sexp::parse(&sexp_str) {
             Ok(sexp) => {
                 let forth = crate::sexp::to_forth(&sexp);
+                // Save outer input state — interpret_line overwrites these.
+                let saved_buf = self.input_buffer.clone();
+                let saved_pos = self.input_pos;
                 self.interpret_line(&forth);
+                // Restore so the rest of the outer line continues.
+                self.input_buffer = saved_buf;
+                self.input_pos = saved_pos;
             }
             Err(e) => {
                 self.emit_str(&format!("sexp error: {}\n", e));
@@ -2535,7 +2541,7 @@ impl VM {
 // CLI argument parsing
 // ===========================================================================
 
-const VERSION: &str = "unit v0.15.2";
+const VERSION: &str = "unit v0.16.2";
 
 fn print_help() {
     println!("{}", VERSION);
@@ -2618,6 +2624,7 @@ fn main() {
 
     let peers_str = cli.peers
         .or_else(|| std::env::var("UNIT_PEERS").ok())
+        .or_else(|| std::env::var("UNIT_SEEDS").ok())
         .unwrap_or_default();
     let seed_peers: Vec<SocketAddr> = peers_str
         .split(',')

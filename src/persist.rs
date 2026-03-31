@@ -386,7 +386,13 @@ pub fn delete_state(node_id: &NodeId) -> Result<(), String> {
 #[cfg(not(target_arch = "wasm32"))]
 fn node_id_path() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    format!("{}/.unit/node-id", home)
+    // Use port-specific node-id file when UNIT_PORT is set, so multiple
+    // units on the same machine automatically get different identities.
+    if let Ok(port) = std::env::var("UNIT_PORT") {
+        format!("{}/.unit/node-id-{}", home, port)
+    } else {
+        format!("{}/.unit/node-id", home)
+    }
 }
 
 /// Load a previously saved node ID, or return None for first boot.
