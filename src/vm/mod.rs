@@ -224,6 +224,15 @@ pub(crate) const P_MUTATION_STATS: usize = 414;
 pub(crate) const P_SEXP_EVAL: usize = 420;
 pub(crate) const P_SEXP_SEND: usize = 421;
 pub(crate) const P_SEXP_RECV: usize = 422;
+// JSON snapshot persistence
+pub(crate) const P_JSON_SNAPSHOT: usize = 430;
+pub(crate) const P_JSON_RESTORE: usize = 431;
+pub(crate) const P_SNAPSHOT_PATH: usize = 432;
+pub(crate) const P_JSON_SNAPSHOTS: usize = 433;
+pub(crate) const P_AUTO_SNAPSHOT: usize = 434;
+pub(crate) const P_HIBERNATE: usize = 435;
+pub(crate) const P_EXPORT_GENOME: usize = 436;
+pub(crate) const P_IMPORT_GENOME: usize = 437;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -298,6 +307,11 @@ pub struct VM {
     pub auto_save_interval: u32,
     pub tasks_since_save: u32,
     pub node_id_cache: Option<[u8; 8]>,
+    // --- JSON snapshot auto-save ---
+    pub auto_snapshot_secs: u64,
+    pub auto_snapshot_last: Option<std::time::Instant>,
+    /// Number of kernel+prelude dictionary entries (set after load_prelude).
+    pub kernel_word_count: usize,
 }
 
 impl VM {
@@ -341,6 +355,9 @@ impl VM {
             auto_save_interval: 5,
             tasks_since_save: 0,
             node_id_cache: None,
+            auto_snapshot_secs: 0,
+            auto_snapshot_last: None,
+            kernel_word_count: 0,
         };
         vm.register_primitives();
         vm
@@ -551,6 +568,15 @@ impl VM {
             ("SEXP\"", P_SEXP_EVAL, true),
             ("SEXP-SEND\"", P_SEXP_SEND, true),
             ("SEXP-RECV", P_SEXP_RECV, false),
+            // JSON snapshot persistence
+            ("JSON-SNAPSHOT", P_JSON_SNAPSHOT, false),
+            ("JSON-RESTORE", P_JSON_RESTORE, false),
+            ("SNAPSHOT-PATH", P_SNAPSHOT_PATH, false),
+            ("JSON-SNAPSHOTS", P_JSON_SNAPSHOTS, false),
+            ("AUTO-SNAPSHOT", P_AUTO_SNAPSHOT, false),
+            ("HIBERNATE", P_HIBERNATE, false),
+            ("EXPORT-GENOME", P_EXPORT_GENOME, false),
+            ("IMPORT-GENOME\"", P_IMPORT_GENOME, true),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -976,6 +1002,15 @@ impl VM {
             P_SEXP_EVAL => self.prim_sexp_eval(),
             P_SEXP_SEND => self.prim_sexp_send(),
             P_SEXP_RECV => self.prim_sexp_recv(),
+            // JSON snapshot persistence
+            P_JSON_SNAPSHOT => self.prim_json_snapshot(),
+            P_JSON_RESTORE => self.prim_json_restore(),
+            P_SNAPSHOT_PATH => self.prim_snapshot_path(),
+            P_JSON_SNAPSHOTS => self.prim_json_snapshots(),
+            P_AUTO_SNAPSHOT => self.prim_auto_snapshot(),
+            P_HIBERNATE => self.prim_hibernate(),
+            P_EXPORT_GENOME => self.prim_export_genome(),
+            P_IMPORT_GENOME => self.prim_import_genome(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

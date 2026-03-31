@@ -10,6 +10,9 @@ pub mod vm;
 // --- S-expression wire format ---
 pub mod sexp;
 
+// --- JSON snapshot persistence ---
+pub mod snapshot;
+
 // --- Core nanobot ---
 #[allow(dead_code)]
 pub mod mesh;
@@ -300,6 +303,246 @@ impl VM {
         } else {
             self.emit_str("no mesh\n");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // JSON snapshot primitives
+    // -----------------------------------------------------------------------
+
+    fn make_json_snapshot(&self) -> snapshot::UnitSnapshot {
+        let node_id = self.node_id_cache
+            .map(|id| crate::mesh::id_to_hex(&id))
+            .unwrap_or_else(|| "offline".to_string());
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Collect user-defined words (skip kernel + prelude words).
+        let kernel_count = self.kernel_word_count;
+        let words: Vec<(String, String)> = self.dictionary[kernel_count..]
+            .iter()
+            .filter(|e| !e.hidden)
+            .map(|e| {
+                let source = snapshot::decompile_word(e, &self.dictionary, &self.primitive_names);
+                (e.name.clone(), source)
+            })
+            .collect();
+
+        snapshot::UnitSnapshot {
+            node_id,
+            timestamp: ts,
+            stack: self.stack.clone(),
+            fitness: self.fitness.score,
+            tasks_completed: self.fitness.tasks_completed,
+            generation: self.spawn_state.generation,
+            mutation_stats: snapshot::MutStats {
+                total: self.mutation_stats.total,
+                neutral: self.mutation_stats.neutral,
+                beneficial: self.mutation_stats.beneficial,
+                harmful: self.mutation_stats.harmful,
+                lethal: self.mutation_stats.lethal,
+            },
+            words,
+            memory_here: self.here,
+            memory: self.memory[..self.here].to_vec(),
+        }
+    }
+
+    fn restore_json_snapshot(&mut self, snap: &snapshot::UnitSnapshot) {
+        // Restore simple fields.
+        self.stack = snap.stack.clone();
+        self.fitness.score = snap.fitness;
+        self.fitness.tasks_completed = snap.tasks_completed;
+        self.spawn_state.generation = snap.generation;
+        self.mutation_stats.total = snap.mutation_stats.total;
+        self.mutation_stats.neutral = snap.mutation_stats.neutral;
+        self.mutation_stats.beneficial = snap.mutation_stats.beneficial;
+        self.mutation_stats.harmful = snap.mutation_stats.harmful;
+        self.mutation_stats.lethal = snap.mutation_stats.lethal;
+
+        // Restore memory.
+        if snap.memory_here <= self.memory.len() {
+            self.here = snap.memory_here;
+            for (i, &v) in snap.memory.iter().enumerate() {
+                if i < self.memory.len() {
+                    self.memory[i] = v;
+                }
+            }
+        }
+
+        // Restore user-defined words by eval'ing their decompiled source.
+        for (_, source) in &snap.words {
+            let saved_buf = self.input_buffer.clone();
+            let saved_pos = self.input_pos;
+            let saved_silent = self.silent;
+            self.silent = true;
+            self.interpret_line(source);
+            self.silent = saved_silent;
+            self.input_buffer = saved_buf;
+            self.input_pos = saved_pos;
+        }
+    }
+
+    fn prim_json_snapshot(&mut self) {
+        let snap = self.make_json_snapshot();
+        let json = snapshot::to_json(&snap);
+        if let Some(id) = self.node_id_cache {
+            match snapshot::save_json_snapshot(&id, &json) {
+                Ok(path) => {
+                    self.emit_str(&format!("snapshot saved to {}\n", path));
+                    // Broadcast to mesh.
+                    if let Some(ref m) = self.mesh {
+                        let sexp = crate::sexp::msg_snapshot(&id, snap.fitness, snap.generation);
+                        m.send_sexp(&sexp.to_string());
+                    }
+                }
+                Err(e) => self.emit_str(&format!("snapshot failed: {}\n", e)),
+            }
+        } else {
+            self.emit_str("snapshot: no node ID\n");
+        }
+    }
+
+    fn prim_json_restore(&mut self) {
+        if let Some(id) = self.node_id_cache {
+            if let Some(json) = snapshot::load_json_snapshot(&id) {
+                if let Some(snap) = snapshot::from_json(&json) {
+                    self.restore_json_snapshot(&snap);
+                    self.emit_str(&format!(
+                        "restored from snapshot (saved {}, fitness={}, gen={})\n",
+                        snap.timestamp, snap.fitness, snap.generation
+                    ));
+                    // Broadcast to mesh.
+                    if let Some(ref m) = self.mesh {
+                        let sexp = crate::sexp::msg_resurrect(
+                            &id, snap.fitness, snap.generation, snap.timestamp,
+                        );
+                        m.send_sexp(&sexp.to_string());
+                    }
+                } else {
+                    self.emit_str("restore: corrupt snapshot\n");
+                }
+            } else {
+                self.emit_str("no snapshot found\n");
+            }
+        } else {
+            self.emit_str("restore: no node ID\n");
+        }
+    }
+
+    fn prim_snapshot_path(&mut self) {
+        if let Some(id) = self.node_id_cache {
+            self.emit_str(&format!("{}\n", snapshot::snapshot_path(&id)));
+        } else {
+            self.emit_str("no node ID\n");
+        }
+    }
+
+    fn prim_json_snapshots(&mut self) {
+        let snapshots = snapshot::list_json_snapshots();
+        if snapshots.is_empty() {
+            self.emit_str("no snapshots\n");
+        } else {
+            for name in &snapshots {
+                self.emit_str(&format!("  {}\n", name));
+            }
+        }
+    }
+
+    fn prim_auto_snapshot(&mut self) {
+        let secs = self.pop();
+        if secs <= 0 {
+            self.auto_snapshot_secs = 0;
+            self.auto_snapshot_last = None;
+            self.emit_str("auto-snapshot: OFF\n");
+        } else {
+            self.auto_snapshot_secs = secs as u64;
+            self.auto_snapshot_last = Some(Instant::now());
+            self.emit_str(&format!("auto-snapshot: every {}s\n", secs));
+        }
+    }
+
+    fn prim_hibernate(&mut self) {
+        let snap = self.make_json_snapshot();
+        let json = snapshot::to_json(&snap);
+        if let Some(id) = self.node_id_cache {
+            match snapshot::save_json_snapshot(&id, &json) {
+                Ok(path) => {
+                    self.emit_str(&format!("hibernating... saved to {}\n", path));
+                    if let Some(ref m) = self.mesh {
+                        let sexp = crate::sexp::msg_snapshot(&id, snap.fitness, snap.generation);
+                        m.send_sexp(&sexp.to_string());
+                    }
+                }
+                Err(e) => self.emit_str(&format!("hibernate failed: {}\n", e)),
+            }
+        }
+        self.running = false;
+    }
+
+    fn prim_export_genome(&mut self) {
+        let kernel_count = self.kernel_word_count;
+        let mut genome = String::new();
+        for entry in &self.dictionary[kernel_count..] {
+            if entry.hidden { continue; }
+            let source = snapshot::decompile_word(entry, &self.dictionary, &self.primitive_names);
+            genome.push_str(&source);
+            genome.push('\n');
+        }
+        if genome.is_empty() {
+            self.emit_str("(empty genome)\n");
+        } else {
+            self.emit_str(&genome);
+        }
+    }
+
+    fn prim_import_genome(&mut self) {
+        let source = self.parse_until('"');
+        if source.trim().is_empty() {
+            self.emit_str("import-genome: empty input\n");
+            return;
+        }
+        let saved_buf = self.input_buffer.clone();
+        let saved_pos = self.input_pos;
+        let count_before = self.dictionary.len();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                self.interpret_line(trimmed);
+            }
+        }
+        self.input_buffer = saved_buf;
+        self.input_pos = saved_pos;
+        let imported = self.dictionary.len() - count_before;
+        self.emit_str(&format!("imported {} words\n", imported));
+    }
+
+    fn check_auto_snapshot(&mut self) {
+        if self.auto_snapshot_secs == 0 { return; }
+        if let Some(last) = self.auto_snapshot_last {
+            if last.elapsed() >= Duration::from_secs(self.auto_snapshot_secs) {
+                self.auto_snapshot_last = Some(Instant::now());
+                let snap = self.make_json_snapshot();
+                let json = snapshot::to_json(&snap);
+                if let Some(id) = self.node_id_cache {
+                    let _ = snapshot::save_json_snapshot(&id, &json);
+                }
+            }
+        }
+    }
+
+    /// Try to resurrect from a JSON snapshot. Returns true if restored.
+    pub fn try_resurrect(&mut self) -> bool {
+        if let Some(id) = self.node_id_cache {
+            if let Some(json) = snapshot::load_json_snapshot(&id) {
+                if let Some(snap) = snapshot::from_json(&json) {
+                    self.restore_json_snapshot(&snap);
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     // -----------------------------------------------------------------------
@@ -2520,6 +2763,7 @@ impl VM {
                         self.check_incoming_replications();
                         self.tick_monitor();
                         self.tick_swarm();
+                        self.check_auto_snapshot();
                         self.poll_ws_events();
                         self.update_ws_mesh_json();
                     }
@@ -2541,7 +2785,7 @@ impl VM {
 // CLI argument parsing
 // ===========================================================================
 
-const VERSION: &str = "unit v0.16.2";
+const VERSION: &str = "unit v0.17.0";
 
 fn print_help() {
     println!("{}", VERSION);
@@ -2730,7 +2974,31 @@ fn main() {
         vm.load_prelude();
         if suppress { vm.output_buffer = None; }
     }
+    // Record kernel+prelude dictionary size so snapshots only save user words.
+    vm.kernel_word_count = vm.dictionary.len();
     vm.silent = false;
+
+    // Try JSON resurrection (only if not already restored from binary state).
+    if !restored {
+        if vm.try_resurrect() {
+            if !cli.quiet {
+                eprintln!("resurrected from snapshot");
+            }
+            // Broadcast resurrection to mesh.
+            if let Some(id) = vm.node_id_cache {
+                if let Some(json) = snapshot::load_json_snapshot(&id) {
+                    if let Some(snap) = snapshot::from_json(&json) {
+                        if let Some(ref m) = vm.mesh {
+                            let sexp = sexp::msg_resurrect(
+                                &id, snap.fitness, snap.generation, snap.timestamp,
+                            );
+                            m.send_sexp(&sexp.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Apply --trust.
     if let Some(ref level) = cli.trust {

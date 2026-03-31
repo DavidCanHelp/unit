@@ -342,6 +342,32 @@ pub fn msg_event(event_type: &str, data: &str) -> Sexp {
     ])
 }
 
+pub fn msg_snapshot(id: &NodeId, fitness: i64, gen: u32) -> Sexp {
+    Sexp::List(vec![
+        Sexp::Atom("snapshot".into()),
+        Sexp::Atom(":id".into()),
+        Sexp::Str(crate::mesh::id_to_hex(id)),
+        Sexp::Atom(":fitness".into()),
+        Sexp::Number(fitness),
+        Sexp::Atom(":gen".into()),
+        Sexp::Number(gen as i64),
+    ])
+}
+
+pub fn msg_resurrect(id: &NodeId, fitness: i64, gen: u32, saved_at: u64) -> Sexp {
+    Sexp::List(vec![
+        Sexp::Atom("resurrect".into()),
+        Sexp::Atom(":id".into()),
+        Sexp::Str(crate::mesh::id_to_hex(id)),
+        Sexp::Atom(":fitness".into()),
+        Sexp::Number(fitness),
+        Sexp::Atom(":gen".into()),
+        Sexp::Number(gen as i64),
+        Sexp::Atom(":saved-at".into()),
+        Sexp::Str(format!("{}", saved_at)),
+    ])
+}
+
 /// Try to determine the message type from a parsed S-expression.
 pub fn msg_type(sexp: &Sexp) -> Option<&str> {
     let items = sexp.as_list()?;

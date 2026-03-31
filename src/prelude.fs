@@ -362,6 +362,7 @@ VARIABLE OBS-COUNT
   ."   MORNING / EVENING             Start or end a shift" CR CR
   ." MORE: HELP-STACK HELP-MATH HELP-MESH HELP-GOALS" CR
   ."       HELP-MONITOR HELP-SPAWN HELP-IO HELP-COLONY" CR
+  ."       HELP-PERSIST" CR
 ;
 
 : HELP-STACK
@@ -483,7 +484,22 @@ VARIABLE OBS-COUNT
   ."   IO-LOG                      Show I/O audit trail" CR
 ;
 
+: HELP-PERSIST
+  CR ." === Persistence & Resurrection ===" CR CR
+  ."   JSON-SNAPSHOT                Save state to JSON snapshot" CR
+  ."   JSON-RESTORE                 Restore from JSON snapshot" CR
+  ."   SNAPSHOT-PATH                Show snapshot file path" CR
+  ."   JSON-SNAPSHOTS               List available snapshots" CR
+  ."   60 AUTO-SNAPSHOT             Auto-save every 60 seconds" CR
+  ."   0 AUTO-SNAPSHOT              Disable auto-save" CR
+  ."   HIBERNATE                    Snapshot and exit cleanly" CR CR
+  ."   EXPORT-GENOME                Print user-defined words" CR
+  ."   IMPORT-GENOME" ." source" ."     Load word definitions" CR CR
+  ."   On startup, unit auto-restores from snapshot if one exists." CR
+  ."   Snapshots are JSON: ~/.unit/snapshots/{node-id}.json" CR
+;
+
 \ --- Boot ---
-." unit v0.16.2 -- seed online" CR
+." unit v0.17.0 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
