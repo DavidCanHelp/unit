@@ -404,6 +404,9 @@ VARIABLE OBS-COUNT
   ."   SHARE-ALL                   Share all non-kernel words" CR
   ."   SHARED-WORDS                List words from peers" CR
   ."   LEADERBOARD                 Fitness rankings" CR CR
+  ."   SEXP" ." (+ 2 3)" ."           Eval S-expression as Forth" CR
+  ."   SEXP-SEND" ." (event ...)" ." Broadcast S-expr to peers" CR
+  ."   SEXP-RECV                    Show inbound S-expr messages" CR CR
   ."   Env vars: UNIT_PORT, UNIT_PEERS, UNIT_WS_PORT" CR
   ."   Start:    UNIT_PORT=4201 unit" CR
   ."   Join:     UNIT_PORT=4202 unit --peers 127.0.0.1:4201" CR

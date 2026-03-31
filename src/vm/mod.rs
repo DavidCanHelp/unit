@@ -220,6 +220,10 @@ pub(crate) const P_PEER_COUNT: usize = 411;
 pub(crate) const P_SMART_MUTATE: usize = 412;
 pub(crate) const P_MUTATION_REPORT: usize = 413;
 pub(crate) const P_MUTATION_STATS: usize = 414;
+// S-expression support
+pub(crate) const P_SEXP_EVAL: usize = 420;
+pub(crate) const P_SEXP_SEND: usize = 421;
+pub(crate) const P_SEXP_RECV: usize = 422;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -543,6 +547,10 @@ impl VM {
             ("SMART-MUTATE", P_SMART_MUTATE, false),
             ("MUTATION-REPORT", P_MUTATION_REPORT, false),
             ("MUTATION-STATS", P_MUTATION_STATS, false),
+            // S-expression support
+            ("SEXP\"", P_SEXP_EVAL, true),
+            ("SEXP-SEND\"", P_SEXP_SEND, true),
+            ("SEXP-RECV", P_SEXP_RECV, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -964,6 +972,10 @@ impl VM {
             P_SMART_MUTATE => self.prim_smart_mutate(),
             P_MUTATION_REPORT => self.prim_mutation_report(),
             P_MUTATION_STATS => { let s = self.mutation_stats.format(); self.emit_str(&s); self.emit_str("\n"); }
+            // S-expression support
+            P_SEXP_EVAL => self.prim_sexp_eval(),
+            P_SEXP_SEND => self.prim_sexp_send(),
+            P_SEXP_RECV => self.prim_sexp_recv(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

@@ -53,6 +53,7 @@ const MSG_CULL_INTENT: u8 = 13;
 const MSG_REPLICATE_REQUEST: u8 = 14;
 const MSG_REPLICATE_ACCEPT: u8 = 15;
 const MSG_REPLICATE_DENY: u8 = 16;
+const MSG_SEXP: u8 = 17;
 
 // Wire format magic.
 const MAGIC: &[u8; 4] = b"UNIT";
@@ -284,6 +285,8 @@ pub(crate) struct MeshState {
     pub(crate) next_request_id: u32,
     pub(crate) parent_id: Option<NodeId>,
     pub(crate) children_ids: Vec<NodeId>,
+    // --- S-expression messages ---
+    pub(crate) sexp_inbox: VecDeque<String>,
 }
 
 /// A word definition received from a peer.
@@ -428,6 +431,7 @@ impl MeshNode {
             next_request_id: 1,
             parent_id: None,
             children_ids: Vec::new(),
+            sexp_inbox: VecDeque::new(),
         }));
 
         // Add seed peers as tentative entries so the first heartbeat reaches them.
@@ -1047,6 +1051,33 @@ impl MeshNode {
         for addr in &peers {
             let _ = self.socket.send_to(&buf, addr);
         }
+
+        // Also broadcast an S-expression envelope.
+        let sexp = crate::sexp::msg_word_share(name, source, &self.id);
+        self.send_sexp(&sexp.to_string());
+    }
+
+    /// Broadcast an S-expression message to all peers.
+    pub fn send_sexp(&self, sexp_str: &str) {
+        let st = self.state.lock().unwrap();
+        let port = st.port;
+        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        drop(st);
+
+        let sb = sexp_str.as_bytes();
+        let mut buf = Vec::with_capacity(HEADER_SIZE + 2 + sb.len());
+        encode_header(&mut buf, MSG_SEXP, &self.id, port);
+        write_u16(&mut buf, sb.len() as u16);
+        write_bytes(&mut buf, sb);
+        for addr in &peers {
+            let _ = self.socket.send_to(&buf, addr);
+        }
+    }
+
+    /// Drain pending inbound S-expression messages.
+    pub fn recv_sexp_messages(&self) -> Vec<String> {
+        let mut st = self.state.lock().unwrap();
+        st.sexp_inbox.drain(..).collect()
     }
 
     /// Receive pending shared words (called by VM to compile them).
@@ -1367,6 +1398,18 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
     for addr in &all_peer_addrs {
         let _ = socket.send_to(&buf, addr);
     }
+
+    // Also broadcast an S-expression peer-status envelope.
+    let sexp = crate::sexp::msg_peer_status(my_id, peer_count as usize, fitness, load, capacity);
+    let sexp_str = sexp.to_string();
+    let sb = sexp_str.as_bytes();
+    let mut sexp_buf = Vec::with_capacity(HEADER_SIZE + 2 + sb.len());
+    encode_header(&mut sexp_buf, MSG_SEXP, my_id, port);
+    write_u16(&mut sexp_buf, sb.len() as u16);
+    write_bytes(&mut sexp_buf, sb);
+    for addr in &all_peer_addrs {
+        let _ = socket.send_to(&sexp_buf, addr);
+    }
 }
 
 fn handle_packet(
@@ -1426,6 +1469,9 @@ fn handle_packet(
             let mut st = state.lock().unwrap();
             let result = if msg_type == MSG_REPLICATE_ACCEPT { "accepted" } else { "denied" };
             st.log_event(format!("replication {} by {}", result, id_to_hex(&sender_id)));
+        }
+        MSG_SEXP => {
+            handle_sexp(data, &mut pos, sender_id, state);
         }
         _ => {} // unknown message type — ignore
     }
@@ -2193,6 +2239,27 @@ fn handle_word_share(
     });
     st.shared_words.push((name.clone(), sender_id));
     st.log_event(format!("received word '{}' from {}", name, id_to_hex(&sender_id)));
+}
+
+fn handle_sexp(
+    data: &[u8],
+    pos: &mut usize,
+    sender_id: NodeId,
+    state: &Arc<Mutex<MeshState>>,
+) {
+    let slen = match read_u16(data, pos) {
+        Some(v) => v as usize,
+        None => return,
+    };
+    let sbytes = match read_bytes(data, pos, slen) {
+        Some(v) => v,
+        None => return,
+    };
+    let msg = String::from_utf8_lossy(&sbytes).to_string();
+    let mut st = state.lock().unwrap();
+    st.sexp_inbox.push_back(msg.clone());
+    st.log_event(format!("sexp from {}: {}", id_to_hex(&sender_id),
+        if msg.len() > 60 { format!("{}...", &msg[..60]) } else { msg }));
 }
 
 /// Check if goal load warrants auto-replication.

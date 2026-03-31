@@ -154,10 +154,15 @@ function setBubble(unitId, text, color) {
   else vizBubbles.push({ id: unitId, text: short, age: 0, color: color || '#6a8' });
 }
 
+function toSexp(unitId, text) {
+  const short = text.split('\n')[0].trim().substring(0, 50);
+  return `(say :from "#${unitId}" :msg "${short.replace(/"/g, '\\"')}")`;
+}
+
 function addChatter(unitId, text) {
   if (!chatterOn) return;
   const line = document.createElement('div');
-  line.textContent = `[#${unitId}] ${text.split('\n')[0].substring(0, 60)}`;
+  line.textContent = toSexp(unitId, text);
   chatterDiv.appendChild(line);
   while (chatterDiv.childNodes.length > 8) chatterDiv.removeChild(chatterDiv.firstChild);
   chatterDiv.scrollTop = chatterDiv.scrollHeight;

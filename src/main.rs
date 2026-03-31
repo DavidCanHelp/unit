@@ -7,6 +7,9 @@ pub mod types;
 // --- The Forth VM ---
 pub mod vm;
 
+// --- S-expression wire format ---
+pub mod sexp;
+
 // --- Core nanobot ---
 #[allow(dead_code)]
 pub mod mesh;
@@ -236,6 +239,60 @@ impl VM {
             ));
         } else {
             self.emit_str("no mutations yet\n");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // S-expression primitives
+    // -----------------------------------------------------------------------
+
+    /// SEXP" expr" — parse S-expression and translate to Forth, then execute.
+    fn prim_sexp_eval(&mut self) {
+        let sexp_str = self.parse_until('"');
+        match crate::sexp::parse(&sexp_str) {
+            Ok(sexp) => {
+                let forth = crate::sexp::to_forth(&sexp);
+                self.interpret_line(&forth);
+            }
+            Err(e) => {
+                self.emit_str(&format!("sexp error: {}\n", e));
+            }
+        }
+    }
+
+    /// SEXP-SEND" expr" — broadcast an S-expression message to mesh peers.
+    fn prim_sexp_send(&mut self) {
+        let sexp_str = self.parse_until('"');
+        // Validate it parses as a valid S-expression.
+        match crate::sexp::parse(&sexp_str) {
+            Ok(_) => {
+                if let Some(ref m) = self.mesh {
+                    m.send_sexp(&sexp_str);
+                    self.emit_str("sexp sent\n");
+                } else {
+                    self.emit_str("no mesh\n");
+                }
+            }
+            Err(e) => {
+                self.emit_str(&format!("sexp error: {}\n", e));
+            }
+        }
+    }
+
+    /// SEXP-RECV — drain inbound S-expression messages, print them.
+    fn prim_sexp_recv(&mut self) {
+        if let Some(ref m) = self.mesh {
+            let msgs = m.recv_sexp_messages();
+            if msgs.is_empty() {
+                self.emit_str("no sexp messages\n");
+            } else {
+                for msg in &msgs {
+                    self.emit_str(msg);
+                    self.emit_str("\n");
+                }
+            }
+        } else {
+            self.emit_str("no mesh\n");
         }
     }
 
