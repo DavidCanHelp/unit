@@ -92,7 +92,7 @@ function toggleMute() {
 // =========================================================================
 // Visualizer
 // =========================================================================
-let vizMode = 0;
+let vizMode = 1;
 let vizNodes = [], vizEdges = [], vizParticles = [];
 // Speech bubbles: { id, text, age }
 let vizBubbles = [];
@@ -318,9 +318,9 @@ function autoTick() {
   let output;
   const peers = mesh.units.length - 1;
   if (behavior.cmd === 'HELLO') {
-    output = `Hi! I'm unit #${unit.id}, generation 0 with ${peers} peers and fitness ${unit.fitness}`;
+    output = `(peer-hello :id "#${unit.id}" :gen 0 :peers ${peers} :fitness ${unit.fitness})`;
   } else if (behavior.cmd === 'PROUD') {
-    output = `fitness: ${unit.fitness} | tasks: ${unit.tasksCompleted}`;
+    output = `(status :id "#${unit.id}" :fitness ${unit.fitness} :tasks ${unit.tasksCompleted})`;
   } else {
     output = unit.vm.eval(behavior.cmd).trim();
   }
@@ -351,11 +351,10 @@ async function doSpawn() {
   if (u) {
     spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
     appendOutput(`[mesh] unit #${u.id} spawned (${mesh.units.length} units online)\n`, 'mesh-event');
-    // New unit says hello after a beat.
-    setTimeout(() => {
-      const out = u.vm.eval('HELLO').trim();
-      if (out) { setBubble(u.id, out); addChatter(u.id, out); }
-    }, 1000);
+    const peers = mesh.units.length - 1;
+    const hello = `(peer-hello :id "#${u.id}" :gen 0 :peers ${peers} :fitness 0)`;
+    addChatter(u.id, hello);
+    setTimeout(() => { setBubble(u.id, hello); }, 1000);
   }
 }
 
@@ -365,12 +364,13 @@ async function doSpawn() {
 const STEPS = [
   { cmd: '2 3 + .', before: 'Welcome to unit. Type the highlighted command to begin \u2192', after: 'You just used a stack-based language. 2 and 3 go on the stack, + adds them, . prints the result.' },
   { cmd: ': SQUARE DUP * ;', before: 'Now define a word \u2192', after: 'You created a new word. SQUARE duplicates the top of the stack and multiplies. The language just grew.' },
-  { cmd: '7 SQUARE .', before: 'Use it \u2192', after: '49. Your word works. In unit, everything is built this way \u2014 from simple pieces.' },
+  { cmd: '7 SQUARE .', before: 'Use it \u2192', after: '49. Your word works. In unit, everything is built this way \u2014 from simple pieces.', spawn: true },
   { cmd: 'SEE SQUARE', before: 'See inside it \u2192', after: 'The dictionary is transparent. Every word can be inspected, modified, even shared across a network.' },
   { cmd: 'WORDS', before: 'List all words \u2192', after: '~160 words. Stack ops, arithmetic, mesh networking, self-replication, monitoring \u2014 all from one binary. Type HELP for a guided tour.' },
   { cmd: '10 0 DO I . LOOP', before: 'Try a loop \u2192', after: 'Control flow works at the REPL \u2014 no compilation step needed. This is a live, interactive system.' },
   { cmd: 'DASHBOARD', before: 'Check the dashboard \u2192', after: 'In a native mesh, this shows live watches, alerts, peer status, and sparkline trends. This is an ops tool.' },
-  { cmd: '." I am a software nanobot."', before: 'One last thing \u2192', after: null },
+  { cmd: 'SEXP" (+ 10 32)"', before: 'Now try an S-expression \u2192', after: '42. The same stack, but the goal arrived as a Lisp expression. S-expressions are how units talk to each other on the mesh.' },
+  { cmd: 'SEXP" (* 6 7)"', before: 'One more \u2192', after: null },
 ];
 let tutorialStep = 0, tutorialActive = true, tutorialComplete = false;
 
@@ -378,7 +378,7 @@ function renderTutorial() {
   if (!tutorialActive || tutorialComplete) { tutorialBar.style.display = 'none'; renderHints(); return; }
   tutorialBar.style.display = 'flex';
   const s = STEPS[tutorialStep];
-  tutorialBar.innerHTML = `<div><span class="step">${tutorialStep+1}/8</span> ${s.before} <span class="cmd" onclick="pasteCmd('${s.cmd.replace(/'/g,"\\'")}')">${s.cmd}</span><span class="skip" onclick="skipTutorial()">skip tutorial</span></div>`;
+  tutorialBar.innerHTML = `<div><span class="step">${tutorialStep+1}/${STEPS.length}</span> ${s.before} <span class="cmd" onclick="pasteCmd('${s.cmd.replace(/'/g,"\\'")}')">${s.cmd}</span><span class="skip" onclick="skipTutorial()">skip tutorial</span></div>`;
   renderHints();
 }
 function renderHints() {
@@ -386,32 +386,51 @@ function renderHints() {
     const s = STEPS[tutorialStep];
     hintsBar.innerHTML = `<span class="hint" onclick="pasteCmd('${s.cmd.replace(/'/g,"\\'")}')">${s.cmd}</span>`;
   } else {
-    hintsBar.innerHTML = `<span style="color:#444">try:</span><span class="hint" onclick="paste(this)">2 3 + .</span><span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span><span class="hint" onclick="paste(this)">WORDS</span><span class="hint" onclick="paste(this)">10 0 DO I . LOOP</span><span class="hint" onclick="paste(this)">HELP</span>`;
+    hintsBar.innerHTML = `<span style="color:#444">try:</span><span class="hint" onclick="paste(this)">2 3 + .</span><span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span><span class="hint" onclick="paste(this)">WORDS</span><span class="hint" onclick="paste(this)">10 0 DO I . LOOP</span><span class="hint" onclick="paste(this)">SEXP" (+ 2 3)" .</span><span class="hint" onclick="paste(this)">HELP</span>`;
   }
 }
-function advanceTutorial(line) {
+async function advanceTutorial(line) {
   if (!tutorialActive || tutorialComplete) return;
   const s = STEPS[tutorialStep];
   if (line.trim() === s.cmd.trim()) {
     tutorialStep++;
     if (tutorialStep >= STEPS.length) finishTutorial();
-    else { appendOutput(s.after + '\n\n', 'tutorial-msg'); renderTutorial(); }
+    else {
+      appendOutput(s.after + '\n\n', 'tutorial-msg');
+      // Auto-spawn a second unit at the flagged step.
+      if (s.spawn && mesh && mesh.units.length < 2) {
+        const u = await mesh.spawn();
+        if (u) {
+          spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
+          const helloMsg = `Hi! I'm unit #${u.id}, generation 0 with ${mesh.units.length - 1} peers and fitness 0`;
+          appendOutput(`[mesh] unit #${u.id} has joined the colony\n`, 'mesh-event');
+          addChatter(u.id, `(peer-hello :id "#${u.id}" :gen 0 :peers ${mesh.units.length - 1} :fitness 0)`);
+          setTimeout(() => {
+            setBubble(u.id, helloMsg);
+            addChatter(u.id, helloMsg);
+          }, 1200);
+        }
+      }
+      renderTutorial();
+    }
   }
 }
 async function finishTutorial() {
   tutorialComplete = true;
-  tutorialBar.innerHTML = `<div>Tutorial complete. You're inside a software nanobot. <span class="links"><a href="https://github.com/DavidCanHelp/unit">GitHub</a> <a href="https://crates.io/crates/unit">crates.io</a> cargo install unit</span></div>`;
+  tutorialBar.innerHTML = `<div>Tutorial complete. unit speaks Forth and S-expressions. <span class="links"><a href="https://github.com/DavidCanHelp/unit">GitHub</a> <a href="https://crates.io/crates/unit">crates.io</a> cargo install unit</span></div>`;
   tutorialBar.style.display = 'flex';
   setTimeout(() => { tutorialBar.style.display = 'none'; renderHints(); }, 12000);
-  appendOutput("And that's unit. A self-replicating Forth interpreter that is also a networked mesh agent.\ncargo install unit to run it for real.\n\n", 'tutorial-msg');
+  appendOutput("unit speaks both Forth and S-expressions. Forth is the brain, S-expressions are the mesh protocol.\ncargo install unit to run it for real.\n\n", 'tutorial-msg');
   if (mesh && mesh.units.length < 2) {
     const u = await mesh.spawn();
     if (u) {
       spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
-      appendOutput(`[mesh] a second unit has joined your mesh. Try: 5 GOAL{ 6 7 * }\n`, 'mesh-event');
+      appendOutput(`[mesh] unit #${u.id} has joined the colony\n`, 'mesh-event');
+      addChatter(u.id, `(peer-hello :id "#${u.id}" :gen 0 :peers ${mesh.units.length - 1} :fitness 0)`);
       setTimeout(() => {
-        const out = u.vm.eval('HELLO').trim();
-        if (out) { setBubble(u.id, out); addChatter(u.id, out); }
+        const msg = `Hi! I'm unit #${u.id}, generation 0 with ${mesh.units.length - 1} peers and fitness 0`;
+        setBubble(u.id, msg);
+        addChatter(u.id, msg);
       }, 1500);
     }
   }
@@ -453,7 +472,9 @@ async function init() {
     vm = firstUnit.vm;
     spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
     muteBtn.className = 'mode-btn active';
+    applyVizMode();
     appendOutput('browser mesh: 1 unit online\n', 'mesh-event');
+    addChatter('self', `(peer-hello :id "self" :gen 0 :fitness 0 :peers 0)`);
     renderTutorial();
   } catch (e) {
     appendOutput('Failed to load WASM: ' + e.message + '\n', 'error');
