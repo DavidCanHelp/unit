@@ -179,7 +179,8 @@ impl VM {
             self.stack = test_stack.clone();
             self.output_buffer = Some(String::new());
             self.timed_out = false;
-            self.deadline = Some(Instant::now() + Duration::from_millis(100));
+            #[cfg(not(target_arch = "wasm32"))]
+            { self.deadline = Some(Instant::now() + Duration::from_millis(100)); }
             self.execute_body(&body);
             combined.push_str(&self.output_buffer.take().unwrap_or_default());
             combined.push_str(&format!("{:?}", self.stack));
@@ -313,10 +314,13 @@ impl VM {
         let node_id = self.node_id_cache
             .map(|id| crate::mesh::id_to_hex(&id))
             .unwrap_or_else(|| "offline".to_string());
+        #[cfg(not(target_arch = "wasm32"))]
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        #[cfg(target_arch = "wasm32")]
+        let ts: u64 = 0;
 
         // Collect user-defined words (skip kernel + prelude words).
         let kernel_count = self.kernel_word_count;
@@ -990,7 +994,8 @@ impl VM {
         self.sandbox_active = true; // remote code always sandboxed
         self.compiling = false;
         self.timed_out = false;
-        self.deadline = Some(Instant::now() + Duration::from_secs(self.execution_timeout));
+        #[cfg(not(target_arch = "wasm32"))]
+        { self.deadline = Some(Instant::now() + Duration::from_secs(self.execution_timeout)); }
 
         // Execute.
         for line in code.lines() {
@@ -1322,9 +1327,13 @@ impl VM {
                 task_id, goal_id, desc.chars().take(50).collect::<String>()
             );
             // Execute in sandbox with timing.
+            #[cfg(not(target_arch = "wasm32"))]
             let start = Instant::now();
             let result = self.execute_sandbox(&code);
+            #[cfg(not(target_arch = "wasm32"))]
             let elapsed_ms = start.elapsed().as_millis() as u64;
+            #[cfg(target_arch = "wasm32")]
+            let elapsed_ms: u64 = 0;
             let success = result.success;
 
             // Record fitness.
@@ -1899,9 +1908,13 @@ impl VM {
             Some(c) => c,
             None => return 0,
         };
+        #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         let result = self.execute_sandbox(&code);
+        #[cfg(not(target_arch = "wasm32"))]
         let elapsed = start.elapsed().as_millis() as i64;
+        #[cfg(target_arch = "wasm32")]
+        let elapsed: i64 = 0;
         // Score = stack depth * 10 - elapsed_ms (reward correct output, penalize slowness).
         let depth_score = result.stack_snapshot.len() as i64 * 10;
         let time_penalty = (elapsed / 100).min(50);
@@ -2165,6 +2178,10 @@ impl VM {
 
     /// Execute a watch check for a specific watch ID.
     fn run_watch_check(&mut self, watch_id: u32) {
+        #[cfg(target_arch = "wasm32")]
+        { let _ = watch_id; return; } // watches require native I/O
+        #[cfg(not(target_arch = "wasm32"))]
+        {
         let kind = match self.monitor.watches.get(&watch_id) {
             Some(w) => w.kind.clone(),
             None => return,
@@ -2226,6 +2243,7 @@ impl VM {
                 self.fitness.score += 15;
             }
         }
+        } // end #[cfg(not(wasm32))]
     }
 
     /// Tick the monitor: check due watches and run due schedules.

@@ -11,6 +11,7 @@
 // Humans set direction, the mesh navigates.
 
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::mesh::{id_to_hex, NodeId};
@@ -211,10 +212,15 @@ impl GoalRegistry {
     }
 
     fn now_millis() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+        }
+        #[cfg(target_arch = "wasm32")]
+        { 0 }
     }
 
     // -------------------------------------------------------------------

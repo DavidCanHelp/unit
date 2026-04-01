@@ -10,6 +10,7 @@
 //   - Instruction deletion: remove one instruction
 //   - Instruction duplication: duplicate one instruction
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::types::{Entry, Instruction};
@@ -168,10 +169,15 @@ pub fn hash_output(s: &str) -> u64 {
 }
 
 fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+    #[cfg(target_arch = "wasm32")]
+    { 0 }
 }
 
 // ---------------------------------------------------------------------------

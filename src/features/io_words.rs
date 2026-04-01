@@ -7,7 +7,9 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // File system
@@ -167,8 +169,13 @@ pub fn env_var(name: &str) -> Option<String> {
 }
 
 pub fn timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+    }
+    #[cfg(target_arch = "wasm32")]
+    { 0 }
 }

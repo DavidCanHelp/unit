@@ -719,6 +719,7 @@ impl VM {
             if self.timed_out {
                 return;
             }
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(deadline) = self.deadline {
                 if Instant::now() > deadline {
                     self.timed_out = true;
