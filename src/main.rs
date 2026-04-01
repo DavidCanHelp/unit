@@ -897,6 +897,97 @@ impl VM {
     }
 
     // -----------------------------------------------------------------------
+    // Cross-machine mesh primitives
+    // -----------------------------------------------------------------------
+
+    fn prim_my_addr(&mut self) {
+        if let Some(ref m) = self.mesh {
+            self.emit_str(&format!("{}\n", m.my_addr()));
+        } else {
+            self.emit_str("mesh offline\n");
+        }
+    }
+
+    fn prim_peer_table(&mut self) {
+        if let Some(ref m) = self.mesh {
+            let table = m.peer_table();
+            if table.is_empty() {
+                self.emit_str("no peers\n");
+            } else {
+                self.emit_str("--- peer table ---\n");
+                for (id, addr, fitness, age) in &table {
+                    self.emit_str(&format!(
+                        "  {} @ {} fitness={} seen={}s ago\n",
+                        id, addr, fitness, age
+                    ));
+                }
+            }
+        } else {
+            self.emit_str("mesh offline\n");
+        }
+    }
+
+    fn prim_mesh_key(&mut self) {
+        if let Some(ref m) = self.mesh {
+            if m.mesh_key.is_some() {
+                self.emit_str("mesh-key: enabled\n");
+            } else {
+                self.emit_str("mesh-key: disabled (open mesh)\n");
+            }
+        } else {
+            self.emit_str("mesh offline\n");
+        }
+    }
+
+    fn prim_connect(&mut self) {
+        let addr_str = self.parse_until('"');
+        let addr: SocketAddr = match addr_str.trim().parse().or_else(|_| {
+            use std::net::ToSocketAddrs;
+            addr_str.trim().to_socket_addrs()
+                .map_err(|e| e.to_string())
+                .and_then(|mut a| a.next().ok_or_else(|| "no address".into()))
+        }) {
+            Ok(a) => a,
+            Err(e) => {
+                self.emit_str(&format!("connect: {}\n", e));
+                return;
+            }
+        };
+        if let Some(ref m) = self.mesh {
+            m.connect_peer(addr);
+            self.emit_str(&format!("connected to {}\n", addr));
+        } else {
+            self.emit_str("mesh offline\n");
+        }
+    }
+
+    fn prim_disconnect(&mut self) {
+        let hex_id = self.parse_until('"');
+        if let Some(ref m) = self.mesh {
+            if m.disconnect_peer(hex_id.trim()) {
+                self.emit_str(&format!("disconnected {}\n", hex_id.trim()));
+            } else {
+                self.emit_str(&format!("peer {} not found\n", hex_id.trim()));
+            }
+        } else {
+            self.emit_str("mesh offline\n");
+        }
+    }
+
+    fn prim_mesh_stats(&mut self) {
+        if let Some(ref m) = self.mesh {
+            let (peers, port) = m.mesh_stats();
+            self.emit_str(&format!(
+                "--- mesh stats ---\nport: {}\npeers: {}\naddress: {}\nkey: {}\n",
+                port, peers, m.my_addr(),
+                if m.mesh_key.is_some() { "enabled" } else { "disabled" }
+            ));
+        } else {
+            self.emit_str("mesh offline\n");
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Swarm primitives
     // -----------------------------------------------------------------------
 
@@ -3151,7 +3242,7 @@ impl VM {
 // CLI argument parsing
 // ===========================================================================
 
-const VERSION: &str = "unit v0.19.0";
+const VERSION: &str = "unit v0.20.0";
 
 fn print_help() {
     println!("{}", VERSION);
@@ -3239,7 +3330,17 @@ fn main() {
     let seed_peers: Vec<SocketAddr> = peers_str
         .split(',')
         .filter(|s| !s.is_empty())
-        .filter_map(|s| s.trim().parse().ok())
+        .filter_map(|s| {
+            let s = s.trim();
+            // Try direct parse first, then DNS resolution.
+            s.parse().ok().or_else(|| {
+                use std::net::ToSocketAddrs;
+                match s.to_socket_addrs() {
+                    Ok(mut addrs) => addrs.next(),
+                    Err(e) => { eprintln!("resolve {}: {}", s, e); None }
+                }
+            })
+        })
         .collect();
 
     // Start mesh unless --no-mesh.
@@ -3267,6 +3368,26 @@ fn main() {
                     eprintln!("resumed identity {}", mesh::id_to_hex(&id));
                 }
                 vm.mesh = Some(node);
+
+                // Set external address for NAT traversal.
+                if let Ok(ext) = std::env::var("UNIT_EXTERNAL_ADDR") {
+                    if let Ok(addr) = ext.parse::<SocketAddr>() {
+                        if let Some(ref mut m) = vm.mesh {
+                            m.external_addr = Some(addr);
+                        }
+                        if !cli.quiet { eprintln!("external address: {}", addr); }
+                    }
+                }
+
+                // Set mesh authentication key.
+                if let Ok(key) = std::env::var("UNIT_MESH_KEY") {
+                    if !key.is_empty() {
+                        if let Some(ref mut m) = vm.mesh {
+                            m.mesh_key = Some(key);
+                        }
+                        if !cli.quiet { eprintln!("mesh-key: enabled"); }
+                    }
+                }
 
                 let ws_port: u16 = cli.ws_port
                     .or_else(|| std::env::var("UNIT_WS_PORT").ok().and_then(|s| s.parse().ok()))

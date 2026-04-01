@@ -243,6 +243,13 @@ pub(crate) const P_GP_RESET: usize = 444;
 pub(crate) const P_DIST_GOAL: usize = 450;
 pub(crate) const P_DIST_STATUS: usize = 451;
 pub(crate) const P_DIST_CANCEL: usize = 452;
+// Cross-machine mesh
+pub(crate) const P_MY_ADDR: usize = 460;
+pub(crate) const P_PEER_TABLE: usize = 461;
+pub(crate) const P_MESH_KEY: usize = 462;
+pub(crate) const P_CONNECT: usize = 463;
+pub(crate) const P_DISCONNECT: usize = 464;
+pub(crate) const P_MESH_STATS: usize = 465;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -603,6 +610,13 @@ impl VM {
             ("DIST-GOAL{", P_DIST_GOAL, true),
             ("DIST-STATUS", P_DIST_STATUS, false),
             ("DIST-CANCEL", P_DIST_CANCEL, false),
+            // Cross-machine mesh
+            ("MY-ADDR", P_MY_ADDR, false),
+            ("PEER-TABLE", P_PEER_TABLE, false),
+            ("MESH-KEY", P_MESH_KEY, false),
+            ("CONNECT\"", P_CONNECT, true),
+            ("DISCONNECT\"", P_DISCONNECT, true),
+            ("MESH-STATS", P_MESH_STATS, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1048,6 +1062,13 @@ impl VM {
             P_DIST_GOAL => self.prim_dist_goal(),
             P_DIST_STATUS => self.prim_dist_status(),
             P_DIST_CANCEL => self.prim_dist_cancel(),
+            // Cross-machine mesh
+            P_MY_ADDR => self.prim_my_addr(),
+            P_PEER_TABLE => self.prim_peer_table(),
+            P_MESH_KEY => self.prim_mesh_key(),
+            P_CONNECT => self.prim_connect(),
+            P_DISCONNECT => self.prim_disconnect(),
+            P_MESH_STATS => self.prim_mesh_stats(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

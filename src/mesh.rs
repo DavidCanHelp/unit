@@ -370,6 +370,10 @@ pub struct MeshNode {
     repl_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
     /// TCP port for replication listener.
     pub repl_port: u16,
+    /// External address for NAT traversal (set via UNIT_EXTERNAL_ADDR).
+    pub external_addr: Option<SocketAddr>,
+    /// Mesh authentication key (set via UNIT_MESH_KEY).
+    pub mesh_key: Option<String>,
 }
 
 impl Drop for MeshNode {
@@ -489,6 +493,8 @@ impl MeshNode {
             _thread: Some(handle),
             repl_rx,
             repl_port: actual_repl_port,
+            external_addr: None,
+            mesh_key: None,
         })
     }
 
@@ -936,6 +942,64 @@ impl MeshNode {
         st.peers.values().map(|p| {
             (id_to_hex(&p.id), p.fitness, p.addr.to_string())
         }).collect()
+    }
+
+    /// Get this unit's address (external if set, otherwise local bind).
+    pub fn my_addr(&self) -> String {
+        if let Some(addr) = self.external_addr {
+            return format!("{} (external)", addr);
+        }
+        self.socket.local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "unknown".into())
+    }
+
+    /// Full peer table with addresses and last-seen info.
+    pub fn peer_table(&self) -> Vec<(String, String, i64, u64)> {
+        let st = self.state.lock().unwrap();
+        st.peers.values().map(|p| {
+            let age_secs = p.last_seen.elapsed().as_secs();
+            (id_to_hex(&p.id), p.addr.to_string(), p.fitness, age_secs)
+        }).collect()
+    }
+
+    /// Mesh stats: peer count, message counts.
+    pub fn mesh_stats(&self) -> (usize, u16) {
+        let st = self.state.lock().unwrap();
+        (st.peers.len(), st.port)
+    }
+
+    /// Manually add a peer by address.
+    pub fn connect_peer(&self, addr: SocketAddr) {
+        let pseudo = addr_to_pseudo_id(&addr);
+        let mut st = self.state.lock().unwrap();
+        if !st.peers.contains_key(&pseudo) {
+            st.peers.insert(pseudo, PeerInfo {
+                addr,
+                id: pseudo,
+                load: 0,
+                capacity: 0,
+                peer_count: 0,
+                fitness: 0,
+                last_seen: Instant::now(),
+            });
+            st.log_event(format!("manual connect: {}", addr));
+        }
+    }
+
+    /// Remove a peer by hex ID.
+    pub fn disconnect_peer(&self, hex_id: &str) -> bool {
+        let mut st = self.state.lock().unwrap();
+        let key = st.peers.keys()
+            .find(|k| id_to_hex(k) == hex_id)
+            .copied();
+        if let Some(k) = key {
+            st.peers.remove(&k);
+            st.log_event(format!("disconnected {}", hex_id));
+            true
+        } else {
+            false
+        }
     }
 
     /// Get goal statistics.

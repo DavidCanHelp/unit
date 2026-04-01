@@ -411,9 +411,18 @@ VARIABLE OBS-COUNT
   ."     SEXP-SEND" ." (event :type ping)" CR
   ."   SEXP-RECV                    Drain queued S-expr messages" CR
   ."     Empty if no new messages since last call." CR CR
-  ."   Env vars: UNIT_PORT, UNIT_PEERS (or UNIT_SEEDS), UNIT_WS_PORT" CR
-  ."   Start:    UNIT_PORT=4201 unit" CR
-  ."   Join:     UNIT_PORT=4202 unit --peers 127.0.0.1:4201" CR
+  ."   MY-ADDR                      Show this unit's address" CR
+  ."   PEER-TABLE                   Full peer table with addresses" CR
+  ."   MESH-STATS                   Mesh health overview" CR
+  ."   MESH-KEY                     Show authentication status" CR
+  ."   CONNECT" ." host:port" ."       Add peer manually" CR
+  ."   DISCONNECT" ." node-id" ."     Remove peer" CR CR
+  ."   --- Cross-machine setup ---" CR
+  ."   Machine A: UNIT_PORT=4201 unit" CR
+  ."   Machine B: UNIT_PORT=4201 UNIT_PEERS=<A-ip>:4201 unit" CR
+  ."   DNS:       UNIT_PEERS=myhost.example.com:4201 unit" CR CR
+  ."   Env vars: UNIT_PORT, UNIT_PEERS, UNIT_EXTERNAL_ADDR," CR
+  ."             UNIT_MESH_KEY, UNIT_WS_PORT" CR
 ;
 
 : HELP-GOALS
@@ -527,6 +536,6 @@ VARIABLE OBS-COUNT
 ;
 
 \ --- Boot ---
-." unit v0.19.0 -- seed online" CR
+." unit v0.20.0 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
