@@ -364,11 +364,13 @@ async function doSpawn() {
 const STEPS = [
   { cmd: '2 3 + .', before: 'Welcome to unit. Type the highlighted command to begin \u2192', after: 'You just used a stack-based language. 2 and 3 go on the stack, + adds them, . prints the result.' },
   { cmd: ': SQUARE DUP * ;', before: 'Now define a word \u2192', after: 'You created a new word. SQUARE duplicates the top of the stack and multiplies. The language just grew.' },
-  { cmd: '7 SQUARE .', before: 'Use it \u2192', after: '49. Your word works. In unit, everything is built this way \u2014 from simple pieces.', spawn: true },
+  { cmd: '7 SQUARE .', before: 'Use it \u2192', after: '49. Your word works. In unit, everything is built this way \u2014 from simple pieces.' },
   { cmd: 'SEE SQUARE', before: 'See inside it \u2192', after: 'The dictionary is transparent. Every word can be inspected, modified, even shared across a network.' },
-  { cmd: 'WORDS', before: 'List all words \u2192', after: '~160 words. Stack ops, arithmetic, mesh networking, self-replication, monitoring \u2014 all from one binary. Type HELP for a guided tour.' },
+  { cmd: 'WORDS', before: 'List all words \u2192', after: '200+ words. Stack ops, arithmetic, mesh networking, self-replication, evolution \u2014 all from one binary. Type HELP for a guided tour.' },
   { cmd: '10 0 DO I . LOOP', before: 'Try a loop \u2192', after: 'Control flow works at the REPL \u2014 no compilation step needed. This is a live, interactive system.' },
   { cmd: 'DASHBOARD', before: 'Check the dashboard \u2192', after: 'In a native mesh, this shows live watches, alerts, peer status, and sparkline trends. This is an ops tool.' },
+  { cmd: 'SPAWN', before: 'You are a nanobot. Reproduce \u2192', after: 'You just replicated. A new unit spawned with a copy of your dictionary \u2014 it can do everything you can. Watch it come alive in the visualizer above.', spawn: true },
+  { cmd: 'DIST-GOAL{ 10 10 * . | 20 20 * . }', before: 'Now put your colony to work \u2192', after: 'You just distributed computation across your colony. Each unit computed a piece. This is how nanobots cooperate.' },
   { cmd: 'SEXP" (+ 10 32)"', before: 'Now try an S-expression \u2192', after: '42. The same stack, but the goal arrived as a Lisp expression. S-expressions are how units talk to each other on the mesh.' },
   { cmd: 'SEXP" (* 6 7)"', before: 'One more \u2192', after: null },
 ];
@@ -397,19 +399,13 @@ async function advanceTutorial(line) {
     if (tutorialStep >= STEPS.length) finishTutorial();
     else {
       appendOutput(s.after + '\n\n', 'tutorial-msg');
-      // Auto-spawn a second unit at the flagged step.
-      if (s.spawn && mesh && mesh.units.length < 2) {
-        const u = await mesh.spawn();
-        if (u) {
-          spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
-          const helloMsg = `Hi! I'm unit #${u.id}, generation 0 with ${mesh.units.length - 1} peers and fitness 0`;
-          appendOutput(`[mesh] unit #${u.id} has joined the colony\n`, 'mesh-event');
-          addChatter(u.id, `(peer-hello :id "#${u.id}" :gen 0 :peers ${mesh.units.length - 1} :fitness 0)`);
-          setTimeout(() => {
-            setBubble(u.id, helloMsg);
-            addChatter(u.id, helloMsg);
-          }, 1200);
-        }
+      // Spawn step: the REPL handler's doSpawn() already ran. Add a flavor bubble.
+      if (s.spawn && mesh && mesh.units.length >= 2) {
+        const copy = mesh.units[mesh.units.length - 1];
+        setTimeout(() => {
+          setBubble(copy.id, "I'm a copy. Everything you know, I know.", '#00ccff');
+          addChatter(copy.id, "I'm a copy. Everything you know, I know.");
+        }, 1500);
       }
       renderTutorial();
     }
@@ -420,7 +416,7 @@ async function finishTutorial() {
   tutorialBar.innerHTML = `<div>Tutorial complete. unit speaks Forth and S-expressions. <span class="links"><a href="https://github.com/DavidCanHelp/unit">GitHub</a> <a href="https://crates.io/crates/unit">crates.io</a> cargo install unit</span></div>`;
   tutorialBar.style.display = 'flex';
   setTimeout(() => { tutorialBar.style.display = 'none'; renderHints(); }, 12000);
-  appendOutput("unit speaks both Forth and S-expressions. Forth is the brain, S-expressions are the mesh protocol.\ncargo install unit to run it for real.\n\n", 'tutorial-msg');
+  appendOutput("unit: a self-replicating Forth interpreter. You've seen it reproduce, distribute work, and speak S-expressions.\ncargo install unit to run it across real machines.\n\n", 'tutorial-msg');
   if (mesh && mesh.units.length < 2) {
     const u = await mesh.spawn();
     if (u) {
@@ -537,6 +533,9 @@ input.addEventListener('keydown', (e) => {
         appendOutput(`units: ${mesh.units.length}\n`, 'output');
         for (const u of mesh.units) appendOutput(`  #${u.id} tasks=${u.tasksCompleted} fitness=${u.fitness}\n`, 'output');
         appendOutput('(use DIST-GOAL{ e1 | e2 | ... } to distribute work)\n', 'output');
+        break;
+      case 'SPAWN':
+        doSpawn();
         break;
       case 'INTROSPECT':
         if (totalFitness > 50) appendOutput(`thriving! fitness=${totalFitness}\n`, 'output');

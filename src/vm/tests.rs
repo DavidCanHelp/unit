@@ -710,6 +710,43 @@ fn eval_top(vm: &mut VM, input: &str) -> Cell {
     }
 
     #[test]
+    fn test_here_and_comma() {
+        let mut vm = test_vm();
+        let h1 = eval_top(&mut vm, "HERE");
+        eval(&mut vm, "42 ,");
+        eval(&mut vm, "99 ,");
+        let h2 = eval_top(&mut vm, "HERE");
+        assert_eq!(h2, h1 + 2);
+        // Fetch stored values
+        vm.stack.clear();
+        vm.stack.push(h1);
+        eval(&mut vm, "@");
+        assert_eq!(vm.stack_top(), Some(42));
+        vm.stack.clear();
+        vm.stack.push(h1 + 1);
+        eval(&mut vm, "@");
+        assert_eq!(vm.stack_top(), Some(99));
+    }
+
+    #[test]
+    fn test_allot() {
+        let mut vm = test_vm();
+        let h1 = eval_top(&mut vm, "HERE");
+        eval(&mut vm, "10 ALLOT");
+        let h2 = eval_top(&mut vm, "HERE");
+        assert_eq!(h2, h1 + 10);
+    }
+
+    #[test]
+    fn test_create_with_comma() {
+        let mut vm = test_vm();
+        eval(&mut vm, "CREATE MYDATA 1 , 2 , 3 ,");
+        assert_eq!(eval_top(&mut vm, "MYDATA @"), 1);
+        assert_eq!(eval_top(&mut vm, "MYDATA 1 + @"), 2);
+        assert_eq!(eval_top(&mut vm, "MYDATA 2 + @"), 3);
+    }
+
+    #[test]
     fn test_case_insensitive_lookup() {
         let mut vm = test_vm();
         // Built-in words

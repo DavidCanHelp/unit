@@ -250,6 +250,11 @@ pub(crate) const P_MESH_KEY: usize = 462;
 pub(crate) const P_CONNECT: usize = 463;
 pub(crate) const P_DISCONNECT: usize = 464;
 pub(crate) const P_MESH_STATS: usize = 465;
+// Memory access
+pub(crate) const P_HERE: usize = 470;
+pub(crate) const P_COMMA: usize = 471;
+pub(crate) const P_ALLOT: usize = 472;
+pub(crate) const P_CELLS: usize = 473;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -617,6 +622,12 @@ impl VM {
             ("CONNECT\"", P_CONNECT, true),
             ("DISCONNECT\"", P_DISCONNECT, true),
             ("MESH-STATS", P_MESH_STATS, false),
+            // Memory access
+            ("HERE", P_HERE, false),
+            (",", P_COMMA, false),
+            ("C,", P_COMMA, false), // alias — cells are i64
+            ("ALLOT", P_ALLOT, false),
+            ("CELLS", P_CELLS, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1069,6 +1080,26 @@ impl VM {
             P_CONNECT => self.prim_connect(),
             P_DISCONNECT => self.prim_disconnect(),
             P_MESH_STATS => self.prim_mesh_stats(),
+            // Memory access
+            P_HERE => { let h = self.here as Cell; self.stack.push(h); }
+            P_COMMA => {
+                let val = self.pop();
+                if self.here < self.memory.len() {
+                    self.memory[self.here] = val;
+                    self.here += 1;
+                } else {
+                    self.emit_str("error: memory full\n");
+                }
+            }
+            P_ALLOT => {
+                let n = self.pop() as usize;
+                if self.here + n <= self.memory.len() {
+                    self.here += n;
+                } else {
+                    self.emit_str("error: not enough memory\n");
+                }
+            }
+            P_CELLS => {} // cells are 1 unit each — no-op
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

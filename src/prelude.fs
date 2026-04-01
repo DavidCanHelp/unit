@@ -362,7 +362,7 @@ VARIABLE OBS-COUNT
   ."   MORNING / EVENING             Start or end a shift" CR CR
   ." MORE: HELP-STACK HELP-MATH HELP-MESH HELP-GOALS" CR
   ."       HELP-MONITOR HELP-SPAWN HELP-IO HELP-COLONY" CR
-  ."       HELP-PERSIST HELP-EVOLVE HELP-DIST" CR
+  ."       HELP-PERSIST HELP-EVOLVE HELP-DIST HELP-MEMORY" CR
 ;
 
 : HELP-STACK
@@ -491,6 +491,21 @@ VARIABLE OBS-COUNT
   ."   SANDBOX-ON / SANDBOX-OFF    Toggle sandbox" CR
   ."   SHELL-ENABLE                Allow shell (REPL only)" CR
   ."   IO-LOG                      Show I/O audit trail" CR
+;
+
+: HELP-MEMORY
+  CR ." === Memory ===" CR CR
+  ."   HERE ( -- addr )            Current data space pointer" CR
+  ."   , ( n -- )                  Store n at HERE, advance" CR
+  ."   @ ( addr -- n )             Fetch value at address" CR
+  ."   ! ( n addr -- )             Store value at address" CR
+  ."   ALLOT ( n -- )              Advance HERE by n cells" CR
+  ."   CELLS ( n -- n )            Cell size (no-op, cells=1)" CR CR
+  ."   VARIABLE X                  Create variable X" CR
+  ."   42 X !   X @                Store/fetch from variable" CR
+  ."   99 CONSTANT LIFE            Create constant LIFE" CR
+  ."   CREATE MYDATA 1 , 2 , 3 ,   Raw data allocation" CR
+  ."   MYDATA @                    Fetch first cell" CR
 ;
 
 : HELP-DIST
