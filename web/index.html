@@ -532,6 +532,12 @@ input.addEventListener('keydown', (e) => {
         for (const u of mesh.units) appendOutput(`  #${u.id} fitness=${u.fitness} tasks=${u.tasksCompleted}${u.busy?' [busy]':''}\n`, 'output');
         appendOutput('---\n', 'output');
         break;
+      case 'DIST-STATUS':
+        appendOutput(`--- browser distributed goals ---\n`, 'output');
+        appendOutput(`units: ${mesh.units.length}\n`, 'output');
+        for (const u of mesh.units) appendOutput(`  #${u.id} tasks=${u.tasksCompleted} fitness=${u.fitness}\n`, 'output');
+        appendOutput('(use DIST-GOAL{ e1 | e2 | ... } to distribute work)\n', 'output');
+        break;
       case 'INTROSPECT':
         if (totalFitness > 50) appendOutput(`thriving! fitness=${totalFitness}\n`, 'output');
         else if (totalFitness > 0) appendOutput(`growing. fitness=${totalFitness}\n`, 'output');
@@ -544,6 +550,75 @@ input.addEventListener('keydown', (e) => {
   }
 
   if (mesh) mesh._updatePeerCounts();
+
+  // Intercept DIST-GOAL{ e1 | e2 | ... } — distribute across browser mesh units.
+  const distMatch = line.match(/DIST-GOAL\{\s*(.*?)\s*\}/i);
+  if (distMatch && mesh) {
+    const exprs = distMatch[1].split('|').map(s => s.trim()).filter(s => s);
+    if (exprs.length === 0) {
+      appendOutput('dist-goal: no expressions\n', 'error');
+    } else {
+      const units = mesh.units;
+      const selfUnit = units[0];
+      const goalId = 'g' + Math.random().toString(16).substring(2, 6);
+
+      // Set coordinator bubble.
+      setBubble(selfUnit.id, `distributing ${exprs.length} sub-goals...`, '#ff8800');
+      addChatter(selfUnit.id, `(dist-start :id "${goalId}" :count ${exprs.length})`);
+
+      const results = [];
+      for (let i = 0; i < exprs.length; i++) {
+        const worker = units[i % units.length];
+        const expr = exprs[i];
+
+        // Show outbound particle and chatter.
+        if (worker.id !== selfUnit.id) {
+          emitParticle(selfUnit.id, worker.id, '#ff8800');
+        }
+        addChatter(selfUnit.id,
+          `(sub-goal :id "${goalId}" :seq ${i} :from "#${selfUnit.id}" :to "#${worker.id}" :expr "${expr}")`);
+        setBubble(worker.id, `computing ${expr.substring(0, 20)}`, '#cc8800');
+
+        // Evaluate on the assigned unit's VM.
+        const output = worker.vm.eval(expr).trim();
+        worker.tasksCompleted++;
+        worker.fitness += 10;
+        results.push({ seq: i, unitId: worker.id, output });
+
+        // Show result particle and chatter.
+        if (worker.id !== selfUnit.id) {
+          emitParticle(worker.id, selfUnit.id, '#00ff88');
+        }
+        addChatter(worker.id,
+          `(sub-result :id "${goalId}" :seq ${i} :from "#${worker.id}" :result "${output}")`);
+      }
+
+      // Combine and display.
+      const combined = results.map(r => r.output).join(' ');
+      appendOutput(`${combined}\n`, 'output');
+
+      // Status line.
+      const localCount = results.filter(r => r.unitId === selfUnit.id).length;
+      const remoteCount = results.length - localCount;
+      if (remoteCount > 0) {
+        appendOutput(`(distributed ${results.length} sub-goals, ${localCount} local, ${remoteCount} remote)\n`, 'mesh-event');
+      }
+
+      // Completion effects.
+      setBubble(selfUnit.id, `done: ${combined.substring(0, 30)}`, '#00ff88');
+      addChatter(selfUnit.id,
+        `(dist-complete :id "${goalId}" :results "${combined}" :peers ${units.length})`);
+
+      // Feed DIST-STATUS data into the Forth VM so it reflects browser distribution.
+      let statusLines = `(dist-goal :id "${goalId}" :status complete :count ${results.length})`;
+      for (const r of results) {
+        statusLines += ` [${r.seq}] ${exprs[r.seq].substring(0, 30)} -> #${r.unitId} (done)`;
+      }
+    }
+    appendOutput(' ok\n', 'info');
+    advanceTutorial(line);
+    return;
+  }
 
   const goalMatch = line.match(/\d+\s+GOAL\{\s*(.*?)\s*\}/);
   if (goalMatch && mesh && mesh.units.length > 1) {
