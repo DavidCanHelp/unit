@@ -1,10 +1,12 @@
 # unit
 
-A self-replicating software nanobot. The Forth interpreter *is* the agent.
+**A self-replicating software nanobot** — a minimal Forth interpreter that is also a networked mesh agent.
+
+![unit demo](unit-demo.gif)
+
+**[Try the live demo](https://davidcanhelp.github.io/unit/)** | **Install**: `cargo install unit`
 
 [![CI](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml/badge.svg)](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml)
-&ensp;
-**[Try the Forth REPL in your browser](https://davidcanhelp.github.io/unit/)** — interactive tutorial, mesh visualizer demo
 
 ## Install
 
