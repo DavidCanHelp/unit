@@ -392,7 +392,7 @@ function renderHints() {
 async function advanceTutorial(line) {
   if (!tutorialActive || tutorialComplete) return;
   const s = STEPS[tutorialStep];
-  if (line.trim() === s.cmd.trim()) {
+  if (line.trim().toUpperCase() === s.cmd.trim().toUpperCase()) {
     tutorialStep++;
     if (tutorialStep >= STEPS.length) finishTutorial();
     else {
@@ -620,7 +620,7 @@ input.addEventListener('keydown', (e) => {
     return;
   }
 
-  const goalMatch = line.match(/\d+\s+GOAL\{\s*(.*?)\s*\}/);
+  const goalMatch = line.match(/\d+\s+GOAL\{\s*(.*?)\s*\}/i);
   if (goalMatch && mesh && mesh.units.length > 1) {
     const code = goalMatch[1];
     const result = mesh.executeGoal(code);

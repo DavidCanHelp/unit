@@ -709,6 +709,20 @@ fn eval_top(vm: &mut VM, input: &str) -> Cell {
         assert_eq!(eval_top(&mut vm, "10 FIB"), 89);
     }
 
+    #[test]
+    fn test_case_insensitive_lookup() {
+        let mut vm = test_vm();
+        // Built-in words
+        assert_eq!(eval_top(&mut vm, "2 3 +"), 5);
+        assert_eq!(eval_top(&mut vm, "2 dup +"), 4);
+        assert_eq!(eval_top(&mut vm, "10 DUP *"), 100);
+        // User-defined words
+        eval(&mut vm, ": Square DUP * ;");
+        assert_eq!(eval_top(&mut vm, "7 square"), 49);
+        assert_eq!(eval_top(&mut vm, "7 SQUARE"), 49);
+        assert_eq!(eval_top(&mut vm, "7 SqUaRe"), 49);
+    }
+
     // -----------------------------------------------------------------------
     // Swarm tests
     // -----------------------------------------------------------------------
