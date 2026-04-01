@@ -16,6 +16,9 @@ pub mod snapshot;
 // --- Genetic programming engine ---
 pub mod evolve;
 
+// --- Distributed goal computation ---
+pub mod distgoal;
+
 // --- Core nanobot ---
 #[allow(dead_code)]
 pub mod mesh;
@@ -720,6 +723,177 @@ impl VM {
     fn prim_gp_reset(&mut self) {
         self.evolution = None;
         self.emit_str("evolution reset\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Distributed goal primitives
+    // -----------------------------------------------------------------------
+
+    /// DIST-GOAL{ expr1 | expr2 | ... } — distribute and compute.
+    fn prim_dist_goal(&mut self) {
+        let input = self.parse_balanced_braces();
+        let expressions = distgoal::parse_pipe_expressions(&input);
+        if expressions.is_empty() {
+            self.emit_str("dist-goal: no expressions\n");
+            return;
+        }
+
+        // Get peer list.
+        let peer_ids: Vec<String> = self.mesh.as_ref()
+            .map(|m| m.peer_details().iter().map(|(id, _, _)| id.clone()).collect())
+            .unwrap_or_default();
+        let my_id = self.node_id_cache
+            .map(|id| crate::mesh::id_to_hex(&id))
+            .unwrap_or_else(|| "local".to_string());
+
+        let goal_id = self.dist_engine.create_goal(expressions, &my_id, &peer_ids);
+
+        // Send remote sub-goals as S-expressions.
+        let remote = self.dist_engine.pending_remote_subgoals(goal_id);
+        for (seq, expr, _peer) in &remote {
+            if let Some(ref m) = self.mesh {
+                let sexp = distgoal::sexp_sub_goal(goal_id, *seq, &my_id, expr);
+                m.send_sexp(&sexp);
+            }
+        }
+        let remote_count = remote.len();
+
+        // Compute local sub-goals immediately.
+        let local = self.dist_engine.pending_local_subgoals(goal_id);
+        for (seq, expr) in &local {
+            let result = self.execute_sandbox(expr);
+            let output = result.output.trim().to_string();
+            self.dist_engine.record_result(goal_id, *seq, &output);
+        }
+
+        // If all done (no remote, or no peers), deliver immediately.
+        if self.dist_engine.is_complete(goal_id) {
+            if let Some(combined) = self.dist_engine.combine_results(goal_id) {
+                let total = self.dist_engine.goals.get(&goal_id)
+                    .map_or(0, |g| g.sub_goals.len());
+                self.emit_str(&format!("{}\n", combined));
+                if remote_count > 0 {
+                    self.emit_str(&format!(
+                        "(distributed {} sub-goals, {} local, {} remote)\n",
+                        total, total - remote_count, remote_count
+                    ));
+                }
+                // Broadcast completion.
+                if let Some(ref m) = self.mesh {
+                    let sexp = distgoal::sexp_dist_complete(
+                        goal_id, &combined, peer_ids.len()
+                    );
+                    m.send_sexp(&sexp);
+                }
+            }
+        } else {
+            self.emit_str(&format!(
+                "dist-goal #{}: {} sub-goals distributed ({} local, {} remote)\n\
+                 waiting for results... type DIST-STATUS to check\n",
+                goal_id,
+                self.dist_engine.goals.get(&goal_id).map_or(0, |g| g.sub_goals.len()),
+                local.len(), remote_count
+            ));
+        }
+    }
+
+    fn prim_dist_status(&mut self) {
+        let s = self.dist_engine.format_status();
+        self.emit_str(&s);
+    }
+
+    fn prim_dist_cancel(&mut self) {
+        self.dist_engine.goals.clear();
+        self.emit_str("all distributed goals cancelled\n");
+    }
+
+    /// Called during REPL tick to check for incoming sub-goal results and timeouts.
+    fn tick_dist_goals(&mut self) {
+        self.dist_engine.advance_tick();
+
+        // Process incoming S-expression messages for sub-results.
+        if let Some(ref m) = self.mesh {
+            let msgs = m.recv_sexp_messages();
+            for msg in &msgs {
+                if let Some(sexp) = crate::sexp::try_parse_mesh_msg(msg) {
+                    match crate::sexp::msg_type(&sexp) {
+                        Some("sub-goal") => {
+                            // A peer asked us to compute something.
+                            let goal_id = sexp.get_key(":id")
+                                .and_then(|s| s.as_number())
+                                .unwrap_or(0) as u64;
+                            let seq = sexp.get_key(":seq")
+                                .and_then(|s| s.as_number())
+                                .unwrap_or(0) as usize;
+                            let _from = sexp.get_key(":from")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("unknown").to_string();
+                            let expr = sexp.get_key(":expr")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("").to_string();
+                            if !expr.is_empty() {
+                                let result = self.execute_sandbox(&expr);
+                                let output = result.output.trim().to_string();
+                                let my_id = self.node_id_cache
+                                    .map(|id| crate::mesh::id_to_hex(&id))
+                                    .unwrap_or_else(|| "local".to_string());
+                                if let Some(ref m2) = self.mesh {
+                                    let reply = distgoal::sexp_sub_result(
+                                        goal_id, seq, &my_id, &output
+                                    );
+                                    m2.send_sexp(&reply);
+                                }
+                            }
+                        }
+                        Some("sub-result") => {
+                            // A peer sent back a result.
+                            let goal_id = sexp.get_key(":id")
+                                .and_then(|s| s.as_number())
+                                .unwrap_or(0) as u64;
+                            let seq = sexp.get_key(":seq")
+                                .and_then(|s| s.as_number())
+                                .unwrap_or(0) as usize;
+                            let result_str = sexp.get_key(":result")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("").to_string();
+                            self.dist_engine.record_result(goal_id, seq, &result_str);
+
+                            // Check if goal is now complete.
+                            if self.dist_engine.is_complete(goal_id) {
+                                if let Some(combined) = self.dist_engine.combine_results(goal_id) {
+                                    self.emit_str(&format!(
+                                        "dist-goal #{} complete: {}\n", goal_id, combined
+                                    ));
+                                }
+                            }
+                        }
+                        _ => {} // other sexp types handled elsewhere
+                    }
+                }
+            }
+        }
+
+        // Check for timed-out sub-goals and fall back to local.
+        let goal_ids: Vec<u64> = self.dist_engine.goals.keys().copied().collect();
+        for gid in goal_ids {
+            let timed_out = self.dist_engine.timed_out_subgoals(gid);
+            for (seq, expr) in timed_out {
+                self.dist_engine.fallback_to_local(gid, seq);
+                let result = self.execute_sandbox(&expr);
+                let output = result.output.trim().to_string();
+                self.dist_engine.record_result(gid, seq, &output);
+                self.emit_str(&format!(
+                    "(fallback: computed sub-goal {} locally — peer timeout)\n", seq
+                ));
+                if self.dist_engine.is_complete(gid) {
+                    if let Some(combined) = self.dist_engine.combine_results(gid) {
+                        self.emit_str(&format!(
+                            "dist-goal #{} complete: {}\n", gid, combined
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2955,6 +3129,7 @@ impl VM {
                         self.tick_monitor();
                         self.tick_swarm();
                         self.check_auto_snapshot();
+                        self.tick_dist_goals();
                         self.poll_ws_events();
                         self.update_ws_mesh_json();
                     }
@@ -2976,7 +3151,7 @@ impl VM {
 // CLI argument parsing
 // ===========================================================================
 
-const VERSION: &str = "unit v0.18.0";
+const VERSION: &str = "unit v0.19.0";
 
 fn print_help() {
     println!("{}", VERSION);

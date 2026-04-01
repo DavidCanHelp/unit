@@ -239,6 +239,10 @@ pub(crate) const P_GP_STATUS: usize = 441;
 pub(crate) const P_GP_BEST: usize = 442;
 pub(crate) const P_GP_STOP: usize = 443;
 pub(crate) const P_GP_RESET: usize = 444;
+// Distributed goals
+pub(crate) const P_DIST_GOAL: usize = 450;
+pub(crate) const P_DIST_STATUS: usize = 451;
+pub(crate) const P_DIST_CANCEL: usize = 452;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -320,6 +324,8 @@ pub struct VM {
     pub kernel_word_count: usize,
     // --- Evolution engine ---
     pub evolution: Option<crate::evolve::EvolutionState>,
+    // --- Distributed goals ---
+    pub dist_engine: crate::distgoal::DistEngine,
 }
 
 impl VM {
@@ -367,6 +373,7 @@ impl VM {
             auto_snapshot_last: None,
             kernel_word_count: 0,
             evolution: None,
+            dist_engine: crate::distgoal::DistEngine::new(),
         };
         vm.register_primitives();
         vm
@@ -592,6 +599,10 @@ impl VM {
             ("GP-BEST", P_GP_BEST, false),
             ("GP-STOP", P_GP_STOP, false),
             ("GP-RESET", P_GP_RESET, false),
+            // Distributed goals
+            ("DIST-GOAL{", P_DIST_GOAL, true),
+            ("DIST-STATUS", P_DIST_STATUS, false),
+            ("DIST-CANCEL", P_DIST_CANCEL, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1033,6 +1044,10 @@ impl VM {
             P_GP_BEST => self.prim_gp_best(),
             P_GP_STOP => self.prim_gp_stop(),
             P_GP_RESET => self.prim_gp_reset(),
+            // Distributed goals
+            P_DIST_GOAL => self.prim_dist_goal(),
+            P_DIST_STATUS => self.prim_dist_status(),
+            P_DIST_CANCEL => self.prim_dist_cancel(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

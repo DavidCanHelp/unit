@@ -362,7 +362,7 @@ VARIABLE OBS-COUNT
   ."   MORNING / EVENING             Start or end a shift" CR CR
   ." MORE: HELP-STACK HELP-MATH HELP-MESH HELP-GOALS" CR
   ."       HELP-MONITOR HELP-SPAWN HELP-IO HELP-COLONY" CR
-  ."       HELP-PERSIST HELP-EVOLVE" CR
+  ."       HELP-PERSIST HELP-EVOLVE HELP-DIST" CR
 ;
 
 : HELP-STACK
@@ -484,6 +484,19 @@ VARIABLE OBS-COUNT
   ."   IO-LOG                      Show I/O audit trail" CR
 ;
 
+: HELP-DIST
+  CR ." === Distributed Computation ===" CR CR
+  ."   DIST-GOAL{ e1 | e2 | e3 }   Distribute & compute" CR
+  ."     Example: DIST-GOAL{ 10 10 * | 20 20 * | 30 30 * }" CR
+  ."     Each expression sent to a different peer. Results" CR
+  ."     collected and printed. Falls back to local if no peers." CR CR
+  ."   DIST-STATUS                  Show active goals" CR
+  ."   DIST-CANCEL                  Cancel all goals" CR CR
+  ."   Sub-goals travel as S-expressions:" CR
+  ."     (sub-goal :id N :seq N :from ID :expr CODE)" CR
+  ."     (sub-result :id N :seq N :from ID :result VAL)" CR
+;
+
 : HELP-EVOLVE
   CR ." === Genetic Programming ===" CR CR
   ."   GP-EVOLVE                    Run 10 generations of fib10 challenge" CR
@@ -514,6 +527,6 @@ VARIABLE OBS-COUNT
 ;
 
 \ --- Boot ---
-." unit v0.18.0 -- seed online" CR
+." unit v0.19.0 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
