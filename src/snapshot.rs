@@ -365,8 +365,29 @@ pub fn list_json_snapshots() -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// WASM stubs (no filesystem)
+// WASM: in-memory snapshot storage (no filesystem)
 // ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_store {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static SNAPSHOT: RefCell<Option<String>> = RefCell::new(None);
+    }
+
+    pub fn save(json: &str) {
+        SNAPSHOT.with(|s| *s.borrow_mut() = Some(json.to_string()));
+    }
+
+    pub fn load() -> Option<String> {
+        SNAPSHOT.with(|s| s.borrow().clone())
+    }
+
+    pub fn has_snapshot() -> bool {
+        SNAPSHOT.with(|s| s.borrow().is_some())
+    }
+}
 
 #[cfg(target_arch = "wasm32")]
 pub fn snapshot_path(_node_id: &[u8; 8]) -> String {
@@ -374,18 +395,23 @@ pub fn snapshot_path(_node_id: &[u8; 8]) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn save_json_snapshot(_node_id: &[u8; 8], _json: &str) -> Result<String, String> {
+pub fn save_json_snapshot(_node_id: &[u8; 8], json: &str) -> Result<String, String> {
+    wasm_store::save(json);
     Ok("(in-memory)".to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
 pub fn load_json_snapshot(_node_id: &[u8; 8]) -> Option<String> {
-    None
+    wasm_store::load()
 }
 
 #[cfg(target_arch = "wasm32")]
 pub fn list_json_snapshots() -> Vec<String> {
-    Vec::new()
+    if wasm_store::has_snapshot() {
+        vec!["(in-memory)".to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
