@@ -386,7 +386,7 @@ function renderHints() {
     const s = STEPS[tutorialStep];
     hintsBar.innerHTML = `<span class="hint" onclick="pasteCmd('${s.cmd.replace(/'/g,"\\'")}')">${s.cmd}</span>`;
   } else {
-    hintsBar.innerHTML = `<span style="color:#444">try:</span><span class="hint" onclick="paste(this)">2 3 + .</span><span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span><span class="hint" onclick="paste(this)">WORDS</span><span class="hint" onclick="paste(this)">10 0 DO I . LOOP</span><span class="hint" onclick="paste(this)">SEXP" (+ 2 3)" .</span><span class="hint" onclick="paste(this)">HELP</span>`;
+    hintsBar.innerHTML = `<span style="color:#444">try:</span><span class="hint" onclick="paste(this)">2 3 + .</span><span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span><span class="hint" onclick="paste(this)">WORDS</span><span class="hint" onclick="paste(this)">10 0 DO I . LOOP</span><span class="hint" onclick="paste(this)">SEXP" (+ 2 3)" .</span><span class="hint" onclick="paste(this)">GP-EVOLVE</span><span class="hint" onclick="paste(this)">HELP</span>`;
   }
 }
 async function advanceTutorial(line) {

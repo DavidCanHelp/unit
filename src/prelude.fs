@@ -362,7 +362,7 @@ VARIABLE OBS-COUNT
   ."   MORNING / EVENING             Start or end a shift" CR CR
   ." MORE: HELP-STACK HELP-MATH HELP-MESH HELP-GOALS" CR
   ."       HELP-MONITOR HELP-SPAWN HELP-IO HELP-COLONY" CR
-  ."       HELP-PERSIST" CR
+  ."       HELP-PERSIST HELP-EVOLVE" CR
 ;
 
 : HELP-STACK
@@ -484,6 +484,20 @@ VARIABLE OBS-COUNT
   ."   IO-LOG                      Show I/O audit trail" CR
 ;
 
+: HELP-EVOLVE
+  CR ." === Genetic Programming ===" CR CR
+  ."   GP-EVOLVE                    Run 10 generations of fib10 challenge" CR
+  ."     (call repeatedly to continue evolving)" CR
+  ."   GP-STATUS                    Show evolution state" CR
+  ."   GP-BEST                      Print best program found" CR
+  ."   GP-STOP                      Halt evolution" CR
+  ."   GP-RESET                     Clear and start fresh" CR CR
+  ."   Default challenge: find shortest program that outputs 55" CR
+  ."   (the 10th Fibonacci number). 50 programs mutate and compete" CR
+  ."   over 1000 generations. On a mesh, best programs migrate" CR
+  ."   between units for parallel evolution." CR
+;
+
 : HELP-PERSIST
   CR ." === Persistence & Resurrection ===" CR CR
   ."   JSON-SNAPSHOT                Save state to JSON snapshot" CR
@@ -500,6 +514,6 @@ VARIABLE OBS-COUNT
 ;
 
 \ --- Boot ---
-." unit v0.17.0 -- seed online" CR
+." unit v0.18.0 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM

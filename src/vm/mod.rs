@@ -233,6 +233,12 @@ pub(crate) const P_AUTO_SNAPSHOT: usize = 434;
 pub(crate) const P_HIBERNATE: usize = 435;
 pub(crate) const P_EXPORT_GENOME: usize = 436;
 pub(crate) const P_IMPORT_GENOME: usize = 437;
+// Evolution engine
+pub(crate) const P_GP_EVOLVE: usize = 440;
+pub(crate) const P_GP_STATUS: usize = 441;
+pub(crate) const P_GP_BEST: usize = 442;
+pub(crate) const P_GP_STOP: usize = 443;
+pub(crate) const P_GP_RESET: usize = 444;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -312,6 +318,8 @@ pub struct VM {
     pub auto_snapshot_last: Option<std::time::Instant>,
     /// Number of kernel+prelude dictionary entries (set after load_prelude).
     pub kernel_word_count: usize,
+    // --- Evolution engine ---
+    pub evolution: Option<crate::evolve::EvolutionState>,
 }
 
 impl VM {
@@ -358,6 +366,7 @@ impl VM {
             auto_snapshot_secs: 0,
             auto_snapshot_last: None,
             kernel_word_count: 0,
+            evolution: None,
         };
         vm.register_primitives();
         vm
@@ -577,6 +586,12 @@ impl VM {
             ("HIBERNATE", P_HIBERNATE, false),
             ("EXPORT-GENOME", P_EXPORT_GENOME, false),
             ("IMPORT-GENOME\"", P_IMPORT_GENOME, true),
+            // Evolution engine
+            ("GP-EVOLVE", P_GP_EVOLVE, false),
+            ("GP-STATUS", P_GP_STATUS, false),
+            ("GP-BEST", P_GP_BEST, false),
+            ("GP-STOP", P_GP_STOP, false),
+            ("GP-RESET", P_GP_RESET, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1012,6 +1027,12 @@ impl VM {
             P_HIBERNATE => self.prim_hibernate(),
             P_EXPORT_GENOME => self.prim_export_genome(),
             P_IMPORT_GENOME => self.prim_import_genome(),
+            // Evolution engine
+            P_GP_EVOLVE => self.prim_gp_evolve(),
+            P_GP_STATUS => self.prim_gp_status(),
+            P_GP_BEST => self.prim_gp_best(),
+            P_GP_STOP => self.prim_gp_stop(),
+            P_GP_RESET => self.prim_gp_reset(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

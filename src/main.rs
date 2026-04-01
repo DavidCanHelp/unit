@@ -13,6 +13,9 @@ pub mod sexp;
 // --- JSON snapshot persistence ---
 pub mod snapshot;
 
+// --- Genetic programming engine ---
+pub mod evolve;
+
 // --- Core nanobot ---
 #[allow(dead_code)]
 pub mod mesh;
@@ -550,6 +553,173 @@ impl VM {
             }
         }
         false
+    }
+
+    // -----------------------------------------------------------------------
+    // Evolution engine primitives
+    // -----------------------------------------------------------------------
+
+    fn evaluate_population(&mut self) {
+        // Extract programs and target to avoid borrow conflicts with execute_sandbox.
+        let (target, programs) = match self.evolution.as_ref() {
+            Some(evo) => (
+                evo.challenge.target_output.clone(),
+                evo.population.iter().map(|c| c.program.clone()).collect::<Vec<_>>(),
+            ),
+            None => return,
+        };
+
+        // Evaluate each candidate in the sandbox.
+        let mut scores = Vec::with_capacity(programs.len());
+        for prog in &programs {
+            let result = self.execute_sandbox(prog);
+            let tc = evolve::tokenize(prog).len();
+            scores.push(evolve::score_candidate(&result.output, result.success, &target, tc));
+        }
+
+        // Apply scores and update best.
+        let evo = self.evolution.as_mut().unwrap();
+        for (i, score) in scores.into_iter().enumerate() {
+            evo.population[i].fitness = score;
+        }
+        for c in &evo.population {
+            if evo.best.as_ref().map_or(true, |b| c.fitness > b.fitness) {
+                evo.best = Some(c.clone());
+            }
+        }
+    }
+
+    fn prim_gp_evolve(&mut self) {
+        // Initialize if not running.
+        if self.evolution.is_none() {
+            let challenge = evolve::fib10_challenge();
+            let mut evo = evolve::EvolutionState::new(challenge.clone(), 1000);
+            evo.population = evolve::init_population(&challenge, 50, &mut self.rng);
+            evo.running = true;
+            self.evolution = Some(evo);
+        }
+
+        let mut messages: Vec<String> = Vec::new();
+        let mut sexp_broadcasts: Vec<String> = Vec::new();
+
+        // Run batches of 10 generations.
+        for _ in 0..10 {
+            {
+                let evo = self.evolution.as_ref().unwrap();
+                if evo.generation >= evo.max_generations || !evo.running { break; }
+            }
+
+            // Evaluate fitness.
+            self.evaluate_population();
+
+            // Collect state for reporting.
+            let evo = self.evolution.as_ref().unwrap();
+            let gen = evo.generation;
+            let best_fitness = evo.best.as_ref().map_or(0.0, |b| b.fitness);
+            let best_prog = evo.best.as_ref().map_or(String::new(), |b| b.program.clone());
+            let best_tokens = evo.best.as_ref().map_or(0, |b| b.token_count());
+            let pop_size = evo.population.len();
+            let challenge_name = evo.challenge.name.clone();
+
+            // Report every 100 generations.
+            if gen % 100 == 0 {
+                messages.push(format!(
+                    "[gen {}] best: {:.0} | pop: {} | \"{}\" ({} tokens)\n",
+                    gen, best_fitness, pop_size, best_prog, best_tokens
+                ));
+                if best_fitness > 0.0 {
+                    sexp_broadcasts.push(format!(
+                        "(evolve-share :gen {} :fitness {:.0} :program \"{}\" :challenge \"{}\")",
+                        gen, best_fitness, best_prog.replace('"', "\\\""), challenge_name
+                    ));
+                }
+            }
+
+            // Check for winner.
+            if best_fitness >= 800.0 && best_tokens <= 20 {
+                messages.push(format!(
+                    "[gen {}] WINNER: \"{}\" (fitness={:.0}, {} tokens)\n",
+                    gen, best_prog, best_fitness, best_tokens
+                ));
+                self.evolution.as_mut().unwrap().running = false;
+                break;
+            }
+
+            // Produce next generation.
+            let evo = self.evolution.as_mut().unwrap();
+            let next = evolve::next_generation(&evo.population, gen + 1, &mut self.rng);
+            evo.population = next;
+            evo.generation = gen + 1;
+        }
+
+        // Emit collected messages.
+        for msg in &messages {
+            self.emit_str(msg);
+        }
+
+        // Broadcast to mesh.
+        for sexp in &sexp_broadcasts {
+            if let Some(ref m) = self.mesh {
+                m.send_sexp(sexp);
+            }
+        }
+
+        // Final status.
+        let evo = self.evolution.as_ref().unwrap();
+        if evo.running && evo.generation < evo.max_generations {
+            self.emit_str(&format!("[gen {}] evolving... type GP-EVOLVE to continue, GP-STATUS for details\n", evo.generation));
+        } else if !evo.running || evo.generation >= evo.max_generations {
+            if messages.is_empty() {
+                let best = evo.best.as_ref().map_or("(none)".to_string(), |b| {
+                    format!("\"{}\" (fitness={:.0}, {} tokens)", b.program, b.fitness, b.token_count())
+                });
+                self.emit_str(&format!("evolution complete: {}\n", best));
+            }
+            self.evolution.as_mut().unwrap().running = false;
+        }
+    }
+
+    fn prim_gp_status(&mut self) {
+        match &self.evolution {
+            Some(evo) => {
+                let best = evo.best.as_ref().map_or("(none)".to_string(), |b| {
+                    format!("\"{}\" (fitness={:.0}, {} tokens)", b.program, b.fitness, b.token_count())
+                });
+                self.emit_str(&format!(
+                    "--- evolution ---\nchallenge: {}\ngeneration: {}/{}\nrunning: {}\nbest: {}\npop: {}\nimmigrants: {}\n",
+                    evo.challenge.name, evo.generation, evo.max_generations,
+                    evo.running, best, evo.population.len(), evo.immigrants
+                ));
+            }
+            None => self.emit_str("no evolution running\n"),
+        }
+    }
+
+    fn prim_gp_best(&mut self) {
+        match &self.evolution {
+            Some(evo) => match &evo.best {
+                Some(best) => self.emit_str(&format!(
+                    "{}\n(fitness={:.0}, gen={}, {} tokens)\n",
+                    best.program, best.fitness, best.generation, best.token_count()
+                )),
+                None => self.emit_str("no best candidate yet\n"),
+            },
+            None => self.emit_str("no evolution running\n"),
+        }
+    }
+
+    fn prim_gp_stop(&mut self) {
+        if let Some(ref mut evo) = self.evolution {
+            evo.running = false;
+            self.emit_str("evolution stopped\n");
+        } else {
+            self.emit_str("no evolution running\n");
+        }
+    }
+
+    fn prim_gp_reset(&mut self) {
+        self.evolution = None;
+        self.emit_str("evolution reset\n");
     }
 
     // -----------------------------------------------------------------------
@@ -2806,7 +2976,7 @@ impl VM {
 // CLI argument parsing
 // ===========================================================================
 
-const VERSION: &str = "unit v0.17.0";
+const VERSION: &str = "unit v0.18.0";
 
 fn print_help() {
     println!("{}", VERSION);
