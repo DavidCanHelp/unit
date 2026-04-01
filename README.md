@@ -18,81 +18,184 @@ cargo install unit
 
 ```
 $ unit
-unit v0.10.2 — seed online
+unit v0.20.2 -- seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
-auto-claim: ON
 > 2 3 + .
-5 ok
+5  ok
 > : SQUARE DUP * ;
  ok
 > 7 SQUARE .
-49 ok
+49  ok
+> SPAWN
+spawned child pid=12345 id=cafe0123deadbeef
+> SEXP" (* 6 7)" .
+42  ok
 ```
 
 ## The Idea
 
 A unit is the smallest self-replicating piece of software. It boots from
-a handful of kernel primitives, builds its own language, networks with
-peers over UDP gossip, packages its own binary, and spawns copies of
-itself. It monitors services, heals failures, mutates its own code, and
-evolves toward higher fitness. Zero external dependencies. The language
-builds itself. The agent *is* the language.
+kernel primitives, builds its own language, networks with peers over UDP
+gossip, packages its own binary, and spawns copies of itself. It monitors
+services, evolves programs through genetic programming, distributes
+computation across a mesh, persists its brain as human-readable JSON,
+and connects across machines over the internet.
 
-## The Four Concerns
+Forth is the brain. S-expressions are the voice. The mesh is the body.
+Zero external dependencies. ~25,000 lines of Rust + Forth.
+
+## The Five Concerns
 
 | Concern | Mechanism |
 |---------|-----------|
 | **Execute** | Forth VM — stacks, dictionary, inner interpreter |
-| **Communicate** | UDP gossip mesh with consensus-based replication |
+| **Communicate** | S-expression mesh protocol over UDP gossip |
 | **Replicate** | Reads own binary, packages state, spawns child processes |
-| **Mutate** | Rewrites word definitions, fitness-driven evolution |
+| **Mutate** | Genetic programming — 50 candidates, tournament selection, 5 mutation operators |
+| **Persist** | JSON snapshots — hibernate, resurrect, automatic resurrection on startup |
+
+## S-Expressions
+
+Forth is the execution model. S-expressions are the wire format. Any
+future nanobot implementation in any language can parse the mesh messages.
+
+```
+> SEXP" (+ 10 32)" .
+42  ok
+> SEXP" (* 6 7)" .
+42  ok
+> SEXP-SEND" (event :type ping :data hello)"
+sexp sent
+```
+
+Mesh messages are self-describing:
+
+```
+(peer-status :id "aaa" :peers 2 :fitness 10 :load 190 :capacity 100)
+(sub-goal :id 1 :seq 0 :from "aaa" :expr "99 99 *")
+(evolve-share :gen 100 :fitness 890 :program "0 1 10 0 DO OVER + SWAP LOOP DROP .")
+```
+
+## Genetic Programming
+
+50 programs mutate and compete. The default challenge: find the shortest
+program that computes the 10th Fibonacci number (55).
+
+```
+> GP-EVOLVE
+[gen 0] best: 890 | pop: 50 | "0 1 10 0 DO OVER + SWAP LOOP DROP ." (11 tokens)
+[gen 0] WINNER: "0 1 10 0 DO OVER + SWAP LOOP DROP ." (fitness=890, 11 tokens)
+```
+
+Tournament selection, crossover, 5 token-level mutation operators (swap,
+insert, delete, replace, double). Each candidate evaluated in a sandboxed
+VM with step limit. On a mesh, best programs migrate between units every
+100 generations.
+
+## Distributed Computation
+
+Break a problem into pieces. Fan sub-goals out to mesh peers as
+S-expressions. Collect results. Assemble the answer.
+
+```
+> DIST-GOAL{ 99 99 * . | 77 77 * . | 55 55 * . }
+9801 5929 3025
+(distributed 3 sub-goals, 1 local, 2 remote)
+```
+
+Round-robin across local + peers. If a peer doesn't respond within
+timeout, fall back to local computation. The distributing unit also
+participates — it doesn't just delegate.
+
+## Persistence & Resurrection
+
+A unit saves its entire state as human-readable JSON. It can die and
+come back exactly where it left off.
+
+```
+> : SQUARE DUP * ;
+> : CUBE DUP SQUARE * ;
+> 42
+> HIBERNATE
+hibernating... saved to ~/.unit/snapshots/d1b74e159948b52b.json
+```
+
+Later, same port:
+
+```
+resurrected from snapshot
+> .S
+<1> 42  ok
+> 7 CUBE .
+343  ok
+```
+
+The JSON is hand-editable:
+
+```json
+{
+  "node_id": "d1b74e159948b52b",
+  "fitness": 0,
+  "stack": [42],
+  "words": {
+    "SQUARE": ": SQUARE DUP * ;",
+    "CUBE": ": CUBE DUP SQUARE * ;"
+  }
+}
+```
+
+## Cross-Machine Mesh
+
+Two machines, same mesh:
+
+```sh
+# Machine A
+UNIT_PORT=4201 unit
+
+# Machine B (discovers A, gossip finds the rest)
+UNIT_PORT=4201 UNIT_PEERS=<A-ip>:4201 unit
+```
+
+DNS hostnames work: `UNIT_PEERS=myhost.example.com:4201`
+
+NAT traversal: `UNIT_EXTERNAL_ADDR=203.0.113.5:4201`
+
+Authentication: `UNIT_MESH_KEY=mysecret` on all machines.
+
+Manual connect from the REPL:
+
+```
+> CONNECT" 192.168.1.10:4201"
+connected to 192.168.1.10:4201
+> PEER-TABLE
+--- peer table ---
+  cafe0123deadbeef @ 192.168.1.10:4201 fitness=45 seen=1s ago
+```
+
+Gossip self-assembles: A tells B about C, the mesh grows.
 
 ## Swarm Mode
 
-```sh
-# Terminal 1
-UNIT_PORT=4201 unit
+```
 > SWARM-ON
 swarm mode active
 ```
 
-```sh
-# Terminal 2 — discovers Terminal 1 automatically
-UNIT_PORT=4202 unit
-> PEERS .
-1
-```
-
-Define a word on one unit. It appears on the other:
+One command enables: auto-discovery, word sharing, autonomous
+spawn/cull, fitness-driven evolution. Define a word on one unit,
+it appears on the other:
 
 ```
-# Terminal 1:
+# Unit A:
 > : CUBE DUP DUP * * ;
 > SHARE" CUBE"
 
-# Terminal 2:
+# Unit B:
 > 3 CUBE .
 27
 ```
 
-Submit work on one. The other executes it:
-
-```
-# Terminal 1 (auto-claim off):
-> AUTO-CLAIM
-> 5 GOAL{ 6 7 * }
-goal #101 created [exec]: 6 7 *
-
-# Terminal 2 (auto-claim on) picks it up:
-[auto] claimed task #102 (goal #101): 6 7 *
-[auto] stack: 42
-[auto] task #102 done
-```
-
-Too much work? The mesh spawns a child. Underperforming units cull
-themselves. One command: `SWARM-ON`.
-
-## Goals — Human Guidance
+## Goals
 
 Humans set direction, the mesh navigates.
 
@@ -101,19 +204,9 @@ Humans set direction, the mesh navigates.
 goal #101 created [exec]: 6 7 *
 [auto] stack: 42
 
-> 5 GOAL{ 1000 10 SPLIT DO I LOOP }
-goal #103 created [split 10×100]: DO I LOOP
-
 > DASHBOARD
-╔══════════════════════════════════════╗
-║         UNIT OPS DASHBOARD           ║
-╚══════════════════════════════════════╝
-─── watches ───
-  #1 [UP  ] ▁▂▃▂▁▂▃▂ 45 myapp:8080/health
-─── alerts ───
-  all clear
-─── mesh ───
-  peers: 2  fitness: 45
+--- dashboard ---
+watches: 0  alerts: 0  peers: 1  fitness: 30
 ```
 
 ## Self-Replication
@@ -127,8 +220,6 @@ and mutations — then gets its own identity and joins the mesh.
 spawned child pid=12345 id=cafe0123deadbeef
 > FAMILY
 id: a1b2c3d4e5f67890 gen: 0 parent: none children: 1
-> PACKAGE-SIZE .
-644440
 ```
 
 Trust levels control who can replicate to you:
@@ -156,35 +247,41 @@ alert handler set for watch #1
 --- heal done ---
 ```
 
-Service goes down. Alert fires. Handler runs. Mesh fixes it. Next check
-auto-resolves.
-
 ## Architecture
 
 ```
 src/
-├── vm/              the seed — standalone Forth interpreter
-│   ├── mod.rs       VM struct, constants, interpreter, dispatch
-│   ├── primitives.rs  stack, arithmetic, memory, I/O
-│   ├── compiler.rs  definitions, control flow, prelude
-│   └── tests.rs     82 unit tests
-├── types.rs         Cell, Entry, Instruction
-├── mesh.rs          UDP gossip, consensus, discovery, word sharing
-├── goals.rs         goal registry, task decomposition
-├── spawn.rs         self-replication, UREP package format
-├── persist.rs       state serialization, snapshots
+├── vm/               # Forth virtual machine
+│   ├── mod.rs        # VM struct, interpreter, dispatch (~200 primitives)
+│   ├── primitives.rs # stack, arithmetic, memory, I/O
+│   ├── compiler.rs   # definitions, control flow, prelude loader
+│   └── tests.rs      # 132 tests
+├── types.rs          # Cell (i64), Entry, Instruction enum
+├── mesh.rs           # UDP gossip, peer discovery, word sharing, cross-machine
+├── sexp.rs           # S-expression parser, serializer, Forth translator
+├── evolve.rs         # Genetic programming engine
+├── distgoal.rs       # Distributed goal splitting and collection
+├── goals.rs          # Goal registry, task decomposition
+├── snapshot.rs       # JSON snapshots, persistence, resurrection
+├── spawn.rs          # Self-replication, UREP package format
+├── persist.rs        # Binary state serialization
+├── platform.rs       # Platform detection (native vs WASM)
+├── wasm_entry.rs     # WASM C FFI bindings
+├── prelude.fs        # Forth prelude (~500 lines)
 ├── features/
-│   ├── io_words.rs  file, HTTP, shell
-│   ├── mutation.rs  self-mutation engine
-│   ├── fitness.rs   fitness tracking, evolution
-│   ├── monitor.rs   watches, alerts, dashboard
-│   └── ws_bridge.rs WebSocket bridge for browsers
-└── main.rs          feature wiring, REPL, entry point
+│   ├── io_words.rs   # file, HTTP, shell, env
+│   ├── mutation.rs   # self-mutation engine, smart mutation
+│   ├── fitness.rs    # fitness tracking, leaderboard
+│   ├── monitor.rs    # watches, alerts, dashboard, scheduler
+│   └── ws_bridge.rs  # WebSocket bridge (raw RFC 6455)
+└── main.rs           # feature wiring, REPL, CLI, entry point
 ```
 
-198 tests. Zero dependencies. ~10,000 lines of Rust + Forth.
+132 tests. Zero dependencies. ~25,000 lines of Rust + Forth.
 
 ## All the Words
+
+309 words. Organized by category:
 
 ### Stack
 
@@ -201,16 +298,23 @@ src/
 | Word | Effect | | Word | Effect |
 |------|--------|-|------|--------|
 | `+` `-` `*` `/` `MOD` | arithmetic | | `=` `<` `>` | comparison |
-| `AND` `OR` `NOT` | bitwise logic | | `ABS` `NEGATE` `MIN` `MAX` | prelude |
-| `1+` `1-` `2*` `2/` | shortcuts | | `0=` `0<` `<>` | predicates |
+| `AND` `OR` `NOT` | bitwise logic | | `ABS` `NEGATE` `MIN` `MAX` | math |
+| `1+` `1-` `2*` `2/` | shortcuts | | `0=` `0<` `<>` `TRUE` `FALSE` | predicates |
+
+### Memory
+
+| Word | Description |
+|------|-------------|
+| `@` `!` | fetch / store |
+| `HERE` `,` `C,` `ALLOT` `CELLS` | data space allocation |
+| `VARIABLE` `CONSTANT` `CREATE` | data words |
 
 ### I/O
 
 | Word | Description |
 |------|-------------|
 | `.` `.S` `EMIT` `CR` `SPACE` `SPACES` `TYPE` | output |
-| `KEY` | read one character |
-| `."` | print string literal |
+| `KEY` `."` | input / string literal |
 | `FILE-READ"` `FILE-WRITE"` `FILE-EXISTS"` `FILE-LIST"` `FILE-DELETE"` | filesystem |
 | `HTTP-GET"` `HTTP-POST"` | raw HTTP/1.1 |
 | `SHELL"` `ENV"` `TIMESTAMP` `SLEEP` | system |
@@ -224,20 +328,43 @@ src/
 | `DO` `LOOP` `I` `J` | counted loop |
 | `BEGIN` `UNTIL` `WHILE` `REPEAT` | indefinite loop |
 | `:` `;` `RECURSE` | word definitions |
-| `VARIABLE` `CONSTANT` `CREATE` `DOES>` | data words |
-| `WORDS` `SEE` | introspection |
-| `EVAL"` | evaluate a string of Forth |
+| `WORDS` `SEE` `EVAL"` | introspection |
+
+### S-Expressions
+
+| Word | Description |
+|------|-------------|
+| `SEXP"` | parse S-expression, translate to Forth, execute |
+| `SEXP-SEND"` | broadcast S-expression to mesh peers |
+| `SEXP-RECV` | drain inbound S-expression messages |
 
 ### Mesh & Gossip
 
 | Word | Description |
 |------|-------------|
-| `PEERS` `MESH-STATUS` `ID` | mesh info |
+| `PEERS` `MESH-STATUS` `ID` `MY-ADDR` | mesh info |
+| `PEER-TABLE` `MESH-STATS` `MESH-KEY` | cross-machine |
+| `CONNECT"` `DISCONNECT"` | manual peer management |
 | `SEND` `RECV` | raw messaging |
-| `REPLICATE` `PROPOSE` | consensus replication |
 | `DISCOVER` `AUTO-DISCOVER` | LAN discovery |
 | `SHARE"` `SHARE-ALL` `AUTO-SHARE` `SHARED-WORDS` | word sharing |
-| `SWARM-ON` `SWARM-OFF` `SWARM-STATUS` `SWARM` | swarm mode |
+| `SWARM-ON` `SWARM-OFF` `SWARM-STATUS` | swarm mode |
+
+### Distributed Computation
+
+| Word | Description |
+|------|-------------|
+| `DIST-GOAL{` | distribute pipe-separated expressions across peers |
+| `DIST-STATUS` | show active distributed goals |
+| `DIST-CANCEL` | cancel all distributed goals |
+
+### Genetic Programming
+
+| Word | Description |
+|------|-------------|
+| `GP-EVOLVE` | run 10 generations (call repeatedly to continue) |
+| `GP-STATUS` `GP-BEST` | inspect evolution state |
+| `GP-STOP` `GP-RESET` | control evolution |
 
 ### Goals & Tasks
 
@@ -246,8 +373,7 @@ src/
 | `GOAL"` | `( priority -- id )` description-only goal |
 | `GOAL{` `}` | `( priority -- id )` executable Forth goal |
 | `GOALS` `TASKS` `REPORT` `CLAIM` `COMPLETE` | lifecycle |
-| `CANCEL` `STEER` `RESULT` `GOAL-RESULT` | management |
-| `SPLIT` `FORK` `SUBTASK{` `RESULTS` `REDUCE"` `PROGRESS` | decomposition |
+| `SUBTASK{` `FORK` `RESULTS` `REDUCE"` `PROGRESS` | decomposition |
 | `AUTO-CLAIM` `TIMEOUT` | execution control |
 
 ### Monitoring
@@ -260,13 +386,14 @@ src/
 | `DASHBOARD` `HEALTH` `OPS` | overview |
 | `EVERY` `SCHEDULE` `UNSCHED` | scheduling |
 
-### Fitness & Evolution
+### Fitness & Mutation
 
 | Word | Description |
 |------|-------------|
 | `FITNESS` `LEADERBOARD` `RATE` | scoring |
 | `MUTATE` `MUTATE-WORD"` `UNDO-MUTATE` `MUTATIONS` | mutation |
-| `EVOLVE` `AUTO-EVOLVE` `BENCHMARK"` | evolution |
+| `SMART-MUTATE` `MUTATION-REPORT` `MUTATION-STATS` | smart mutation |
+| `EVOLVE` `AUTO-EVOLVE` `BENCHMARK"` | fitness-driven evolution |
 
 ### Spawn & Replication
 
@@ -285,23 +412,26 @@ src/
 | `TRUST-ALL` `TRUST-MESH` `TRUST-FAMILY` `TRUST-NONE` | trust levels |
 | `TRUST-LEVEL` `REQUESTS` `ACCEPT` `DENY` `DENY-ALL` | consent flow |
 | `REPLICATION-LOG` | audit trail |
-| `SECURE-SWARM` `LOCKDOWN` | presets |
 
 ### Persistence
 
 | Word | Description |
 |------|-------------|
-| `SAVE` `LOAD-STATE` `RESET` | state management |
-| `SNAPSHOT` `SNAPSHOTS` `RESTORE` | versioned backups |
-| `AUTO-SAVE` `REIDENTIFY` | automation |
+| `JSON-SNAPSHOT` `JSON-RESTORE` | save/load JSON snapshots |
+| `HIBERNATE` | snapshot and exit |
+| `AUTO-SNAPSHOT` | periodic auto-save |
+| `SNAPSHOT-PATH` `JSON-SNAPSHOTS` | inspect storage |
+| `EXPORT-GENOME` `IMPORT-GENOME"` | genome transfer |
+| `SAVE` `LOAD-STATE` `RESET` | binary state management |
+| `SNAPSHOT` `SNAPSHOTS` `RESTORE` | binary versioned backups |
+| `AUTO-SAVE` | binary auto-save |
 
 ## Binary Sizes
 
 | Target | Size |
 |--------|------|
-| Native (Linux/macOS) | ~700KB |
-| WASM (browser) | ~230KB |
-| UREP replication package | ~650KB |
+| Native (macOS arm64, release) | ~1.2 MB |
+| WASM (browser) | ~338 KB |
 
 ## License
 
