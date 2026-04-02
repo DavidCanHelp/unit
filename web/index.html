@@ -369,13 +369,13 @@ const STEPS = [
   { cmd: ': SQUARE DUP * ;', before: 'Now define a word \u2192', after: 'You created a new word. SQUARE duplicates the top of the stack and multiplies. The language just grew.' },
   { cmd: '7 SQUARE .', before: 'Use it \u2192', after: '49. Your word works. In unit, everything is built this way \u2014 from simple pieces.' },
   { cmd: 'SEE SQUARE', before: 'See inside it \u2192', after: 'The dictionary is transparent. Every word can be inspected, modified, even shared across a network.' },
-  { cmd: 'WORDS', before: 'List all words \u2192', after: '200+ words. Stack ops, arithmetic, mesh networking, self-replication, evolution \u2014 all from one binary. Type HELP for a guided tour.' },
+  { cmd: 'WORDS', before: 'List all words \u2192', after: '300+ words. Stack ops, arithmetic, mesh networking, self-replication, evolution \u2014 all from one binary. Type HELP for a guided tour.' },
   { cmd: '10 0 DO I . LOOP', before: 'Try a loop \u2192', after: 'Control flow works at the REPL \u2014 no compilation step needed. This is a live, interactive system.' },
   { cmd: 'DASHBOARD', before: 'Check the dashboard \u2192', after: 'In a native mesh, this shows live watches, alerts, peer status, and sparkline trends. This is an ops tool.' },
   { cmd: 'SPAWN', before: 'You are a nanobot. Reproduce \u2192', after: 'You just replicated. A new unit spawned with a copy of your dictionary \u2014 it can do everything you can. Watch it come alive in the visualizer above.', spawn: true },
   { cmd: 'DIST-GOAL{ 10 10 * . | 20 20 * . }', before: 'Now put your colony to work \u2192', after: 'You just distributed computation across your colony. Each unit computed a piece. This is how nanobots cooperate.' },
-  { cmd: 'SEXP" (+ 10 32)"', before: 'Now try an S-expression \u2192', after: '42. The same stack, but the goal arrived as a Lisp expression. S-expressions are how units talk to each other on the mesh.' },
-  { cmd: 'SEXP" (* 6 7)"', before: 'One more \u2192', after: null },
+  { cmd: 'SEXP" (+ 10 32)" .', before: 'Now try an S-expression \u2192', after: '42. The same stack, but the goal arrived as a Lisp expression. S-expressions are how units talk to each other on the mesh.' },
+  { cmd: 'SEXP" (* 6 7)" .', before: 'One more \u2192', after: null },
 ];
 let tutorialStep = 0, tutorialActive = true, tutorialComplete = false;
 
