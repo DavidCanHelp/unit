@@ -363,6 +363,45 @@ function autoTick() {
 }
 setInterval(autoTick, 5000);
 
+async function autoSpawnCheck() {
+  if (!mesh || !tutorialComplete) return;
+  if (mesh.units.length < 2 || mesh.units.length >= mesh.maxUnits) return;
+  if (!mesh.units.some(u => u.fitness > 0)) return;
+  if (Math.random() > 0.3) return;
+
+  // Pick the fittest non-self unit as parent.
+  let parent = mesh.units[1];
+  for (let i = 2; i < mesh.units.length; i++) {
+    if (mesh.units[i].fitness > parent.fitness) parent = mesh.units[i];
+  }
+
+  // Determine reason.
+  const avgFitness = mesh.units.reduce((s, u) => s + u.fitness, 0) / mesh.units.length;
+  let reason = 'colony growing';
+  if (avgFitness < 10) reason = 'colony needs strength';
+
+  // Spawn.
+  if (chatterOn) setBubble(parent.id, 'spawning a copy...', '#00ff88');
+  const parentNode = vizNodes.find(nd => nd.id === parent.id);
+  if (parentNode) parentNode.pulse = 1.5;
+
+  const child = await mesh.spawn();
+  if (!child) return;
+
+  spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
+  emitParticle(parent.id, child.id, '#00ff88');
+
+  const hello = `(peer-hello :id "#${child.id}" :gen 0 :peers ${mesh.units.length - 1} :fitness 0)`;
+  addChatter(child.id, hello);
+  addChatter(parent.id, `(auto-spawn :parent "#${parent.id}" :child "#${child.id}" :reason "${reason}")`);
+  appendOutput(`[mesh] unit #${child.id} auto-spawned by #${parent.id} (${mesh.units.length} units online)\n`, 'mesh-event');
+
+  setTimeout(() => {
+    if (chatterOn) setBubble(child.id, `I'm a copy of #${parent.id}. Ready to work.`, '#00ccff');
+  }, 1500);
+}
+setInterval(autoSpawnCheck, 15000);
+
 // =========================================================================
 // Spawn
 // =========================================================================
