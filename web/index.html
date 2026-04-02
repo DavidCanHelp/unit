@@ -714,6 +714,10 @@ input.addEventListener('keydown', (e) => {
     return;
   }
 
+  // Track user-defined words for inheritance by spawned units.
+  if (mesh && line.trim().startsWith(':') && line.includes(';')) {
+    mesh.units[0].userWords.push(line.trim());
+  }
   const result = vm.eval(line);
   if (result) appendOutput(result);
   appendOutput(' ok\n', 'info');

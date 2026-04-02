@@ -47,6 +47,7 @@ class BrowserUnit {
     this.busy = false;
     this.learned = [];     // words received from other units
     this.personality = ''; // specialist/balanced/solo
+    this.userWords = [];   // user-defined word definitions (Forth source)
   }
 }
 
@@ -100,13 +101,9 @@ class BrowserMesh {
   }
 
   _inheritWords(parent, child) {
-    const genome = parent.vm.eval('EXPORT-GENOME').trim();
-    if (!genome) return;
-    for (const line of genome.split('\n')) {
-      const def = line.trim();
-      if (def.startsWith(':') && def.endsWith(';')) {
-        child.vm.eval(def);
-      }
+    for (const def of parent.userWords) {
+      child.vm.eval(def);
+      if (!child.userWords.includes(def)) child.userWords.push(def);
     }
   }
 
