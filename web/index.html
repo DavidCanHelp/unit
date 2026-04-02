@@ -138,7 +138,7 @@ function syncVizFromMesh() {
       n = {
         id: u.id, x: W/2+(Math.random()-0.5)*100, y: H/2+(Math.random()-0.5)*80,
         vx: 0, vy: 0, fitness: u.fitness, color: isFirst ? '#00ff88' : '#00ccff',
-        alpha: 0, pulse: 1.5, label: isFirst ? 'self' : u.id, glowColor: moodColor(u.fitness)
+        alpha: 0, pulse: 1.5, label: isFirst ? u.id + ' self' : u.id, glowColor: moodColor(u.fitness)
       };
       vizNodes.push(n);
       if (!isFirst) vizEdges.push({ from: vizNodes[0].id, to: u.id });
