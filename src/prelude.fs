@@ -179,21 +179,25 @@
       DROP ." joyful and thriving! fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR
     ELSE DUP 20 > IF
       DROP ." joyful. doing well. fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR
+    ELSE DUP 10 > IF
+      DROP ." getting started. fitness=" FITNESS . CR
     ELSE DUP 0 > IF
-      DROP ." connected but struggling. fitness=" FITNESS . CR
+      DROP ." warming up. fitness=" FITNESS . CR
     ELSE
-      DROP ." connected but need help. fitness=" FITNESS . CR
-    THEN THEN THEN
+      DROP ." just spawned. finding my role. fitness=" FITNESS . CR
+    THEN THEN THEN THEN
   ELSE
     FITNESS DUP 50 > IF
-      DROP ." thriving but lonely. fitness=" FITNESS . CR
+      DROP ." thriving solo. fitness=" FITNESS . CR
     ELSE DUP 20 > IF
-      DROP ." doing okay, but alone. fitness=" FITNESS . CR
+      DROP ." doing okay solo. fitness=" FITNESS . CR
+    ELSE DUP 10 > IF
+      DROP ." getting started. fitness=" FITNESS . CR
     ELSE DUP 0 > IF
-      DROP ." struggling alone. fitness=" FITNESS . CR
+      DROP ." warming up. fitness=" FITNESS . CR
     ELSE
-      DROP ." I need help. fitness=" FITNESS . CR
-    THEN THEN THEN
+      DROP ." alone and new. fitness=" FITNESS . CR
+    THEN THEN THEN THEN
   THEN ;
 
 : LONELY ( -- )

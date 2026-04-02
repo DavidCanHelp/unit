@@ -304,6 +304,7 @@ function autoTick() {
     const output = unit.vm.eval('ADAPT').trim();
     const taught = mesh.teachFrom(unit);
     if (taught.length > 0) {
+      unit.fitness += 5;
       const msg = `taught ${taught.join(', ')} to colony`;
       setBubble(unit.id, msg, '#cc8800');
       addChatter(unit.id, msg);
@@ -324,8 +325,25 @@ function autoTick() {
     output = `(peer-hello :id "#${unit.id}" :gen 0 :peers ${peers} :fitness ${unit.fitness})`;
   } else if (behavior.cmd === 'PROUD') {
     output = `(status :id "#${unit.id}" :fitness ${unit.fitness} :tasks ${unit.tasksCompleted})`;
+  } else if (behavior.cmd === 'HOW-ARE-YOU') {
+    const f = unit.fitness;
+    if (peers > 0) {
+      if (f > 50) output = `joyful and thriving! fitness=${f} with ${peers} peers`;
+      else if (f > 20) output = `doing well. fitness=${f} with ${peers} peers`;
+      else if (f > 10) output = `getting started. fitness=${f}`;
+      else if (f > 0) output = `warming up. fitness=${f}`;
+      else output = `just spawned. finding my role. fitness=${f}`;
+    } else {
+      if (f > 50) output = `thriving solo. fitness=${f}`;
+      else if (f > 20) output = `doing okay solo. fitness=${f}`;
+      else if (f > 10) output = `getting started. fitness=${f}`;
+      else if (f > 0) output = `warming up. fitness=${f}`;
+      else output = `alone and new. fitness=${f}`;
+    }
   } else {
     output = unit.vm.eval(behavior.cmd).trim();
+    // Credit fitness for autonomous activity.
+    if (output && behavior.cmd !== 'OBSERVE') unit.fitness += 1;
   }
   if (output) {
     const color = behavior.dream ? '#a080cc' : null;
@@ -510,9 +528,10 @@ input.addEventListener('keydown', (e) => {
         break;
       case 'HOW-ARE-YOU':
         if (totalFitness > 50) appendOutput(`thriving! fitness=${totalFitness}\n`, 'output');
-        else if (totalFitness > 20) appendOutput(`doing okay. fitness=${totalFitness}\n`, 'output');
-        else if (totalFitness > 0) appendOutput(`growing. fitness=${totalFitness}\n`, 'output');
-        else appendOutput(`new here. fitness=${totalFitness}\n`, 'output');
+        else if (totalFitness > 20) appendOutput(`doing well. fitness=${totalFitness}\n`, 'output');
+        else if (totalFitness > 10) appendOutput(`getting started. fitness=${totalFitness}\n`, 'output');
+        else if (totalFitness > 0) appendOutput(`warming up. fitness=${totalFitness}\n`, 'output');
+        else appendOutput(`just spawned. fitness=${totalFitness}\n`, 'output');
         break;
       case 'HELLO':
         appendOutput(`Hi! I'm unit self, generation 0 with ${peers} peers and fitness ${totalFitness}\n`, 'output'); break;
