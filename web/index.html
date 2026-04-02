@@ -419,7 +419,7 @@ async function finishTutorial() {
   tutorialBar.innerHTML = `<div>Tutorial complete. unit speaks Forth and S-expressions. <span class="links"><a href="https://github.com/DavidCanHelp/unit">GitHub</a> <a href="https://crates.io/crates/unit">crates.io</a> cargo install unit</span></div>`;
   tutorialBar.style.display = 'flex';
   setTimeout(() => { tutorialBar.style.display = 'none'; renderHints(); }, 12000);
-  appendOutput("unit: a self-replicating Forth interpreter. You've seen it reproduce, distribute work, and speak S-expressions.\ncargo install unit to run it across real machines.\n\n", 'tutorial-msg');
+  appendOutput("unit: a self-replicating software nanobot. You've seen it reproduce, distribute work, and speak S-expressions.\ncargo install unit to run it across real machines.\n\n", 'tutorial-msg');
   if (mesh && mesh.units.length < 2) {
     const u = await mesh.spawn();
     if (u) {
