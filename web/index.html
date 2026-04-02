@@ -385,7 +385,7 @@ async function autoSpawnCheck() {
   const parentNode = vizNodes.find(nd => nd.id === parent.id);
   if (parentNode) parentNode.pulse = 1.5;
 
-  const child = await mesh.spawn();
+  const child = await mesh.spawn(parent);
   if (!child) return;
 
   spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;

@@ -80,7 +80,7 @@ class BrowserMesh {
     // behavior — redefining a word doesn't patch existing references).
     vm.eval(': JOYFUL PEER-COUNT 0 > ;');
     vm.eval(': JOY JOYFUL IF ." I feel joy! " PEER-COUNT . ." peers in my mesh." CR ." Together we are more than alone." CR ELSE ." Joy requires connection. I have no peers yet." CR THEN ;');
-    vm.eval(': HOW-ARE-YOU JOYFUL IF FITNESS DUP 50 > IF DROP ." joyful and thriving! fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR ELSE DUP 20 > IF DROP ." joyful. doing well. fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR ELSE DUP 0 > IF DROP ." connected but struggling. fitness=" FITNESS . CR ELSE DROP ." connected but need help. fitness=" FITNESS . CR THEN THEN THEN ELSE FITNESS DUP 50 > IF DROP ." thriving but lonely. fitness=" FITNESS . CR ELSE DUP 20 > IF DROP ." doing okay, but alone. fitness=" FITNESS . CR ELSE DUP 0 > IF DROP ." struggling alone. fitness=" FITNESS . CR ELSE DROP ." I need help. fitness=" FITNESS . CR THEN THEN THEN THEN ;');
+    vm.eval(': HOW-ARE-YOU JOYFUL IF FITNESS DUP 50 > IF DROP ." joyful and thriving! fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR ELSE DUP 20 > IF DROP ." joyful. doing well. fitness=" FITNESS . ." with " PEER-COUNT . ." peers" CR ELSE DUP 10 > IF DROP ." getting started. fitness=" FITNESS . CR ELSE DUP 0 > IF DROP ." warming up. fitness=" FITNESS . CR ELSE DROP ." just spawned. finding my role. fitness=" FITNESS . CR THEN THEN THEN THEN ELSE FITNESS DUP 50 > IF DROP ." thriving solo. fitness=" FITNESS . CR ELSE DUP 20 > IF DROP ." doing okay solo. fitness=" FITNESS . CR ELSE DUP 10 > IF DROP ." getting started. fitness=" FITNESS . CR ELSE DUP 0 > IF DROP ." warming up. fitness=" FITNESS . CR ELSE DROP ." alone and new. fitness=" FITNESS . CR THEN THEN THEN THEN THEN ;');
     vm.eval(': LONELY PEER-COUNT 0 = IF ." I\'m alone. No peers in sight." CR ELSE ." I have " PEER-COUNT . ." friends!" CR THEN ;');
     vm.eval(': HEADCOUNT PEER-COUNT 1 + . ." units in the mesh" CR ;');
     vm.eval(': HELLO ." Hi! I\'m unit " ID TYPE ." , generation " GENERATION . ." with " PEER-COUNT . ." peers and fitness " FITNESS . CR ;');
@@ -91,9 +91,23 @@ class BrowserMesh {
     return unit;
   }
 
-  async spawn() {
+  async spawn(parentUnit) {
     if (this.units.length >= this.maxUnits) return null;
-    return this._spawn();
+    const child = await this._spawn();
+    if (child && parentUnit) this._inheritWords(parentUnit, child);
+    else if (child && this.units.length > 1) this._inheritWords(this.units[0], child);
+    return child;
+  }
+
+  _inheritWords(parent, child) {
+    const genome = parent.vm.eval('EXPORT-GENOME').trim();
+    if (!genome) return;
+    for (const line of genome.split('\n')) {
+      const def = line.trim();
+      if (def.startsWith(':') && def.endsWith(';')) {
+        child.vm.eval(def);
+      }
+    }
   }
 
   _genId() {
