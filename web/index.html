@@ -407,7 +407,7 @@ setInterval(autoSpawnCheck, 15000);
 // =========================================================================
 async function doSpawn() {
   if (!mesh || mesh.units.length >= mesh.maxUnits) return;
-  const u = await mesh.spawn();
+  const u = await mesh.spawn(mesh.units[0]);
   if (u) {
     spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
     appendOutput(`[mesh] unit #${u.id} spawned (${mesh.units.length} units online)\n`, 'mesh-event');
@@ -478,7 +478,7 @@ async function finishTutorial() {
   setTimeout(() => { tutorialBar.style.display = 'none'; renderHints(); }, 12000);
   appendOutput("unit: a self-replicating software nanobot. You've seen it reproduce, distribute work, and speak S-expressions.\ncargo install unit to run it across real machines.\n\n", 'tutorial-msg');
   if (mesh && mesh.units.length < 2) {
-    const u = await mesh.spawn();
+    const u = await mesh.spawn(mesh.units[0]);
     if (u) {
       spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
       appendOutput(`[mesh] unit #${u.id} has joined the colony\n`, 'mesh-event');
