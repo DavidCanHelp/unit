@@ -540,6 +540,12 @@ input.addEventListener('keydown', (e) => {
       case 'SPAWN':
         doSpawn();
         break;
+      case 'DASHBOARD':
+        appendOutput('--- dashboard ---\n', 'output');
+        appendOutput(`watches: 0  alerts: 0  peers: ${peers}  fitness: ${totalFitness}\n`, 'output');
+        for (const u of mesh.units) appendOutput(`  #${u.id} fitness=${u.fitness} tasks=${u.tasksCompleted}${u.busy?' [busy]':''}\n`, 'output');
+        if (totalTasks > 0) appendOutput(`${totalTasks} tasks completed across colony\n`, 'output');
+        break;
       case 'INTROSPECT':
         if (totalFitness > 50) appendOutput(`thriving! fitness=${totalFitness}\n`, 'output');
         else if (totalFitness > 0) appendOutput(`growing. fitness=${totalFitness}\n`, 'output');
