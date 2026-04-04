@@ -24,6 +24,11 @@ pub struct UnitSnapshot {
     pub words: Vec<(String, String)>, // (name, decompiled source)
     pub memory_here: usize,
     pub memory: Vec<Cell>, // only up to `here`
+    // Energy state
+    pub energy: i64,
+    pub energy_max: i64,
+    pub energy_earned: u64,
+    pub energy_spent: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -66,6 +71,12 @@ pub fn to_json(snap: &UnitSnapshot) -> String {
     j.push_str(&format!("  \"fitness\": {},\n", snap.fitness));
     j.push_str(&format!("  \"tasks_completed\": {},\n", snap.tasks_completed));
     j.push_str(&format!("  \"generation\": {},\n", snap.generation));
+
+    // Energy
+    j.push_str(&format!("  \"energy\": {},\n", snap.energy));
+    j.push_str(&format!("  \"energy_max\": {},\n", snap.energy_max));
+    j.push_str(&format!("  \"energy_earned\": {},\n", snap.energy_earned));
+    j.push_str(&format!("  \"energy_spent\": {},\n", snap.energy_spent));
 
     // Stack
     j.push_str("  \"stack\": [");
@@ -121,6 +132,10 @@ pub fn from_json(input: &str) -> Option<UnitSnapshot> {
         words: Vec::new(),
         memory_here: 0,
         memory: Vec::new(),
+        energy: crate::energy::INITIAL_ENERGY,
+        energy_max: crate::energy::MAX_ENERGY,
+        energy_earned: 0,
+        energy_spent: 0,
     };
 
     let input = input.trim();
@@ -199,6 +214,10 @@ pub fn from_json(input: &str) -> Option<UnitSnapshot> {
                 "tasks_completed" => snap.tasks_completed = val as u32,
                 "generation" => snap.generation = val as u32,
                 "memory_here" => snap.memory_here = val as usize,
+                "energy" => snap.energy = val,
+                "energy_max" => snap.energy_max = val,
+                "energy_earned" => snap.energy_earned = val as u64,
+                "energy_spent" => snap.energy_spent = val as u64,
                 "version" => {} // ignore
                 _ => {}
             }
@@ -443,6 +462,10 @@ mod tests {
             ],
             memory_here: 3,
             memory: vec![0, 42, -1],
+            energy: 800,
+            energy_max: 5000,
+            energy_earned: 500,
+            energy_spent: 700,
         }
     }
 
@@ -477,6 +500,7 @@ mod tests {
             words: vec![],
             memory_here: 0,
             memory: vec![],
+            energy: 1000, energy_max: 5000, energy_earned: 0, energy_spent: 0,
         };
         let json = to_json(&snap);
         let restored = from_json(&json).unwrap();
@@ -500,6 +524,7 @@ mod tests {
             ],
             memory_here: 0,
             memory: vec![],
+            energy: 1000, energy_max: 5000, energy_earned: 0, energy_spent: 0,
         };
         let json = to_json(&snap);
         let restored = from_json(&json).unwrap();

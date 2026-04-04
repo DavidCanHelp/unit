@@ -365,6 +365,10 @@ impl VM {
             words,
             memory_here: self.here,
             memory: self.memory[..self.here].to_vec(),
+            energy: self.energy.energy,
+            energy_max: self.energy.max_energy,
+            energy_earned: self.energy.total_earned,
+            energy_spent: self.energy.total_spent,
         }
     }
 
@@ -379,6 +383,12 @@ impl VM {
         self.mutation_stats.beneficial = snap.mutation_stats.beneficial;
         self.mutation_stats.harmful = snap.mutation_stats.harmful;
         self.mutation_stats.lethal = snap.mutation_stats.lethal;
+
+        // Restore energy.
+        self.energy.energy = snap.energy;
+        self.energy.max_energy = snap.energy_max;
+        self.energy.total_earned = snap.energy_earned;
+        self.energy.total_spent = snap.energy_spent;
 
         // Restore memory.
         if snap.memory_here <= self.memory.len() {
@@ -904,6 +914,38 @@ impl VM {
                 self.emit_str(&format!("  {}\n", name));
             }
         }
+    }
+
+    fn prim_metabolism(&mut self) {
+        let out = format!(
+            "--- metabolism ---\n\
+             energy: {}/{}\n\
+             lifetime earned: {}\n\
+             lifetime spent: {}\n\
+             efficiency: {:.2}\n\
+             peak energy: {}\n\
+             starving ticks: {}\n\
+             throttled: {}\n\
+             --- costs ---\n\
+             \x20 spawn: {}\n\
+             \x20 gp generation: {}\n\
+             \x20 eval per 1000 steps: {}\n\
+             \x20 mesh send: {}\n\
+             --- rewards ---\n\
+             \x20 task success: {}\n\
+             \x20 challenge solved: {}\n\
+             \x20 passive regen: {}/tick\n",
+            self.energy.energy, self.energy.max_energy,
+            self.energy.total_earned, self.energy.total_spent,
+            self.energy.efficiency(), self.energy.peak_energy,
+            self.energy.starving_ticks,
+            if self.energy.throttled { "YES" } else { "no" },
+            energy::SPAWN_COST, energy::GP_GENERATION_COST,
+            energy::EVAL_STEP_COST_PER_1000, energy::MESH_SEND_COST,
+            energy::TASK_REWARD, energy::CHALLENGE_SOLVE_REWARD,
+            energy::PASSIVE_REGEN,
+        );
+        self.emit_str(&out);
     }
 
     /// Install a solved challenge as a dictionary word (sol-{name}).

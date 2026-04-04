@@ -260,6 +260,8 @@ pub(crate) const P_CHALLENGES: usize = 480;
 pub(crate) const P_IMMUNE_STATUS: usize = 481;
 pub(crate) const P_ANTIBODIES: usize = 482;
 pub(crate) const P_ENERGY: usize = 483;
+pub(crate) const P_METABOLISM: usize = 484;
+pub(crate) const P_FEED: usize = 485;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -646,6 +648,8 @@ impl VM {
             ("IMMUNE-STATUS", P_IMMUNE_STATUS, false),
             ("ANTIBODIES", P_ANTIBODIES, false),
             ("ENERGY", P_ENERGY, false),
+            ("METABOLISM", P_METABOLISM, false),
+            ("FEED", P_FEED, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1126,6 +1130,12 @@ impl VM {
                 let s = self.energy.format();
                 self.emit_str(&s);
                 self.emit_str("\n");
+            }
+            P_METABOLISM => self.prim_metabolism(),
+            P_FEED => {
+                let amount = self.pop().min(500).max(0);
+                self.energy.earn(amount, "manual-feed");
+                self.emit_str(&format!("fed {} energy\n", amount));
             }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
