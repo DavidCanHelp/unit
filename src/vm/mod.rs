@@ -255,6 +255,10 @@ pub(crate) const P_HERE: usize = 470;
 pub(crate) const P_COMMA: usize = 471;
 pub(crate) const P_ALLOT: usize = 472;
 pub(crate) const P_CELLS: usize = 473;
+// Immune system (challenge registry)
+pub(crate) const P_CHALLENGES: usize = 480;
+pub(crate) const P_IMMUNE_STATUS: usize = 481;
+pub(crate) const P_ANTIBODIES: usize = 482;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -338,6 +342,9 @@ pub struct VM {
     pub evolution: Option<crate::evolve::EvolutionState>,
     // --- Distributed goals ---
     pub dist_engine: crate::distgoal::DistEngine,
+    // --- Immune system ---
+    pub challenge_registry: crate::challenges::ChallengeRegistry,
+    pub problem_detector: crate::discovery::ProblemDetector,
 }
 
 impl VM {
@@ -386,6 +393,8 @@ impl VM {
             kernel_word_count: 0,
             evolution: None,
             dist_engine: crate::distgoal::DistEngine::new(),
+            challenge_registry: crate::challenges::ChallengeRegistry::new(&[0; 8]),
+            problem_detector: crate::discovery::ProblemDetector::new(),
         };
         vm.register_primitives();
         vm
@@ -628,6 +637,10 @@ impl VM {
             ("C,", P_COMMA, false), // alias — cells are i64
             ("ALLOT", P_ALLOT, false),
             ("CELLS", P_CELLS, false),
+            // Immune system
+            ("CHALLENGES", P_CHALLENGES, false),
+            ("IMMUNE-STATUS", P_IMMUNE_STATUS, false),
+            ("ANTIBODIES", P_ANTIBODIES, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1100,6 +1113,10 @@ impl VM {
                 }
             }
             P_CELLS => {} // cells are 1 unit each — no-op
+            // Immune system
+            P_CHALLENGES => self.prim_challenges(),
+            P_IMMUNE_STATUS => self.prim_immune_status(),
+            P_ANTIBODIES => self.prim_antibodies(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

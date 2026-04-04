@@ -19,6 +19,12 @@ pub mod evolve;
 // --- Distributed goal computation ---
 pub mod distgoal;
 
+// --- Challenge registry (immune system) ---
+pub mod challenges;
+
+// --- Problem discovery ---
+pub mod discovery;
+
 // --- Core nanobot ---
 #[allow(dead_code)]
 pub mod mesh;
@@ -595,7 +601,16 @@ impl VM {
     fn prim_gp_evolve(&mut self) {
         // Initialize if not running.
         if self.evolution.is_none() {
-            let challenge = evolve::fib10_challenge();
+            // Try to pick from challenge registry first.
+            let challenge = if let Some(ch_id) = self.challenge_registry.next_unsolved() {
+                if let Some(fc) = self.challenge_registry.to_fitness_challenge(ch_id) {
+                    fc
+                } else {
+                    evolve::fib10_challenge()
+                }
+            } else {
+                evolve::fib10_challenge()
+            };
             let mut evo = evolve::EvolutionState::new(challenge.clone(), 1000);
             evo.population = evolve::init_population(&challenge, 50, &mut self.rng);
             evo.running = true;
@@ -644,6 +659,22 @@ impl VM {
                     "[gen {}] WINNER: \"{}\" (fitness={:.0}, {} tokens)\n",
                     gen, best_prog, best_fitness, best_tokens
                 ));
+                // Install solution and mark challenge solved.
+                if let Some(active_id) = self.challenge_registry.active_challenge {
+                    let solver = self.node_id_cache.unwrap_or([0; 8]);
+                    self.challenge_registry.mark_solved(active_id, &best_prog, solver);
+                    if let Some(ch) = self.challenge_registry.get_challenge(active_id) {
+                        let ch_name = ch.name.clone();
+                        // Broadcast solution to mesh.
+                        if let Some(ref m) = self.mesh {
+                            let hex = m.id_hex().to_string();
+                            let sexp = challenges::sexp_solution_broadcast(active_id, &best_prog, &hex);
+                            sexp_broadcasts.push(sexp);
+                        }
+                        // Install as dictionary word (deferred to after borrow).
+                        messages.push(format!("__INSTALL_SOL__{}|{}\n", ch_name, best_prog));
+                    }
+                }
                 self.evolution.as_mut().unwrap().running = false;
                 break;
             }
@@ -655,9 +686,18 @@ impl VM {
             evo.generation = gen + 1;
         }
 
-        // Emit collected messages.
+        // Emit collected messages and install solutions.
         for msg in &messages {
-            self.emit_str(msg);
+            if msg.starts_with("__INSTALL_SOL__") {
+                let rest = &msg[15..].trim_end();
+                if let Some(idx) = rest.find('|') {
+                    let name = &rest[..idx];
+                    let prog = &rest[idx+1..];
+                    self.install_solution(name, prog);
+                }
+            } else {
+                self.emit_str(msg);
+            }
         }
 
         // Broadcast to mesh.
@@ -805,6 +845,67 @@ impl VM {
     fn prim_dist_cancel(&mut self) {
         self.dist_engine.goals.clear();
         self.emit_str("all distributed goals cancelled\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // Immune system primitives
+    // -----------------------------------------------------------------------
+
+    fn prim_challenges(&mut self) {
+        let out = self.challenge_registry.format_challenges();
+        self.emit_str(&out);
+    }
+
+    fn prim_immune_status(&mut self) {
+        let total = self.challenge_registry.challenges.len();
+        let solved = self.challenge_registry.challenges.values().filter(|c| c.solved).count();
+        let unsolved = total - solved;
+        let antibodies = self.dictionary.iter()
+            .filter(|e| e.name.starts_with("SOL-"))
+            .count();
+        self.emit_str(&format!(
+            "--- immune status ---\nchallenges: {} ({} solved, {} unsolved)\n\
+             colony antibodies: {}\n",
+            total, solved, unsolved, antibodies
+        ));
+        if let Some(active) = self.challenge_registry.active() {
+            self.emit_str(&format!("active: #{} {}\n", active.id, active.name));
+        }
+        // List antibody words
+        let sol_words: Vec<&str> = self.dictionary.iter()
+            .filter(|e| e.name.starts_with("SOL-"))
+            .map(|e| e.name.as_str())
+            .collect();
+        if !sol_words.is_empty() {
+            self.emit_str(&format!("  words: {}\n", sol_words.join(" ")));
+        }
+    }
+
+    fn prim_antibodies(&mut self) {
+        let sol_words: Vec<String> = self.dictionary.iter()
+            .filter(|e| e.name.starts_with("SOL-"))
+            .map(|e| e.name.clone())
+            .collect();
+        if sol_words.is_empty() {
+            self.emit_str("no antibodies yet\n");
+        } else {
+            self.emit_str(&format!("--- {} antibodies ---\n", sol_words.len()));
+            for name in &sol_words {
+                self.emit_str(&format!("  {}\n", name));
+            }
+        }
+    }
+
+    /// Install a solved challenge as a dictionary word (sol-{name}).
+    fn install_solution(&mut self, challenge_name: &str, program: &str) {
+        let word_name = format!("SOL-{}", challenge_name.to_uppercase());
+        // Check if already installed.
+        if self.find_word(&word_name).is_some() {
+            return;
+        }
+        let def = format!(": {} {} ;", word_name, program);
+        self.interpret_line(&def);
+        self.emit_str(&format!("[immune] learned word: {}\n", word_name));
     }
 
     /// Called during REPL tick to check for incoming sub-goal results and timeouts.
@@ -3363,6 +3464,10 @@ fn main() {
                 let seed = u64::from_be_bytes(id);
                 vm.rng = mutation::SimpleRng::new(seed);
                 vm.node_id_cache = Some(id);
+                vm.challenge_registry = challenges::ChallengeRegistry::new(&id);
+                // Register fib10 as a built-in challenge.
+                let fib = challenges::fib10_as_challenge();
+                vm.challenge_registry.register_builtin(&fib.name, &fib.target_output, fib.seed_programs);
                 let _ = persist::save_node_id(&id);
                 if resumed && !cli.quiet {
                     eprintln!("resumed identity {}", mesh::id_to_hex(&id));
