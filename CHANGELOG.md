@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.24.0] - 2026-04-04
+
+### Added
+- Emergent browser behaviors: SAY-SOMETHING word with 7 state-driven personality templates replacing scripted autonomous behaviors. PERSONALITY word shows behavioral profile (mentor/collaborator/explorer/survivor/newborn).
+- Solution diversity tracking: Challenge.solutions vec stores up to 20 distinct verified programs per challenge. SOLUTIONS and DIVERSITY REPL words. colony_diversity() aggregate stats.
+- Genome visualization: click-to-inspect panel in browser mesh visualizer showing unit ID, fitness, energy, stack, antibodies, user words, and learned words. Includes "Run Command" input for executing Forth on any unit. Selected node highlighted with white outline.
+- Python organism (polyglot/python/): AST-based symbolic regression using Python ast module. Third species on the mesh with stdlib-only dependencies. 22 tests. sexp.py, mesh.py, evolve.py, challenge.py, main.py.
+- Third-order evolution: ScoringPopulation (10 Forth programs) evolves the fitness functions that judge challenge generators. Evaluated against GeneratorHistory of which generators produced solvable challenges. Gradual activation after 10+ history entries. SCORERS and META-DEPTH REPL words.
+- Stack simulator extended with ABS, MAX, MIN for scoring function programs.
+- Python build/test added to CI pipeline (python-build job).
+- Interop stress test (tests/interop_test.sh) for Rust/Go mesh verification.
+- Integration test suite: 10 end-to-end cross-module tests.
+
 ## [0.23.1] - 2026-04-04
 
 ### Added

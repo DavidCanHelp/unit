@@ -18,7 +18,7 @@ cargo install unit
 
 ```
 $ unit
-unit v0.23.1 -- seed online
+unit v0.24.0 -- seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
 > 2 3 + .
 5  ok
@@ -46,8 +46,12 @@ challenges, evolves solutions, and installs them as new words the
 colony inherits. Every operation costs metabolic energy. Solved
 challenges generate harder ones — open-ended evolution with no ceiling.
 
+Three species (Rust/Forth, Go, Python) coexist on one mesh, each with
+a different cognitive substrate. Three orders of evolution operate
+simultaneously: solutions, problem generators, and scoring functions.
+
 Forth is the brain. S-expressions are the voice. The mesh is the body.
-Zero external dependencies. ~30,000 lines of Rust + Forth + Go.
+Zero external dependencies. ~35,000 lines of Rust + Forth + Go + Python.
 
 ## The Five Concerns
 
@@ -182,6 +186,12 @@ in the sweet spot — solvable but non-trivial. The GP engine evolves
 solutions (first-order), the MetaEvolver evolves the problems
 (second-order). Use `GENERATORS` to inspect the population.
 
+The system also evolves the scoring functions that judge challenge
+generators — three levels of evolution operating simultaneously.
+GP evolves solutions (first-order), MetaEvolver evolves the problems
+(second-order), ScoringPopulation evolves how problems are judged
+(third-order). Use `META-DEPTH` to see all three levels.
+
 ## Distributed Computation
 
 Break a problem into pieces. Fan sub-goals out to mesh peers as
@@ -266,20 +276,24 @@ Gossip self-assembles: A tells B about C, the mesh grows.
 
 ## Polyglot Organisms
 
-The S-expression protocol is language-independent. A Go organism joins
-the same mesh, evolving arithmetic expression trees instead of Forth.
+The S-expression protocol is language-independent. Three species
+coexist on one mesh, each with a different cognitive substrate.
 
 ```sh
-# Terminal 1: Rust unit
+# Terminal 1: Rust unit (Forth token sequences)
 UNIT_PORT=4200 unit
 
-# Terminal 2: Go organism
+# Terminal 2: Go organism (expression trees)
 cd polyglot/go && go run . -peer 127.0.0.1:4200
+
+# Terminal 3: Python organism (AST symbolic regression)
+cd polyglot/python && python main.py --peer 127.0.0.1:4200
 ```
 
-The Go organism appears in the Rust unit's `PEERS` list, receives
-challenges, evolves solutions using expression trees, and broadcasts
-results. Different language, different mutation strategy, same protocol.
+Each organism appears in the Rust unit's `PEERS` list, receives
+challenges, evolves solutions using its own GP strategy, and
+broadcasts results. Different languages, different mutation
+strategies, same S-expression protocol.
 
 ## Swarm Mode
 
@@ -394,12 +408,19 @@ polyglot/go/          # Go organism (expression trees, goroutines)
 ├── evolve/           # GP engine with expression trees
 └── challenge/        # challenge/solution protocol
 
+polyglot/python/      # Python organism (AST symbolic regression)
+├── main.py           # entry point, gossip loop, periodic evolution
+├── sexp.py           # S-expression parser
+├── mesh.py           # UDP mesh networking
+├── evolve.py         # GP engine with ast module
+└── challenge.py      # challenge/solution protocol
+
 docs/
 ├── unit-whitepaper-2026.pdf
 └── formal-analysis.md
 ```
 
-191+ tests. Zero dependencies. ~30,000 lines of Rust + Forth + Go.
+199+ Rust tests, 22 Python tests, Go tests. Zero dependencies. ~35,000 lines.
 
 ## All the Words
 
@@ -502,6 +523,11 @@ docs/
 | `DEPTH` | evolutionary depth metric |
 | `GENERATORS` | list top generators by fitness and program |
 | `META-EVOLVE` | run one generation of generator evolution |
+| `SCORERS` | list top scoring functions (third-order) |
+| `META-DEPTH` | evolution depth at all three levels |
+| `SOLUTIONS` | `( id -- )` list all solutions for a challenge |
+| `DIVERSITY` | colony-wide solution diversity stats |
+| `PERSONALITY` | current behavioral profile |
 
 ### Goals & Tasks
 
