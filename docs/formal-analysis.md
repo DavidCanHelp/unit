@@ -260,17 +260,19 @@ ticks.
 
 ### 3.3 Spawn Economics
 
-Replication costs 200 energy and gives the child energy/3 of the
-parent's remaining energy (capped at 1000). This creates a meaningful
-reproductive investment:
+Replication costs 200 energy. Currently, the child inherits the parent's
+full energy state via snapshot serialization — the spawn cost is deducted
+from the parent but the child starts with a copy of the parent's remaining
+energy. This means spawning is metabolically inexpensive for the child but
+costly for the parent.
 
-- A unit with 1000 energy that spawns pays 200, leaving 800, and the
-  child starts with min(800/3, 1000) = 266.
-- A unit with 300 energy that spawns pays 200, leaving 100, and the
-  child starts with min(100/3, 1000) = 33.
+A future refinement would split energy between parent and child (e.g.
+child receives parent_energy / 3, parent keeps the rest), making
+reproduction a genuine resource investment where both parties start in a
+more constrained metabolic state.
 
-The minimum viable energy for spawning is 200 (the cost), but spawning
-at minimum leaves both parent and child in precarious metabolic states.
+The minimum viable energy for spawning is 200 (the cost). Spawning at
+minimum leaves the parent near zero energy, likely triggering throttling.
 The optimal spawning strategy is to accumulate significantly above the
 cost threshold before replicating — a behavior that should emerge
 naturally from the energy dynamics without explicit programming.
