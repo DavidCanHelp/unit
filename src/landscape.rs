@@ -423,6 +423,9 @@ fn simulate_stack(code: &str) -> Option<i64> {
             "1-" => { let a = stack.pop()?; stack.push(a - 1); }
             "2*" => { let a = stack.pop()?; stack.push(a * 2); }
             "2/" => { let a = stack.pop()?; stack.push(a / 2); }
+            "ABS" => { let a = stack.pop()?; stack.push(a.abs()); }
+            "MAX" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.max(b)); }
+            "MIN" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.min(b)); }
             _ => {
                 if let Ok(n) = token.parse::<i64>() {
                     stack.push(n);
@@ -529,6 +532,134 @@ impl GeneratorPopulation {
 }
 
 // ---------------------------------------------------------------------------
+// Third-order evolution: evolve the scoring function for generators
+// ---------------------------------------------------------------------------
+
+/// A scoring genome is a Forth program that takes two numbers on the stack
+/// (input_target, output_target) and produces a fitness score.
+#[derive(Clone, Debug)]
+pub struct ScoringGenome {
+    pub program: String,
+    pub fitness: f64,
+    pub generators_scored: u32,
+}
+
+impl ScoringGenome {
+    pub fn new(program: &str) -> Self {
+        ScoringGenome { program: program.to_string(), fitness: 0.0, generators_scored: 0 }
+    }
+}
+
+/// History entry: which generator produced which challenge and was it solved.
+#[derive(Clone, Debug)]
+pub struct GeneratorHistory {
+    pub generator_program: String,
+    pub challenge_id: u64,
+    pub was_solved: bool,
+}
+
+/// Evaluate a scoring function: run it with (input, output) on the stack.
+pub fn evaluate_scorer(program: &str, input_val: i64, output_val: i64) -> Option<i64> {
+    let code = format!("{} {} {}", input_val, output_val, program);
+    simulate_stack(&code)
+}
+
+#[derive(Clone, Debug)]
+pub struct ScoringPopulation {
+    pub scorers: Vec<ScoringGenome>,
+    pub generation: u32,
+    pub best: Option<ScoringGenome>,
+    pub history: Vec<GeneratorHistory>,
+    pub cycles_completed: u32,
+}
+
+impl ScoringPopulation {
+    pub fn new(rng: &mut SimpleRng) -> Self {
+        let seeds = vec![
+            "- ABS 100 SWAP - 0 MAX",
+            "DROP 50",
+            "- ABS",
+            "- ABS 1+ 1000 SWAP -",
+            "SWAP DROP DUP * 100 SWAP -",
+        ];
+        let mut scorers: Vec<ScoringGenome> = seeds.iter()
+            .map(|s| ScoringGenome::new(s))
+            .collect();
+        while scorers.len() < 10 {
+            let base = seeds[rng.next_usize(seeds.len())];
+            scorers.push(ScoringGenome::new(&mutate_generator(base, rng)));
+        }
+        ScoringPopulation { scorers, generation: 0, best: None, history: Vec::new(), cycles_completed: 0 }
+    }
+
+    pub fn record_history(&mut self, gen_program: &str, challenge_id: u64, was_solved: bool) {
+        if self.history.len() >= 50 {
+            self.history.remove(0);
+        }
+        self.history.push(GeneratorHistory {
+            generator_program: gen_program.to_string(),
+            challenge_id,
+            was_solved,
+        });
+    }
+
+    /// Evaluate scoring functions against history.
+    pub fn evaluate_from_history(&mut self) {
+        if self.history.len() < 10 { return; }
+        for scorer in &mut self.scorers {
+            let mut total_score = 0.0;
+            for entry in &self.history {
+                // Run the generator to get its output.
+                let (gen_output, _) = evaluate_generator(&entry.generator_program, 55);
+                let output = gen_output.unwrap_or(0);
+                // Score the generator using this scoring function.
+                let scorer_score = evaluate_scorer(&scorer.program, 55, output).unwrap_or(0);
+                // If this scorer ranked the generator high AND the challenge was solved: good.
+                if entry.was_solved && scorer_score > 50 { total_score += 50.0; }
+                else if entry.was_solved && scorer_score > 20 { total_score += 20.0; }
+                else if !entry.was_solved && scorer_score < 20 { total_score += 10.0; }
+                // If this scorer ranked a bad generator high: bad.
+                else if !entry.was_solved && scorer_score > 50 { total_score -= 10.0; }
+            }
+            scorer.fitness = scorer.fitness * 0.5 + (total_score / self.history.len() as f64) * 0.5;
+            scorer.generators_scored += 1;
+        }
+    }
+
+    /// Run one generation of scorer evolution.
+    pub fn evolve_scorers(&mut self, rng: &mut SimpleRng) {
+        self.scorers.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some(best) = self.scorers.first() {
+            self.best = Some(best.clone());
+        }
+        let pop_size = self.scorers.len();
+        let mut next = Vec::with_capacity(pop_size);
+        // Keep top 2.
+        for s in self.scorers.iter().take(2.min(pop_size)) {
+            next.push(s.clone());
+        }
+        while next.len() < pop_size {
+            let idx = rng.next_usize(self.scorers.len());
+            let parent = &self.scorers[idx];
+            next.push(ScoringGenome::new(&mutate_generator(&parent.program, rng)));
+        }
+        self.scorers = next;
+        self.generation += 1;
+        self.cycles_completed += 1;
+    }
+
+    pub fn format_top(&self, n: usize) -> String {
+        let mut sorted = self.scorers.clone();
+        sorted.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        let mut out = format!("--- scoring population (top {}) ---\n", n.min(sorted.len()));
+        for (i, s) in sorted.iter().take(n).enumerate() {
+            out.push_str(&format!("  {}. \"{}\" fitness={:.0}\n", i + 1, s.program, s.fitness));
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Landscape engine
 // ---------------------------------------------------------------------------
 
@@ -540,6 +671,7 @@ pub struct LandscapeEngine {
     pub depth: u32,
     pub meta: GeneratorPopulation,
     pub evolved_count: u64,
+    pub scoring: ScoringPopulation,
 }
 
 impl LandscapeEngine {
@@ -552,6 +684,7 @@ impl LandscapeEngine {
             depth: 0,
             meta: GeneratorPopulation::new(&mut rng),
             evolved_count: 0,
+            scoring: ScoringPopulation::new(&mut rng),
         }
     }
 
@@ -619,6 +752,13 @@ impl LandscapeEngine {
             // Run one generation of meta-evolution.
             let mut rng = SimpleRng::new(self.challenges_generated + 1);
             self.meta.evolve_generators(&mut rng);
+
+            // Third-order: evolve scoring functions if enough history.
+            if self.scoring.history.len() >= 10 {
+                self.scoring.evaluate_from_history();
+                let mut rng3 = SimpleRng::new(self.scoring.generation as u64 + 1);
+                self.scoring.evolve_scorers(&mut rng3);
+            }
         }
 
         self.challenges_generated += new_challenges.len() as u64;
@@ -648,11 +788,13 @@ impl LandscapeEngine {
              challenges generated: {} ({} authored, {} evolved)\n\
              environment: {}\n\
              authored generators: {}\n\
-             evolved generators: {} (best: {})\n",
+             evolved generators: {} (best: {})\n\
+             scoring functions: {} (gen {})\n",
             self.depth, self.challenges_generated, authored, self.evolved_count,
             self.current_environment(),
             self.generators.len(),
             self.meta.genomes.len(), best_gen,
+            self.scoring.scorers.len(), self.scoring.generation,
         )
     }
 }
@@ -894,5 +1036,49 @@ mod tests {
             let m = mutate_generator("5 +", &mut rng);
             assert!(!m.is_empty());
         }
+    }
+
+    // --- Third-order evolution tests ---
+
+    #[test]
+    fn test_evaluate_scorer() {
+        // "- ABS" takes (input, output) and returns |output - input|
+        let score = evaluate_scorer("- ABS", 55, 60);
+        assert_eq!(score, Some(5));
+    }
+
+    #[test]
+    fn test_evaluate_scorer_crash() {
+        let score = evaluate_scorer("DROP DROP DROP", 55, 60);
+        assert!(score.is_none());
+    }
+
+    #[test]
+    fn test_scoring_population_init() {
+        let mut rng = SimpleRng::new(42);
+        let pop = ScoringPopulation::new(&mut rng);
+        assert_eq!(pop.scorers.len(), 10);
+    }
+
+    #[test]
+    fn test_scoring_history() {
+        let mut rng = SimpleRng::new(42);
+        let mut pop = ScoringPopulation::new(&mut rng);
+        for i in 0..15 {
+            pop.record_history("5 +", i as u64, i % 3 == 0);
+        }
+        assert_eq!(pop.history.len(), 15);
+        pop.evaluate_from_history();
+        // At least some scorers should have non-zero fitness.
+        assert!(pop.scorers.iter().any(|s| s.fitness != 0.0));
+    }
+
+    #[test]
+    fn test_scoring_evolution() {
+        let mut rng = SimpleRng::new(42);
+        let mut pop = ScoringPopulation::new(&mut rng);
+        pop.evolve_scorers(&mut rng);
+        assert_eq!(pop.generation, 1);
+        assert_eq!(pop.scorers.len(), 10);
     }
 }

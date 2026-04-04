@@ -266,6 +266,8 @@ pub(crate) const P_LANDSCAPE: usize = 486;
 pub(crate) const P_DEPTH: usize = 487;
 pub(crate) const P_GENERATORS: usize = 488;
 pub(crate) const P_META_EVOLVE: usize = 489;
+pub(crate) const P_SCORERS: usize = 490;
+pub(crate) const P_META_DEPTH: usize = 491;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -661,6 +663,8 @@ impl VM {
             ("DEPTH", P_DEPTH, false),
             ("GENERATORS", P_GENERATORS, false),
             ("META-EVOLVE", P_META_EVOLVE, false),
+            ("SCORERS", P_SCORERS, false),
+            ("META-DEPTH", P_META_DEPTH, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1169,6 +1173,25 @@ impl VM {
                     "meta-evolution generation {}\n",
                     self.landscape.meta.generation
                 ));
+            }
+            P_SCORERS => {
+                let s = self.landscape.scoring.format_top(3);
+                self.emit_str(&s);
+            }
+            P_META_DEPTH => {
+                let sol_count = self.challenge_registry.challenges.values()
+                    .filter(|c| c.solved).count();
+                let gen_count = self.landscape.meta.genomes.len();
+                let scorer_count = self.landscape.scoring.scorers.len();
+                let out = format!(
+                    "first-order: {} solutions evolved\n\
+                     second-order: {} generators evolved (gen {})\n\
+                     third-order: {} scoring functions evolved (gen {})\n",
+                    sol_count,
+                    gen_count, self.landscape.meta.generation,
+                    scorer_count, self.landscape.scoring.generation,
+                );
+                self.emit_str(&out);
             }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
