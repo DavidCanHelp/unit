@@ -259,6 +259,7 @@ pub(crate) const P_CELLS: usize = 473;
 pub(crate) const P_CHALLENGES: usize = 480;
 pub(crate) const P_IMMUNE_STATUS: usize = 481;
 pub(crate) const P_ANTIBODIES: usize = 482;
+pub(crate) const P_ENERGY: usize = 483;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -345,6 +346,8 @@ pub struct VM {
     // --- Immune system ---
     pub challenge_registry: crate::challenges::ChallengeRegistry,
     pub problem_detector: crate::discovery::ProblemDetector,
+    // --- Energy ---
+    pub energy: crate::energy::EnergyState,
 }
 
 impl VM {
@@ -395,6 +398,7 @@ impl VM {
             dist_engine: crate::distgoal::DistEngine::new(),
             challenge_registry: crate::challenges::ChallengeRegistry::new(&[0; 8]),
             problem_detector: crate::discovery::ProblemDetector::new(),
+            energy: crate::energy::EnergyState::new(),
         };
         vm.register_primitives();
         vm
@@ -641,6 +645,7 @@ impl VM {
             ("CHALLENGES", P_CHALLENGES, false),
             ("IMMUNE-STATUS", P_IMMUNE_STATUS, false),
             ("ANTIBODIES", P_ANTIBODIES, false),
+            ("ENERGY", P_ENERGY, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1117,6 +1122,11 @@ impl VM {
             P_CHALLENGES => self.prim_challenges(),
             P_IMMUNE_STATUS => self.prim_immune_status(),
             P_ANTIBODIES => self.prim_antibodies(),
+            P_ENERGY => {
+                let s = self.energy.format();
+                self.emit_str(&s);
+                self.emit_str("\n");
+            }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

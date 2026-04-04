@@ -630,6 +630,13 @@ impl VM {
                 if evo.generation >= evo.max_generations || !evo.running { break; }
             }
 
+            // Energy cost per generation.
+            if !self.energy.can_afford(energy::GP_GENERATION_COST) {
+                self.emit_str("[energy] evolution paused — insufficient energy\n");
+                break;
+            }
+            self.energy.spend(energy::GP_GENERATION_COST, "gp-gen");
+
             // Evaluate fitness.
             self.evaluate_population();
 
@@ -908,6 +915,7 @@ impl VM {
         }
         let def = format!(": {} {} ;", word_name, program);
         self.interpret_line(&def);
+        self.energy.earn(energy::CHALLENGE_SOLVE_REWARD, "challenge-solved");
         self.emit_str(&format!("[immune] learned word: {}\n", word_name));
     }
 
@@ -1875,9 +1883,10 @@ impl VM {
             let elapsed_ms: u64 = 0;
             let success = result.success;
 
-            // Record fitness.
+            // Record fitness and energy.
             if success {
                 self.fitness.record_success(elapsed_ms);
+                self.energy.earn(energy::TASK_REWARD, "task");
             } else {
                 self.fitness.record_failure();
             }
@@ -2810,6 +2819,14 @@ impl VM {
     }
 
     fn prim_spawn(&mut self) {
+        // Energy check.
+        if !self.energy.can_afford(energy::SPAWN_COST) {
+            self.emit_str(&format!(
+                "insufficient energy to spawn (need {}, have {})\n",
+                energy::SPAWN_COST, self.energy.energy
+            ));
+            return;
+        }
         if let Err(e) = self.spawn_state.can_spawn() {
             self.emit_str(&format!("SPAWN: {}\n", e));
             return;
@@ -2827,6 +2844,7 @@ impl VM {
 
         match spawn::spawn_local(&package, parent_port, child_gen) {
             Ok((pid, port, child_id)) => {
+                self.energy.spend(energy::SPAWN_COST, "spawn");
                 self.spawn_state.children.push(spawn::ChildInfo {
                     pid,
                     port,
@@ -3321,6 +3339,7 @@ impl VM {
                         self.check_auto_replicate();
                         self.check_auto_evolve();
                         self.check_incoming_replications();
+                        self.energy.tick();
                         self.tick_monitor();
                         self.tick_swarm();
                         self.check_auto_snapshot();
