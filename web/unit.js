@@ -48,6 +48,11 @@ class BrowserUnit {
     this.learned = [];     // words received from other units
     this.personality = ''; // specialist/balanced/solo
     this.userWords = [];   // user-defined word definitions (Forth source)
+    // Energy state
+    this.energy = 1000;
+    this.energyMax = 5000;
+    this.energyEarned = 0;
+    this.energySpent = 0;
   }
 }
 

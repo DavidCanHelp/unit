@@ -6,13 +6,13 @@
 <title>unit — a software nanobot</title>
 <meta name="description" content="A self-replicating software nanobot. Forth brain, S-expression mesh protocol, genetic programming, distributed computation, and persistence — all in one binary. Spawn units, evolve code, distribute goals, hibernate and resurrect. Try the live demo or cargo install unit.">
 <meta property="og:title" content="unit — a software nanobot">
-<meta property="og:description" content="Self-replicating software nanobots that think in Forth, speak S-expressions, evolve their own code, and distribute computation across a mesh. Try the live demo — spawn units, watch them cooperate, type GP-EVOLVE to see genetic programming in action.">
+<meta property="og:description" content="Self-replicating software nanobots that think in Forth, speak S-expressions, evolve solutions to challenges, and distribute computation across a mesh. Immune system, metabolic energy, open-ended evolution. Try the live demo.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://davidcanhelp.github.io/unit/">
 <meta property="og:image" content="https://raw.githubusercontent.com/DavidCanHelp/unit/main/unit-demo.gif">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="unit — a software nanobot">
-<meta name="twitter:description" content="Self-replicating software nanobots that think in Forth, speak S-expressions, evolve their own code, and distribute computation across a mesh.">
+<meta name="twitter:description" content="Self-replicating software nanobots with an immune system, metabolic energy, and open-ended evolution. Forth brain, S-expression mesh, genetic programming.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%230a0a0a' width='100' height='100' rx='12'/><text x='50' y='72' font-size='64' font-family='monospace' fill='%2300ff88' text-anchor='middle'>u</text></svg>">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -279,6 +279,8 @@ const BEHAVIORS = [
   { weight: 4,  cmd: 'DREAM', dream: true },
   { weight: 3,  cmd: 'COMPOSE-ROUTINE' },
   { weight: 3,  cmd: 'INVENT-STRATEGY' },
+  { weight: 4,  cmd: 'CHALLENGES' },
+  { weight: 3,  cmd: 'ENERGY' },
   { weight: 12, cmd: null }, // idle
 ];
 const totalWeight = BEHAVIORS.reduce((s,b) => s+b.weight, 0);
@@ -325,6 +327,13 @@ function autoTick() {
     output = `(peer-hello :id "#${unit.id}" :gen 0 :peers ${peers} :fitness ${unit.fitness})`;
   } else if (behavior.cmd === 'PROUD') {
     output = `(status :id "#${unit.id}" :fitness ${unit.fitness} :tasks ${unit.tasksCompleted})`;
+  } else if (behavior.cmd === 'ENERGY') {
+    const eff = unit.energySpent > 0 ? (unit.energyEarned / unit.energySpent).toFixed(1) : '0.0';
+    output = `energy: ${unit.energy}/${unit.energyMax} eff=${eff}`;
+  } else if (behavior.cmd === 'CHALLENGES') {
+    const ch = mesh._challenges || [];
+    const solved = ch.filter(c => c.solved).length;
+    output = `challenges: ${ch.length} (${solved} solved)`;
   } else if (behavior.cmd === 'HOW-ARE-YOU') {
     const f = unit.fitness;
     if (peers > 0) {
@@ -354,6 +363,10 @@ function autoTick() {
       if (n) { n.pulse = 1.4; n.glowColor = '#8060aa'; }
     }
   }
+
+  // Passive energy regen.
+  unit.energy = Math.min(unit.energy + 1, unit.energyMax);
+  unit.energyEarned += 1;
 
   // Update personality label on the viz node.
   if (unit.personality) {
@@ -431,6 +444,9 @@ const STEPS = [
   { cmd: 'DASHBOARD', before: 'Check the dashboard \u2192', after: 'In a native mesh, this shows live watches, alerts, peer status, and sparkline trends. This is an ops tool.' },
   { cmd: 'SPAWN', before: 'You are a nanobot. Reproduce \u2192', after: 'You just replicated. A new unit spawned with a copy of your dictionary \u2014 it can do everything you can. Watch it come alive in the visualizer above.', spawn: true },
   { cmd: 'DIST-GOAL{ 10 10 * . | 20 20 * . }', before: 'Now put your colony to work \u2192', after: 'You just distributed computation across your colony. Each unit computed a piece. This is how nanobots cooperate.' },
+  { cmd: 'GP-EVOLVE', before: 'Evolve a solution \u2192', after: 'The GP engine evolved a solution and installed it as SOL-FIB10 \u2014 a word the colony now knows. Type CHALLENGES to see what\u2019s been solved.' },
+  { cmd: 'CHALLENGES', before: 'See the immune system \u2192', after: 'Solved challenges generate harder ones. The colony\u2019s fitness landscape keeps expanding.' },
+  { cmd: 'ENERGY', before: 'Check your metabolism \u2192', after: 'Every operation costs energy. Evolution, spawning, even mesh messages. Efficient units thrive.' },
   { cmd: 'SEXP" (+ 10 32)" .', before: 'Now try an S-expression \u2192', after: '42. The same stack, but the goal arrived as a Lisp expression. S-expressions are how units talk to each other on the mesh.' },
   { cmd: 'SEXP" (* 6 7)" .', before: 'One more \u2192', after: null },
 ];
@@ -448,7 +464,7 @@ function renderHints() {
     const s = STEPS[tutorialStep];
     hintsBar.innerHTML = `<span class="hint" onclick="pasteCmd('${s.cmd.replace(/'/g,"\\'")}')">${s.cmd}</span>`;
   } else {
-    hintsBar.innerHTML = `<span style="color:#444">try:</span><span class="hint" onclick="paste(this)">2 3 + .</span><span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span><span class="hint" onclick="paste(this)">WORDS</span><span class="hint" onclick="paste(this)">10 0 DO I . LOOP</span><span class="hint" onclick="paste(this)">SEXP" (+ 2 3)" .</span><span class="hint" onclick="paste(this)">GP-EVOLVE</span><span class="hint" onclick="paste(this)">HELP</span>`;
+    hintsBar.innerHTML = `<span style="color:#444">try:</span><span class="hint" onclick="paste(this)">2 3 + .</span><span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span><span class="hint" onclick="paste(this)">WORDS</span><span class="hint" onclick="paste(this)">GP-EVOLVE</span><span class="hint" onclick="paste(this)">CHALLENGES</span><span class="hint" onclick="paste(this)">ENERGY</span><span class="hint" onclick="paste(this)">DEPTH</span><span class="hint" onclick="paste(this)">HELP</span>`;
   }
 }
 async function advanceTutorial(line) {
@@ -510,6 +526,10 @@ function paste(el) { input.value = el.textContent; input.focus(); }
 async function init() {
   try {
     mesh = new BrowserMesh();
+    // Immune system and landscape state for the browser mesh.
+    mesh._challenges = [{ id: 1, name: 'fib10', reward: 100, solved: false }];
+    mesh._solWords = [];
+    mesh._landscapeDepth = 0;
     mesh.onEvent = (type, data) => {
       if (type === 'goal_start' && vizNodes.length > 1) emitParticle(vizNodes[0].id, data.unitId, '#ff8800');
       if (type === 'goal_done' && vizNodes.length > 1) {
@@ -608,6 +628,45 @@ input.addEventListener('keydown', (e) => {
         if (totalFitness > 50) appendOutput(`thriving! fitness=${totalFitness}\n`, 'output');
         else if (totalFitness > 0) appendOutput(`growing. fitness=${totalFitness}\n`, 'output');
         else appendOutput(`new here. fitness=${totalFitness}\n`, 'output');
+        break;
+      case 'CHALLENGES': {
+        const ch = mesh._challenges || [];
+        if (ch.length === 0) { appendOutput('no challenges\n', 'output'); break; }
+        appendOutput(`--- ${ch.length} challenges ---\n`, 'output');
+        for (const c of ch) appendOutput(`  #${c.id} ${c.name} [${c.solved?'SOLVED':'unsolved'}] reward=${c.reward}\n`, 'output');
+        break;
+      }
+      case 'IMMUNE-STATUS': {
+        const ch = mesh._challenges || [];
+        const solved = ch.filter(c => c.solved).length;
+        const solWords = (mesh._solWords || []);
+        appendOutput(`--- immune status ---\nchallenges: ${ch.length} (${solved} solved, ${ch.length-solved} unsolved)\ncolony antibodies: ${solWords.length}\n`, 'output');
+        if (solWords.length > 0) appendOutput(`  words: ${solWords.join(' ')}\n`, 'output');
+        break;
+      }
+      case 'ANTIBODIES': {
+        const solWords = mesh._solWords || [];
+        if (solWords.length === 0) appendOutput('no antibodies yet\n', 'output');
+        else { appendOutput(`--- ${solWords.length} antibodies ---\n`, 'output'); for (const w of solWords) appendOutput(`  ${w}\n`, 'output'); }
+        break;
+      }
+      case 'ENERGY': {
+        const u = mesh.units[0];
+        const eff = u.energySpent > 0 ? (u.energyEarned / u.energySpent).toFixed(2) : '0.00';
+        appendOutput(`energy: ${u.energy}/${u.energyMax} (earned: ${u.energyEarned}, spent: ${u.energySpent}, efficiency: ${eff})\n`, 'output');
+        break;
+      }
+      case 'METABOLISM':
+        appendOutput('--- metabolism ---\n--- costs ---\n  spawn: 200\n  gp generation: 5\n  eval per 1000 steps: 1\n  mesh send: 1\n--- rewards ---\n  task success: 50\n  challenge solved: 100\n  passive regen: 1/tick\n', 'output');
+        break;
+      case 'LANDSCAPE': {
+        const depth = mesh._landscapeDepth || 0;
+        const generated = (mesh._challenges || []).filter(c => c.id > 1).length;
+        appendOutput(`--- landscape ---\ndepth: ${depth}\nchallenges generated: ${generated}\nenvironment: normal\n`, 'output');
+        break;
+      }
+      case 'DEPTH':
+        appendOutput(`evolutionary depth: ${mesh._landscapeDepth || 0}\n`, 'output');
         break;
       default:
         handled = false;
@@ -720,6 +779,22 @@ input.addEventListener('keydown', (e) => {
   }
   const result = vm.eval(line);
   if (result) appendOutput(result);
+  // Update JS-side state when GP-EVOLVE solves a challenge.
+  if (mesh && line.trim().toUpperCase().startsWith('GP-EVOLVE') && result && result.includes('[immune] learned word:')) {
+    const u = mesh.units[0];
+    u.energySpent += 5; u.energyEarned += 100; u.energy = u.energy - 5 + 100;
+    const solMatch = result.match(/learned word: (SOL-\S+)/);
+    if (solMatch && !mesh._solWords.includes(solMatch[1])) mesh._solWords.push(solMatch[1]);
+    // Mark fib10 solved and generate harder challenges.
+    for (const c of mesh._challenges) { if (!c.solved && result.includes('WINNER')) { c.solved = true; break; } }
+    if (result.includes('fib10')) {
+      mesh._landscapeDepth = 55;
+      if (!mesh._challenges.find(c => c.name === 'fib15'))
+        mesh._challenges.push({ id: 2, name: 'fib10-short9', reward: 120, solved: false },
+          { id: 3, name: 'fib15', reward: 150, solved: false },
+          { id: 4, name: 'square-55', reward: 80, solved: false });
+    }
+  }
   appendOutput(' ok\n', 'info');
   advanceTutorial(line);
   if (!vm.isRunning()) { appendOutput('\n[unit exited]\n', 'info'); input.disabled = true; }
