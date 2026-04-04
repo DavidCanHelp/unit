@@ -372,6 +372,8 @@ impl VM {
             energy_max: self.energy.max_energy,
             energy_earned: self.energy.total_earned,
             energy_spent: self.energy.total_spent,
+            landscape_depth: self.landscape.depth,
+            landscape_generated: self.landscape.challenges_generated,
         }
     }
 
@@ -392,6 +394,10 @@ impl VM {
         self.energy.max_energy = snap.energy_max;
         self.energy.total_earned = snap.energy_earned;
         self.energy.total_spent = snap.energy_spent;
+
+        // Restore landscape.
+        self.landscape.depth = snap.landscape_depth;
+        self.landscape.challenges_generated = snap.landscape_generated;
 
         // Restore memory.
         if snap.memory_here <= self.memory.len() {
@@ -619,7 +625,9 @@ impl VM {
         if self.evolution.is_none() {
             // Try to pick from challenge registry first.
             let challenge = if let Some(ch_id) = self.challenge_registry.next_unsolved() {
-                if let Some(fc) = self.challenge_registry.to_fitness_challenge(ch_id) {
+                if let Some(mut fc) = self.challenge_registry.to_fitness_challenge(ch_id) {
+                    // Apply environment modifiers.
+                    fc.max_steps = self.landscape.environment.apply_to_max_steps(fc.max_steps);
                     fc
                 } else {
                     evolve::fib10_challenge()
@@ -717,6 +725,8 @@ impl VM {
                     let name = &rest[..idx];
                     let prog = &rest[idx+1..];
                     self.install_solution(name, prog);
+                    // Generate harder challenges from the solution.
+                    self.generate_landscape_challenges(name, prog);
                 }
             } else {
                 self.emit_str(msg);
@@ -949,6 +959,43 @@ impl VM {
             energy::PASSIVE_REGEN,
         );
         self.emit_str(&out);
+    }
+
+    /// Generate harder challenges from a solved one via the landscape engine.
+    fn generate_landscape_challenges(&mut self, challenge_name: &str, solution: &str) {
+        // Find the solved challenge by name.
+        let solved = self.challenge_registry.challenges.values()
+            .find(|c| c.name == challenge_name && c.solved)
+            .cloned();
+        let solved = match solved {
+            Some(c) => c,
+            None => return,
+        };
+        let all_solved: Vec<&challenges::Challenge> = self.challenge_registry.challenges.values()
+            .filter(|c| c.solved)
+            .collect();
+        let new_challenges = self.landscape.on_challenge_solved(&solved, solution, &all_solved);
+        if new_challenges.is_empty() { return; }
+        let count = new_challenges.len();
+        let depth = self.landscape.depth();
+        let my_id = self.node_id_cache.unwrap_or([0; 8]);
+        for ch in new_challenges {
+            let id = self.challenge_registry.register_discovered(
+                &ch.name, &ch.description, &ch.target_output,
+                ch.test_input.clone(), ch.seed_programs.clone(), my_id, ch.reward,
+            );
+            // Broadcast to mesh.
+            if let Some(ref m) = self.mesh {
+                if let Some(registered) = self.challenge_registry.get_challenge(id) {
+                    let sexp = challenges::sexp_challenge_broadcast(registered);
+                    m.send_sexp(&sexp);
+                }
+            }
+        }
+        self.emit_str(&format!(
+            "[landscape] depth {}: generated {} new challenges from '{}'\n",
+            depth, count, challenge_name
+        ));
     }
 
     /// Install a solved challenge as a dictionary word (sol-{name}).
@@ -3385,6 +3432,7 @@ impl VM {
                         self.check_auto_evolve();
                         self.check_incoming_replications();
                         self.energy.tick();
+                        self.landscape.tick();
                         self.tick_monitor();
                         self.tick_swarm();
                         self.check_auto_snapshot();

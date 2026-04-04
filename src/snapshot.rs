@@ -29,6 +29,9 @@ pub struct UnitSnapshot {
     pub energy_max: i64,
     pub energy_earned: u64,
     pub energy_spent: u64,
+    // Landscape state
+    pub landscape_depth: u32,
+    pub landscape_generated: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -77,6 +80,10 @@ pub fn to_json(snap: &UnitSnapshot) -> String {
     j.push_str(&format!("  \"energy_max\": {},\n", snap.energy_max));
     j.push_str(&format!("  \"energy_earned\": {},\n", snap.energy_earned));
     j.push_str(&format!("  \"energy_spent\": {},\n", snap.energy_spent));
+
+    // Landscape
+    j.push_str(&format!("  \"landscape_depth\": {},\n", snap.landscape_depth));
+    j.push_str(&format!("  \"landscape_generated\": {},\n", snap.landscape_generated));
 
     // Stack
     j.push_str("  \"stack\": [");
@@ -136,6 +143,8 @@ pub fn from_json(input: &str) -> Option<UnitSnapshot> {
         energy_max: crate::energy::MAX_ENERGY,
         energy_earned: 0,
         energy_spent: 0,
+        landscape_depth: 0,
+        landscape_generated: 0,
     };
 
     let input = input.trim();
@@ -218,6 +227,8 @@ pub fn from_json(input: &str) -> Option<UnitSnapshot> {
                 "energy_max" => snap.energy_max = val,
                 "energy_earned" => snap.energy_earned = val as u64,
                 "energy_spent" => snap.energy_spent = val as u64,
+                "landscape_depth" => snap.landscape_depth = val as u32,
+                "landscape_generated" => snap.landscape_generated = val as u64,
                 "version" => {} // ignore
                 _ => {}
             }
@@ -466,6 +477,8 @@ mod tests {
             energy_max: 5000,
             energy_earned: 500,
             energy_spent: 700,
+            landscape_depth: 2,
+            landscape_generated: 5,
         }
     }
 
@@ -501,6 +514,7 @@ mod tests {
             memory_here: 0,
             memory: vec![],
             energy: 1000, energy_max: 5000, energy_earned: 0, energy_spent: 0,
+            landscape_depth: 0, landscape_generated: 0,
         };
         let json = to_json(&snap);
         let restored = from_json(&json).unwrap();
@@ -525,6 +539,7 @@ mod tests {
             memory_here: 0,
             memory: vec![],
             energy: 1000, energy_max: 5000, energy_earned: 0, energy_spent: 0,
+            landscape_depth: 0, landscape_generated: 0,
         };
         let json = to_json(&snap);
         let restored = from_json(&json).unwrap();

@@ -262,6 +262,8 @@ pub(crate) const P_ANTIBODIES: usize = 482;
 pub(crate) const P_ENERGY: usize = 483;
 pub(crate) const P_METABOLISM: usize = 484;
 pub(crate) const P_FEED: usize = 485;
+pub(crate) const P_LANDSCAPE: usize = 486;
+pub(crate) const P_DEPTH: usize = 487;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -350,6 +352,8 @@ pub struct VM {
     pub problem_detector: crate::discovery::ProblemDetector,
     // --- Energy ---
     pub energy: crate::energy::EnergyState,
+    // --- Fitness landscape ---
+    pub landscape: crate::landscape::LandscapeEngine,
 }
 
 impl VM {
@@ -401,6 +405,7 @@ impl VM {
             challenge_registry: crate::challenges::ChallengeRegistry::new(&[0; 8]),
             problem_detector: crate::discovery::ProblemDetector::new(),
             energy: crate::energy::EnergyState::new(),
+            landscape: crate::landscape::LandscapeEngine::new(),
         };
         vm.register_primitives();
         vm
@@ -650,6 +655,8 @@ impl VM {
             ("ENERGY", P_ENERGY, false),
             ("METABOLISM", P_METABOLISM, false),
             ("FEED", P_FEED, false),
+            ("LANDSCAPE", P_LANDSCAPE, false),
+            ("DEPTH", P_DEPTH, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1136,6 +1143,14 @@ impl VM {
                 let amount = self.pop().min(500).max(0);
                 self.energy.earn(amount, "manual-feed");
                 self.emit_str(&format!("fed {} energy\n", amount));
+            }
+            P_LANDSCAPE => {
+                let s = self.landscape.format_landscape();
+                self.emit_str(&s);
+            }
+            P_DEPTH => {
+                let d = self.landscape.depth();
+                self.emit_str(&format!("evolutionary depth: {}\n", d));
             }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
