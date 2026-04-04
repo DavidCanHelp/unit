@@ -112,6 +112,7 @@ fn arithmetic_generate(solved: &Challenge, solution: &str) -> Vec<Challenge> {
                 solution: None,
                 solver: None,
                 attempts: 0,
+                solutions: vec![],
             });
         }
 
@@ -140,6 +141,7 @@ fn arithmetic_generate(solved: &Challenge, solution: &str) -> Vec<Challenge> {
                 solution: None,
                 solver: None,
                 attempts: 0,
+                solutions: vec![],
             });
         }
 
@@ -164,6 +166,7 @@ fn arithmetic_generate(solved: &Challenge, solution: &str) -> Vec<Challenge> {
                 solution: None,
                 solver: None,
                 attempts: 0,
+                solutions: vec![],
             });
         }
     }
@@ -226,6 +229,7 @@ fn composition_generate(
         solution: None,
         solver: None,
         attempts: 0,
+        solutions: vec![],
     }]
 }
 
@@ -604,6 +608,7 @@ impl LandscapeEngine {
                     solution: None,
                     solver: None,
                     attempts: 0,
+                    solutions: vec![],
                 });
                 self.evolved_count += 1;
                 // Update generator stats.
@@ -675,6 +680,7 @@ mod tests {
             solution: Some("0 1 10 0 DO OVER + SWAP LOOP DROP .".into()),
             solver: Some([0; 8]),
             attempts: 1,
+            solutions: vec![],
         }
     }
 
@@ -805,6 +811,7 @@ mod tests {
             solution: Some("42 .".into()),
             solver: Some([0; 8]),
             attempts: 1,
+            solutions: vec![],
         };
         let generated = engine.on_challenge_solved(&ch, "42 .", &[&ch]);
         // Arithmetic won't match (no "fib" in name), composition needs 2 solved.

@@ -150,7 +150,7 @@ mod tests {
             seed_programs: vec![], origin: ChallengeOrigin::BuiltIn,
             reward: 100, solved: true,
             solution: Some("0 1 10 0 DO OVER + SWAP LOOP DROP .".into()),
-            solver: Some(test_node()), attempts: 1,
+            solver: Some(test_node()), attempts: 1, solutions: vec![],
         };
         let gen1 = engine.on_challenge_solved(
             &fib10, "0 1 10 0 DO OVER + SWAP LOOP DROP .", &[&fib10],

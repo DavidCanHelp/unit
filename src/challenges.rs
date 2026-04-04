@@ -38,6 +38,7 @@ pub struct Challenge {
     pub solution: Option<String>,
     pub solver: Option<NodeId>,
     pub attempts: u32,
+    pub solutions: Vec<(String, NodeId)>, // all verified solutions (program, solver)
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ impl ChallengeRegistry {
             solution: None,
             solver: None,
             attempts: 0,
+            solutions: vec![],
         });
         id
     }
@@ -121,20 +123,65 @@ impl ChallengeRegistry {
             solution: None,
             solver: None,
             attempts: 0,
+            solutions: vec![],
         });
         id
     }
 
     pub fn mark_solved(&mut self, id: ChallengeId, solution: &str, solver: NodeId) -> bool {
         if let Some(ch) = self.challenges.get_mut(&id) {
-            if !ch.solved {
+            let is_first = !ch.solved;
+            if is_first {
                 ch.solved = true;
                 ch.solution = Some(solution.to_string());
                 ch.solver = Some(solver);
-                return true;
             }
+            // Track all distinct solutions (cap at 20).
+            if ch.solutions.len() < 20
+                && !ch.solutions.iter().any(|(p, _)| p == solution)
+            {
+                ch.solutions.push((solution.to_string(), solver));
+            }
+            return is_first;
         }
         false
+    }
+
+    pub fn solution_count(&self, id: ChallengeId) -> usize {
+        self.challenges.get(&id).map_or(0, |c| c.solutions.len())
+    }
+
+    pub fn format_solutions(&self, id: ChallengeId) -> String {
+        match self.challenges.get(&id) {
+            Some(ch) if !ch.solutions.is_empty() => {
+                let mut out = format!("--- {} solutions for {} ---\n", ch.solutions.len(), ch.name);
+                for (i, (prog, solver)) in ch.solutions.iter().enumerate() {
+                    let tokens = prog.split_whitespace().count();
+                    out.push_str(&format!(
+                        "  {}. \"{}\" ({} tokens) from {}\n",
+                        i + 1, prog, tokens, crate::mesh::id_to_hex(solver)
+                    ));
+                }
+                out
+            }
+            _ => format!("no solutions for challenge #{}\n", id),
+        }
+    }
+
+    pub fn colony_diversity(&self) -> String {
+        let solved: Vec<&Challenge> = self.challenges.values().filter(|c| c.solved).collect();
+        if solved.is_empty() { return "no solved challenges yet\n".to_string(); }
+        let total_solutions: usize = solved.iter().map(|c| c.solutions.len()).sum();
+        let avg = total_solutions as f64 / solved.len() as f64;
+        let most_diverse = solved.iter().max_by_key(|c| c.solutions.len());
+        let mut out = format!(
+            "--- colony diversity ---\nchallenges solved: {}\ntotal solutions: {}\navg solutions per challenge: {:.1}\n",
+            solved.len(), total_solutions, avg
+        );
+        if let Some(md) = most_diverse {
+            out.push_str(&format!("most diverse: {} ({} solutions)\n", md.name, md.solutions.len()));
+        }
+        out
     }
 
     pub fn get_unsolved(&self) -> Vec<&Challenge> {
@@ -270,6 +317,7 @@ pub fn fib10_as_challenge() -> Challenge {
         solution: None,
         solver: None,
         attempts: 0,
+        solutions: vec![],
     }
 }
 
@@ -322,6 +370,7 @@ mod tests {
             solution: None,
             solver: None,
             attempts: 0,
+            solutions: vec![],
         };
         reg.merge_challenge(ch);
         assert!(reg.get_challenge(999).is_some());
@@ -400,6 +449,7 @@ mod tests {
             solution: None,
             solver: None,
             attempts: 0,
+            solutions: vec![],
         };
         let sexp = sexp_challenge_broadcast(&ch);
         assert!(sexp.contains("challenge"));
@@ -415,6 +465,43 @@ mod tests {
         assert!(sexp.contains("solution"));
         assert!(sexp.contains(":challenge-id 42"));
         assert!(sexp.contains(":solver \"aabbccdd\""));
+    }
+
+    #[test]
+    fn test_multiple_solutions() {
+        let mut reg = ChallengeRegistry::new(&test_node_id());
+        let id = reg.register_builtin("test", "42 ", vec![]);
+        // First solution marks solved.
+        assert!(reg.mark_solved(id, "42 .", test_node_id()));
+        assert_eq!(reg.solution_count(id), 1);
+        // Second distinct solution is recorded.
+        assert!(!reg.mark_solved(id, "6 7 * .", [0xBB; 8]));
+        assert_eq!(reg.solution_count(id), 2);
+        // Duplicate solution is ignored.
+        assert!(!reg.mark_solved(id, "42 .", [0xCC; 8]));
+        assert_eq!(reg.solution_count(id), 2);
+    }
+
+    #[test]
+    fn test_solution_cap() {
+        let mut reg = ChallengeRegistry::new(&test_node_id());
+        let id = reg.register_builtin("test", "42 ", vec![]);
+        for i in 0..25u8 {
+            let prog = format!("{} 42 + 42 - .", i);
+            reg.mark_solved(id, &prog, [i; 8]);
+        }
+        assert_eq!(reg.solution_count(id), 20); // capped
+    }
+
+    #[test]
+    fn test_colony_diversity() {
+        let mut reg = ChallengeRegistry::new(&test_node_id());
+        let id = reg.register_builtin("test", "42 ", vec![]);
+        reg.mark_solved(id, "42 .", test_node_id());
+        reg.mark_solved(id, "6 7 * .", [0xBB; 8]);
+        let out = reg.colony_diversity();
+        assert!(out.contains("challenges solved: 1"));
+        assert!(out.contains("total solutions: 2"));
     }
 
     #[test]
