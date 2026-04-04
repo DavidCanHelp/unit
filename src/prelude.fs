@@ -210,6 +210,44 @@
   ELSE DUP 0 > IF . ." tasks in my queue." CR
   ELSE DROP ." nothing to do." CR THEN THEN ;
 
+\ === PERSONALITY ===
+\ State-driven personality: output varies by fitness, energy, peers, tasks.
+
+VARIABLE PERSONALITY-SEED
+0 PERSONALITY-SEED !
+
+: PERSONALITY ( -- )
+  FITNESS DUP 50 > IF DROP ." mentor" CR
+  ELSE DUP 20 > IF DROP ." collaborator" CR
+  ELSE DUP 10 > IF DROP ." explorer" CR
+  ELSE DUP 0 > IF DROP ." survivor" CR
+  ELSE DROP ." newborn" CR
+  THEN THEN THEN THEN ;
+
+: SAY-SOMETHING ( -- )
+  PERSONALITY-SEED @ FITNESS + 7 MOD
+  DUP 0 = IF DROP
+    FITNESS 50 > IF ." I've seen enough to teach. fitness=" FITNESS . CR
+    ELSE ." still learning. fitness=" FITNESS . CR THEN
+  ELSE DUP 1 = IF DROP
+    PEER-COUNT 0 > IF ." " PEER-COUNT . ." peers — stronger together" CR
+    ELSE ." searching for peers..." CR THEN
+  ELSE DUP 2 = IF DROP
+    ." energy=" FITNESS . ." tasks=" TASK-COUNT DROP DROP DROP DROP . CR
+  ELSE DUP 3 = IF DROP
+    FITNESS 30 > IF ." thriving. the mesh provides." CR
+    ELSE ." working toward something." CR THEN
+  ELSE DUP 4 = IF DROP
+    PEER-COUNT DUP 3 > IF DROP ." colony is strong — " PEER-COUNT . ." nodes" CR
+    ELSE 0 > IF ." small colony, big potential" CR
+    ELSE ." alone but capable" CR THEN THEN
+  ELSE DUP 5 = IF DROP
+    ." (observe :fitness " FITNESS . ." :peers " PEER-COUNT . ." )" CR
+  ELSE DROP
+    ." adapting to " PEER-COUNT . ." peers, fitness " FITNESS . CR
+  THEN THEN THEN THEN THEN THEN THEN
+  PERSONALITY-SEED @ 1+ PERSONALITY-SEED ! ;
+
 \ === SELF-PROGRAMMING ===
 \ Units that write their own Forth.
 

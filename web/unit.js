@@ -91,6 +91,8 @@ class BrowserMesh {
     vm.eval(': HEADCOUNT PEER-COUNT 1 + . ." units in the mesh" CR ;');
     vm.eval(': HELLO ." Hi! I\'m unit " ID TYPE ." , generation " GENERATION . ." with " PEER-COUNT . ." peers and fitness " FITNESS . CR ;');
     vm.eval(': INTROSPECT HOW-ARE-YOU OBS-COUNT @ DUP 0 > IF ." adapted " . ." times." CR ELSE DROP THEN ;');
+    // Set unique personality seed per unit.
+    vm.eval(`${this.units.length * 37 + 7} PERSONALITY-SEED !`);
     this.units.push(unit);
     this._updatePeerCounts();
     this._emit('spawn', { id, count: this.units.length });

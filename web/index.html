@@ -268,17 +268,11 @@ window.addEventListener('resize', () => { if (vizMode > 0) resizeCanvas(); });
 // Autonomous Behavior — units come alive
 // =========================================================================
 const BEHAVIORS = [
+  { weight: 20, cmd: 'SAY-SOMETHING' },
   { weight: 8,  cmd: 'HELLO' },
-  { weight: 12, cmd: 'HOW-ARE-YOU' },
-  { weight: 8,  cmd: 'PATROL' },
-  { weight: 5,  cmd: 'STRETCH' },
-  { weight: 10, cmd: 'JOY' },
   { weight: 5,  cmd: 'PROUD' },
-  { weight: 8,  cmd: 'ADAPT' },
   { weight: 5,  cmd: 'TEACH', teach: true },
   { weight: 4,  cmd: 'DREAM', dream: true },
-  { weight: 3,  cmd: 'COMPOSE-ROUTINE' },
-  { weight: 3,  cmd: 'INVENT-STRATEGY' },
   { weight: 4,  cmd: 'CHALLENGES' },
   { weight: 3,  cmd: 'ENERGY' },
   { weight: 12, cmd: null }, // idle
@@ -668,6 +662,12 @@ input.addEventListener('keydown', (e) => {
       case 'DEPTH':
         appendOutput(`evolutionary depth: ${mesh._landscapeDepth || 0}\n`, 'output');
         break;
+      case 'PERSONALITY': {
+        const f = totalFitness;
+        const label = f > 50 ? 'mentor' : f > 20 ? 'collaborator' : f > 10 ? 'explorer' : f > 0 ? 'survivor' : 'newborn';
+        appendOutput(`personality: ${label}\n`, 'output');
+        break;
+      }
       default:
         handled = false;
     }
