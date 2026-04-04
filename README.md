@@ -18,7 +18,7 @@ cargo install unit
 
 ```
 $ unit
-unit v0.21.0 -- seed online
+unit v0.23.0 -- seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
 > 2 3 + .
 5  ok
@@ -41,8 +41,13 @@ services, evolves programs through genetic programming, distributes
 computation across a mesh, persists its brain as human-readable JSON,
 and connects across machines over the internet.
 
+It discovers problems it can't solve, broadcasts them as fitness
+challenges, evolves solutions, and installs them as new words the
+colony inherits. Every operation costs metabolic energy. Solved
+challenges generate harder ones — open-ended evolution with no ceiling.
+
 Forth is the brain. S-expressions are the voice. The mesh is the body.
-Zero external dependencies. ~25,000 lines of Rust + Forth.
+Zero external dependencies. ~30,000 lines of Rust + Forth + Go.
 
 ## The Five Concerns
 
@@ -91,6 +96,83 @@ Tournament selection, crossover, 5 token-level mutation operators (swap,
 insert, delete, replace, double). Each candidate evaluated in a sandboxed
 VM with step limit. On a mesh, best programs migrate between units every
 100 generations.
+
+## Immune System
+
+When a unit can't solve a problem — a failed goal, a timed-out
+distributed sub-goal, a manual report — it registers the failure as a
+fitness challenge. The challenge broadcasts to the mesh. Every unit in
+the colony evolves solutions in parallel. The first solution that passes
+verification is installed as a dictionary word (SOL-*) that children
+inherit via SPAWN.
+
+```
+> GP-EVOLVE
+[gen 0] WINNER: "0 1 10 0 DO OVER + SWAP LOOP DROP ." (fitness=890)
+[immune] learned word: SOL-FIB10
+[landscape] depth 55: generated 3 new challenges from 'fib10'
+
+> CHALLENGES
+--- 4 challenges ---
+  #11271 fib10 [SOLVED] reward=100
+  #11272 fib10-short9 [unsolved] reward=120
+  #11273 fib15 [unsolved] reward=150
+  #11274 square-55 [unsolved] reward=80
+
+> SOL-FIB10 .
+55  ok
+
+> IMMUNE-STATUS
+challenges: 4 (1 solved, 3 unsolved)
+colony antibodies: 1
+  words: SOL-FIB10
+```
+
+## Metabolic Energy
+
+Every operation costs energy. Units that run out are throttled — they
+still function but at reduced capacity.
+
+```
+> ENERGY
+energy: 1097/5000 (earned: 102, spent: 5, efficiency: 20.40)
+
+> METABOLISM
+--- costs ---
+  spawn: 200
+  gp generation: 5
+  eval per 1000 steps: 1
+  mesh send: 1
+--- rewards ---
+  task success: 50
+  challenge solved: 100
+  passive regen: 1/tick
+```
+
+Energy persists across HIBERNATE/resume. Children inherit a fraction
+of the parent's energy — spawning is a real metabolic investment.
+
+## Open-Ended Evolution
+
+Solved challenges generate harder ones. The colony climbs an infinite
+ladder of increasing difficulty.
+
+```
+> DEPTH
+evolutionary depth: 55
+
+> LANDSCAPE
+--- landscape ---
+depth: 55
+challenges generated: 3
+environment: normal
+```
+
+ArithmeticLadder: fib(10) → fib(15) → fib(20) → ... with parsimony
+pressure (fewer tokens = higher reward). CompositionLadder: combine
+two solved challenges into a new one. Environment cycles through
+Normal / Harsh / Abundant / Competitive every 500 ticks, varying
+selection pressure.
 
 ## Distributed Computation
 
@@ -174,6 +256,23 @@ connected to 192.168.1.10:4201
 
 Gossip self-assembles: A tells B about C, the mesh grows.
 
+## Polyglot Organisms
+
+The S-expression protocol is language-independent. A Go organism joins
+the same mesh, evolving arithmetic expression trees instead of Forth.
+
+```sh
+# Terminal 1: Rust unit
+UNIT_PORT=4200 unit
+
+# Terminal 2: Go organism
+cd polyglot/go && go run . -peer 127.0.0.1:4200
+```
+
+The Go organism appears in the Rust unit's `PEERS` list, receives
+challenges, evolves solutions using expression trees, and broadcasts
+results. Different language, different mutation strategy, same protocol.
+
 ## Swarm Mode
 
 ```
@@ -255,11 +354,15 @@ src/
 │   ├── mod.rs        # VM struct, interpreter, dispatch (~200 primitives)
 │   ├── primitives.rs # stack, arithmetic, memory, I/O
 │   ├── compiler.rs   # definitions, control flow, prelude loader
-│   └── tests.rs      # 132 tests
+│   └── tests.rs      # VM tests
 ├── types.rs          # Cell (i64), Entry, Instruction enum
 ├── mesh.rs           # UDP gossip, peer discovery, word sharing, cross-machine
 ├── sexp.rs           # S-expression parser, serializer, Forth translator
 ├── evolve.rs         # Genetic programming engine
+├── challenges.rs     # Challenge registry, immune system
+├── discovery.rs      # Problem detection from failures
+├── energy.rs         # Metabolic energy system
+├── landscape.rs      # Dynamic fitness landscape, environment cycles
 ├── distgoal.rs       # Distributed goal splitting and collection
 ├── goals.rs          # Goal registry, task decomposition
 ├── snapshot.rs       # JSON snapshots, persistence, resurrection
@@ -267,7 +370,7 @@ src/
 ├── persist.rs        # Binary state serialization
 ├── platform.rs       # Platform detection (native vs WASM)
 ├── wasm_entry.rs     # WASM C FFI bindings
-├── prelude.fs        # Forth prelude (~500 lines)
+├── prelude.fs        # Forth prelude (~600 lines)
 ├── features/
 │   ├── io_words.rs   # file, HTTP, shell, env
 │   ├── mutation.rs   # self-mutation engine, smart mutation
@@ -275,9 +378,20 @@ src/
 │   ├── monitor.rs    # watches, alerts, dashboard, scheduler
 │   └── ws_bridge.rs  # WebSocket bridge (raw RFC 6455)
 └── main.rs           # feature wiring, REPL, CLI, entry point
+
+polyglot/go/          # Go organism (expression trees, goroutines)
+├── main.go           # entry point, gossip loop, periodic evolution
+├── sexp/             # S-expression parser
+├── mesh/             # UDP mesh networking
+├── evolve/           # GP engine with expression trees
+└── challenge/        # challenge/solution protocol
+
+docs/
+├── unit-whitepaper-2026.pdf
+└── formal-analysis.md
 ```
 
-132 tests. Zero dependencies. ~25,000 lines of Rust + Forth.
+173+ tests. Zero dependencies. ~30,000 lines of Rust + Forth + Go.
 
 ## All the Words
 
@@ -365,6 +479,19 @@ src/
 | `GP-EVOLVE` | run 10 generations (call repeatedly to continue) |
 | `GP-STATUS` `GP-BEST` | inspect evolution state |
 | `GP-STOP` `GP-RESET` | control evolution |
+
+### Immune System & Energy
+
+| Word | Description |
+|------|-------------|
+| `CHALLENGES` | list all challenges with status and reward |
+| `IMMUNE-STATUS` | summary: solved, unsolved, antibody count |
+| `ANTIBODIES` | list learned SOL-* words |
+| `ENERGY` | current energy level and efficiency |
+| `METABOLISM` | full metabolic report with cost/reward table |
+| `FEED` | `( n -- )` manually add energy (capped at 500) |
+| `LANDSCAPE` | landscape status: depth, environment |
+| `DEPTH` | evolutionary depth metric |
 
 ### Goals & Tasks
 
