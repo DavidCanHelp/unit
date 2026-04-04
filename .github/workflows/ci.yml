@@ -21,7 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy -- -D warnings
       - run: cargo build --release
+      - run: cargo test
       - run: chmod +x tests/integration.sh && ./tests/integration.sh ./target/release/unit
       - uses: actions/upload-artifact@v4
         with:
@@ -42,9 +46,21 @@ jobs:
           name: web
           path: web/
 
+  go-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: go build ./...
+        working-directory: polyglot/go
+      - run: go test ./...
+        working-directory: polyglot/go
+
   deploy-pages:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: wasm-build
+    needs: [native-build, wasm-build, go-build]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
