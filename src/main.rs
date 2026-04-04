@@ -28,6 +28,9 @@ pub mod discovery;
 // --- Metabolic energy system ---
 pub mod energy;
 
+// --- Dynamic fitness landscape ---
+pub mod landscape;
+
 // --- Core nanobot ---
 #[allow(dead_code)]
 pub mod mesh;
