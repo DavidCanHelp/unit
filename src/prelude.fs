@@ -367,6 +367,7 @@ VARIABLE OBS-COUNT
   ." MORE: HELP-STACK HELP-MATH HELP-MESH HELP-GOALS" CR
   ."       HELP-MONITOR HELP-SPAWN HELP-IO HELP-COLONY" CR
   ."       HELP-PERSIST HELP-EVOLVE HELP-DIST HELP-MEMORY" CR
+  ."       HELP-IMMUNE" CR
 ;
 
 : HELP-STACK
@@ -497,6 +498,16 @@ VARIABLE OBS-COUNT
   ."   IO-LOG                      Show I/O audit trail" CR
 ;
 
+: HELP-IMMUNE
+  CR ." === Immune System ===" CR CR
+  ."   CHALLENGES                   List all challenges" CR
+  ."   IMMUNE-STATUS                Solved/unsolved counts" CR
+  ."   ANTIBODIES                   List learned sol-* words" CR CR
+  ."   GP-EVOLVE now picks from the challenge registry." CR
+  ."   When a solution is found, it becomes a dictionary word" CR
+  ."   (sol-{name}) that children inherit." CR
+;
+
 : HELP-MEMORY
   CR ." === Memory ===" CR CR
   ."   HERE ( -- addr )            Current data space pointer" CR
@@ -555,6 +566,6 @@ VARIABLE OBS-COUNT
 ;
 
 \ --- Boot ---
-." unit v0.21.0 -- seed online" CR
+." unit v0.22.0 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
