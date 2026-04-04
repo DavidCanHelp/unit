@@ -25,6 +25,9 @@ pub mod challenges;
 // --- Problem discovery ---
 pub mod discovery;
 
+// --- Metabolic energy system ---
+pub mod energy;
+
 // --- Core nanobot ---
 #[allow(dead_code)]
 pub mod mesh;
