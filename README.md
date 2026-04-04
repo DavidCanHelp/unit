@@ -18,7 +18,7 @@ cargo install unit
 
 ```
 $ unit
-unit v0.23.0 -- seed online
+unit v0.23.1 -- seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
 > 2 3 + .
 5  ok
@@ -173,6 +173,14 @@ pressure (fewer tokens = higher reward). CompositionLadder: combine
 two solved challenges into a new one. Environment cycles through
 Normal / Harsh / Abundant / Competitive every 500 ticks, varying
 selection pressure.
+
+Units also evolve their own challenge generators through second-order
+evolution. A MetaEvolver maintains a population of 20 Forth programs
+that transform solved targets into new ones (e.g. "DUP 3 * 2 +" turns
+55 into 167). Generators are scored on whether they produce challenges
+in the sweet spot — solvable but non-trivial. The GP engine evolves
+solutions (first-order), the MetaEvolver evolves the problems
+(second-order). Use `GENERATORS` to inspect the population.
 
 ## Distributed Computation
 
@@ -391,7 +399,7 @@ docs/
 └── formal-analysis.md
 ```
 
-173+ tests. Zero dependencies. ~30,000 lines of Rust + Forth + Go.
+191+ tests. Zero dependencies. ~30,000 lines of Rust + Forth + Go.
 
 ## All the Words
 
@@ -492,6 +500,8 @@ docs/
 | `FEED` | `( n -- )` manually add energy (capped at 500) |
 | `LANDSCAPE` | landscape status: depth, environment |
 | `DEPTH` | evolutionary depth metric |
+| `GENERATORS` | list top generators by fitness and program |
+| `META-EVOLVE` | run one generation of generator evolution |
 
 ### Goals & Tasks
 
