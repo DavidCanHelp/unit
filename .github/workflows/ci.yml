@@ -58,9 +58,19 @@ jobs:
       - run: go test ./...
         working-directory: polyglot/go
 
+  python-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -v
+        working-directory: polyglot/python
+
   deploy-pages:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [native-build, wasm-build, go-build]
+    needs: [native-build, wasm-build, go-build, python-build]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
