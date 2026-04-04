@@ -2923,7 +2923,35 @@ impl VM {
             self.emit_str(&format!("SPAWN: {}\n", e));
             return;
         }
+
+        // Spawn economics: parent pays SPAWN_COST (200), child starts with
+        // parent_remaining/3 capped at INITIAL_ENERGY (1000). Both parent
+        // and child are in a more constrained metabolic state after reproduction.
+        self.energy.spend(energy::SPAWN_COST, "spawn");
+        let parent_energy = self.energy.energy;
+        let child_energy = (parent_energy / 3).min(energy::INITIAL_ENERGY);
+
+        // Temporarily set child's energy state for serialization.
+        let saved_energy = self.energy.energy;
+        let saved_earned = self.energy.total_earned;
+        let saved_spent = self.energy.total_spent;
+        let saved_peak = self.energy.peak_energy;
+        let saved_starving = self.energy.starving_ticks;
+        self.energy.energy = child_energy;
+        self.energy.total_earned = 0;
+        self.energy.total_spent = 0;
+        self.energy.peak_energy = child_energy;
+        self.energy.starving_ticks = 0;
+
         let state = self.build_state_for_spawn();
+
+        // Restore parent's energy state.
+        self.energy.energy = saved_energy;
+        self.energy.total_earned = saved_earned;
+        self.energy.total_spent = saved_spent;
+        self.energy.peak_energy = saved_peak;
+        self.energy.starving_ticks = saved_starving;
+
         let package = match spawn::build_package(&state) {
             Ok(p) => p,
             Err(e) => {
@@ -2936,7 +2964,6 @@ impl VM {
 
         match spawn::spawn_local(&package, parent_port, child_gen) {
             Ok((pid, port, child_id)) => {
-                self.energy.spend(energy::SPAWN_COST, "spawn");
                 self.spawn_state.children.push(spawn::ChildInfo {
                     pid,
                     port,
@@ -2945,9 +2972,10 @@ impl VM {
                 });
                 self.spawn_state.last_spawn = Some(Instant::now());
                 self.emit_str(&format!(
-                    "spawned child pid={} id={}\n",
+                    "spawned child pid={} id={} (energy: {})\n",
                     pid,
-                    mesh::id_to_hex(&child_id)
+                    mesh::id_to_hex(&child_id),
+                    child_energy
                 ));
             }
             Err(e) => self.emit_str(&format!("SPAWN: {}\n", e)),
