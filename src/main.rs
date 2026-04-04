@@ -31,6 +31,10 @@ pub mod energy;
 // --- Dynamic fitness landscape ---
 pub mod landscape;
 
+// --- Integration tests ---
+#[cfg(test)]
+mod integration_tests;
+
 // --- Core nanobot ---
 #[allow(dead_code)]
 pub mod mesh;
