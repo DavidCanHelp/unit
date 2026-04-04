@@ -260,19 +260,18 @@ ticks.
 
 ### 3.3 Spawn Economics
 
-Replication costs 200 energy. Currently, the child inherits the parent's
-full energy state via snapshot serialization — the spawn cost is deducted
-from the parent but the child starts with a copy of the parent's remaining
-energy. This means spawning is metabolically inexpensive for the child but
-costly for the parent.
+Replication costs 200 energy and gives the child energy/3 of the
+parent's remaining energy (capped at 1000). The child's lifetime
+stats (earned, spent, peak, starving ticks) are zeroed — a fresh
+metabolic start. This creates a meaningful reproductive investment:
 
-A future refinement would split energy between parent and child (e.g.
-child receives parent_energy / 3, parent keeps the rest), making
-reproduction a genuine resource investment where both parties start in a
-more constrained metabolic state.
+- A unit with 1000 energy that spawns pays 200, leaving 800, and the
+  child starts with min(800/3, 1000) = 266.
+- A unit with 300 energy that spawns pays 200, leaving 100, and the
+  child starts with min(100/3, 1000) = 33.
 
-The minimum viable energy for spawning is 200 (the cost). Spawning at
-minimum leaves the parent near zero energy, likely triggering throttling.
+The minimum viable energy for spawning is 200 (the cost), but spawning
+at minimum leaves both parent and child in precarious metabolic states.
 The optimal spawning strategy is to accumulate significantly above the
 cost threshold before replicating — a behavior that should emerge
 naturally from the energy dynamics without explicit programming.
@@ -309,11 +308,16 @@ evolution. Bedau et al. [9] identify several criteria for open-endedness:
    ability to solve increasingly difficult challenges will plateau at
    some difficulty level, creating a de facto ceiling.
 
-4. **Emergent dynamics not explicitly programmed**: Partially satisfied —
-   the challenge generators are hand-authored (ArithmeticLadder,
-   CompositionLadder), which means the types of challenges are
-   predetermined even if specific instances are not. True open-endedness
-   would require the challenge-generation mechanism itself to evolve.
+4. **Emergent dynamics not explicitly programmed**: Substantially
+   satisfied. Two hand-authored generators (ArithmeticLadder,
+   CompositionLadder) produce predetermined challenge types. But the
+   MetaEvolver maintains a population of 20 generator programs that
+   evolve through second-order evolution — the generators themselves
+   are emergent, not hand-authored. The specific programs that generate
+   challenges (e.g. "DUP 3 * 2 +") are discovered by the system, not
+   designed by the programmer. What remains hand-authored is the
+   meta-fitness function that scores generators and the token vocabulary
+   they mutate over. See Section 4.4 for detailed analysis.
 
 ### 4.2 Environmental Variation
 
@@ -338,10 +342,63 @@ predictable. Truly open-ended evolution might benefit from stochastic
 environment changes, where the timing and nature of environmental
 shifts are themselves unpredictable.
 
-### 4.3 Limitations and Future Criteria
+### 4.3 Second-Order Evolution
 
-Unit does not yet satisfy the strongest definitions of open-ended
-evolution. Key gaps:
+The MetaEvolver introduces second-order evolution: the system evolves
+programs that generate the problems that other programs evolve to solve.
+This is a qualitative step beyond first-order GP.
+
+**Mechanism.** A generator genome is a Forth program operating over a
+limited vocabulary (integers 0–20, arithmetic +/-/*, stack ops DUP/SWAP/
+OVER/DROP, and shortcuts 1+/1-/2*/2/). When a challenge is solved, each
+generator in the population of 20 is evaluated: the solved target value
+is pushed onto a simulated stack, the generator program executes, and the
+resulting value becomes a proposed new challenge target.
+
+**Generator fitness** is scored by a lightweight stack simulator (no full
+VM required):
+
+| Output | Score | Rationale |
+|--------|-------|-----------|
+| Stack underflow/crash | 0 | Useless generator |
+| Same as input | 1 | Trivially easy (no new challenge) |
+| Negative or >1,000,000 | 5 | Likely unsolvable by GP |
+| Moderate increase (0.5–3× digits) | 100–130 | Sweet spot of difficulty |
+| Simple multiple of input | 80 | Penalty for low creativity |
+
+Fitness is blended with history via exponential moving average
+(0.7 × old + 0.3 × new), preventing a single evaluation from
+dominating.
+
+**Coevolutionary dynamic.** The GP engine and MetaEvolver form a
+coevolutionary system:
+
+1. GP evolves solutions to challenges (first-order)
+2. MetaEvolver evolves generators that produce challenges (second-order)
+3. Better generators create challenges in the difficulty sweet spot
+4. Those challenges drive GP to evolve more sophisticated solutions
+5. Those solutions, when used as inputs to generators, produce yet
+   harder challenges
+
+This creates a ratchet: the difficulty of challenges increases not
+because of a hand-designed ladder but because the generators that
+produce harder-but-solvable challenges are selected for.
+
+**Theoretical significance.** In the taxonomy of Packard [10], this
+is a transition from "evolutionary search in a fixed fitness landscape"
+to "coevolution of the landscape itself." The fitness function for
+first-order evolution (score_candidate) remains fixed, but the
+*challenges* that define the targets evolve. This is analogous to
+the distinction in biology between adaptation to a fixed environment
+and adaptation in an arms-race ecosystem.
+
+**What this does not yet achieve.** The meta-fitness function (what
+makes a "good" generator — the scoring in evaluate_generator) is still
+hand-defined. The token vocabulary for generator mutation is hand-selected.
+A third level of evolution — evolving the meta-fitness function itself —
+would be needed for fully self-referential open-endedness.
+
+### 4.4 Remaining Limitations
 
 - **Activity statistics**: Bedau's "class" metric (measuring the
   rate at which genuinely new components appear) is not tracked.
@@ -349,9 +406,10 @@ evolution. Key gaps:
   solution diversity (distinct programs solving the same challenge)
   would provide stronger evidence.
 
-- **Emergent challenge generation**: The current generators are
-  authored, not evolved. A system where units evolve their own
-  challenge-generation strategies would be more strongly open-ended.
+- **Meta-meta-evolution**: The generator fitness function is authored.
+  Evolving the fitness function for generators (third-order evolution)
+  would strengthen the open-endedness claim further but introduces
+  risks of fitness collapse.
 
 - **Ecological dynamics**: With polyglot organisms, niche
   differentiation exists in principle (Forth vs. expression trees)
@@ -436,8 +494,9 @@ but adds protocol complexity.
 | Challenge consistency | Eventual | Monotonic solved-status lattice |
 | Mutation robustness | >95% executable | Forth concatenative structure |
 | Energy stability | Bounded oscillation | Throttling negative feedback loop |
-| Spawn viability | Minimum 200 energy | Hard cost threshold |
+| Spawn viability | Minimum 200 energy | Hard cost threshold, child gets parent/3 |
 | Open-ended depth | Monotonically increasing | Solve→generate cycle |
+| Emergent generators | Second-order evolution | MetaEvolver population of 20 |
 | Cross-species interop | Protocol-level | S-expression wire format |
 
 ---
@@ -458,3 +517,6 @@ Self-replicating Programs Emerge from Simple Interaction," arXiv:2406.19108, 202
 
 [9] M. A. Bedau et al., "Open Problems in Artificial Life," Artificial Life,
 vol. 6, pp. 363–376, 2000.
+
+[10] N. H. Packard, "Intrinsic Adaptation in a Simple Model for Evolution,"
+in Artificial Life, Addison-Wesley, 1989.
