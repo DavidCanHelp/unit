@@ -44,6 +44,11 @@
   #prompt { color: #00ff88; margin-right: 8px; line-height: 24px; }
   #input { flex: 1; background: transparent; border: none; outline: none; color: #00ff88; font-family: inherit; font-size: 14px; caret-color: #00ff88; }
   .output { color: #bbb; } .error { color: #ff4444; } .info { color: #555; } .mesh-event { color: #886; } .tutorial-msg { color: #3a6a3a; font-style: italic; }
+  #genome-panel { display:none; position:absolute; top:40px; right:8px; width:280px; max-height:50vh; overflow-y:auto; background:#0d0d0dee; border:1px solid #333; border-radius:4px; padding:8px 10px; font-size:11px; color:#00ff88; z-index:10; }
+  #genome-panel .gp-title { color:#888; font-size:10px; margin-top:6px; } #genome-panel .gp-val { color:#bbb; }
+  #genome-panel .gp-close { position:absolute; top:4px; right:8px; cursor:pointer; color:#666; font-size:14px; }
+  #genome-panel .gp-close:hover { color:#ff4444; }
+  #genome-cmd { width:100%; background:#111; border:1px solid #333; color:#00ff88; font-family:monospace; font-size:11px; padding:2px 4px; margin-top:6px; outline:none; }
 </style>
 </head>
 <body>
@@ -60,7 +65,7 @@
     <a href="https://crates.io/crates/unit">crates.io</a>
   </div>
 </div>
-<div id="viz"><canvas id="viz-canvas"></canvas><span id="viz-label"></span></div>
+<div id="viz" style="position:relative"><canvas id="viz-canvas"></canvas><span id="viz-label"></span><div id="genome-panel"><span class="gp-close" onclick="closeGenome()">x</span><div id="genome-content"></div><input id="genome-cmd" placeholder="run command on this unit..." /></div></div>
 <div id="chatter"></div>
 <div id="terminal" onclick="document.getElementById('input').focus()"></div>
 <div id="tutorial-bar"></div>
@@ -231,7 +236,10 @@ function vizTick() {
     ctx.beginPath(); ctx.arc(n.x,n.y,pr+8,0,Math.PI*2); ctx.fillStyle = gc; ctx.fill();
     ctx.beginPath(); ctx.arc(n.x,n.y,pr,0,Math.PI*2);
     ctx.fillStyle = n.color + Math.floor(n.alpha*200).toString(16).padStart(2,'0');
-    ctx.fill(); ctx.strokeStyle = n.color+'44'; ctx.lineWidth=1; ctx.stroke();
+    ctx.fill();
+    if (n.id === selectedNodeId) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; }
+    else { ctx.strokeStyle = n.color+'44'; ctx.lineWidth = 1; }
+    ctx.stroke();
     ctx.fillStyle = '#888'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
     ctx.fillText(n.label, n.x, n.y+pr+12);
     if (n.fitness > 0) ctx.fillText('f:'+n.fitness, n.x, n.y+pr+21);
@@ -263,6 +271,64 @@ function vizTick() {
 }
 requestAnimationFrame(vizTick);
 window.addEventListener('resize', () => { if (vizMode > 0) resizeCanvas(); });
+
+// Genome inspector — click a node to inspect it.
+let selectedNodeId = null, genomeInterval = null;
+const genomePanel = document.getElementById('genome-panel');
+const genomeContent = document.getElementById('genome-content');
+const genomeCmd = document.getElementById('genome-cmd');
+
+vizCanvas.addEventListener('click', (e) => {
+  const rect = vizCanvas.getBoundingClientRect();
+  const dpr = devicePixelRatio || 1;
+  const mx = (e.clientX - rect.left) * dpr, my = (e.clientY - rect.top) * dpr;
+  let hit = null;
+  for (const n of vizNodes) {
+    const dx = n.x * dpr - mx, dy = n.y * dpr - my;
+    if (Math.sqrt(dx*dx + dy*dy) < 25 * dpr) { hit = n; break; }
+  }
+  if (hit) { selectedNodeId = hit.id; openGenome(); }
+  else closeGenome();
+});
+
+function openGenome() {
+  genomePanel.style.display = 'block';
+  updateGenome();
+  if (genomeInterval) clearInterval(genomeInterval);
+  genomeInterval = setInterval(updateGenome, 2000);
+}
+function closeGenome() {
+  genomePanel.style.display = 'none';
+  selectedNodeId = null;
+  if (genomeInterval) { clearInterval(genomeInterval); genomeInterval = null; }
+}
+function updateGenome() {
+  if (!mesh || !selectedNodeId) return;
+  const unit = mesh.units.find(u => u.id === selectedNodeId);
+  if (!unit) { closeGenome(); return; }
+  const eff = unit.energySpent > 0 ? (unit.energyEarned / unit.energySpent).toFixed(1) : '0.0';
+  const solWords = (unit.vm.eval('WORDS') || '').split(/\s+/).filter(w => w.startsWith('SOL-'));
+  const stackOut = unit.vm.eval('.S').trim();
+  let html = `<b>#${unit.id}</b><br>`;
+  html += `<span class="gp-title">fitness</span> <span class="gp-val">${unit.fitness}</span><br>`;
+  html += `<span class="gp-title">energy</span> <span class="gp-val">${unit.energy}/${unit.energyMax} (eff: ${eff})</span><br>`;
+  html += `<span class="gp-title">tasks</span> <span class="gp-val">${unit.tasksCompleted}</span><br>`;
+  html += `<span class="gp-title">stack</span> <span class="gp-val">${stackOut || '(empty)'}</span><br>`;
+  if (solWords.length) html += `<span class="gp-title">antibodies</span> <span class="gp-val">${solWords.join(' ')}</span><br>`;
+  if (unit.userWords.length) html += `<span class="gp-title">user words</span> <span class="gp-val">${unit.userWords.length} defined</span><br>`;
+  if (unit.learned.length) html += `<span class="gp-title">learned</span> <span class="gp-val">${unit.learned.join(' ')}</span><br>`;
+  genomeContent.innerHTML = html;
+}
+genomeCmd.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const cmd = genomeCmd.value.trim();
+  if (!cmd || !selectedNodeId || !mesh) return;
+  const unit = mesh.units.find(u => u.id === selectedNodeId);
+  if (!unit) return;
+  const result = unit.vm.eval(cmd);
+  if (result) genomeContent.innerHTML += `<span class="gp-val">&gt; ${cmd}<br>${result.replace(/\n/g,'<br>')}</span>`;
+  genomeCmd.value = '';
+});
 
 // =========================================================================
 // Autonomous Behavior — units come alive
