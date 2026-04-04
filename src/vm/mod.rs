@@ -264,6 +264,8 @@ pub(crate) const P_METABOLISM: usize = 484;
 pub(crate) const P_FEED: usize = 485;
 pub(crate) const P_LANDSCAPE: usize = 486;
 pub(crate) const P_DEPTH: usize = 487;
+pub(crate) const P_GENERATORS: usize = 488;
+pub(crate) const P_META_EVOLVE: usize = 489;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -657,6 +659,8 @@ impl VM {
             ("FEED", P_FEED, false),
             ("LANDSCAPE", P_LANDSCAPE, false),
             ("DEPTH", P_DEPTH, false),
+            ("GENERATORS", P_GENERATORS, false),
+            ("META-EVOLVE", P_META_EVOLVE, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1151,6 +1155,20 @@ impl VM {
             P_DEPTH => {
                 let d = self.landscape.depth();
                 self.emit_str(&format!("evolutionary depth: {}\n", d));
+            }
+            P_GENERATORS => {
+                let s = self.landscape.meta.format_top(5);
+                self.emit_str(&s);
+            }
+            P_META_EVOLVE => {
+                let mut rng = crate::features::mutation::SimpleRng::new(
+                    self.landscape.meta.generation as u64 + 1
+                );
+                self.landscape.meta.evolve_generators(&mut rng);
+                self.emit_str(&format!(
+                    "meta-evolution generation {}\n",
+                    self.landscape.meta.generation
+                ));
             }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),

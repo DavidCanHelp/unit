@@ -7,6 +7,7 @@
 
 use crate::challenges::{Challenge, ChallengeOrigin};
 use crate::evolve;
+use crate::features::mutation::SimpleRng;
 
 // ---------------------------------------------------------------------------
 // Fibonacci helper
@@ -285,6 +286,245 @@ impl EnvironmentCycle {
 }
 
 // ---------------------------------------------------------------------------
+// Meta-evolution: evolve challenge generators
+// ---------------------------------------------------------------------------
+
+/// A generator genome is a Forth program that transforms a number on the
+/// stack into a new target number for a challenge.
+#[derive(Clone, Debug)]
+pub struct GeneratorGenome {
+    pub program: String,
+    pub fitness: f64,
+    pub challenges_generated: u32,
+    pub challenges_solved: u32,
+    pub challenges_unsolvable: u32,
+}
+
+impl GeneratorGenome {
+    pub fn new(program: &str) -> Self {
+        GeneratorGenome {
+            program: program.to_string(),
+            fitness: 0.0,
+            challenges_generated: 0,
+            challenges_solved: 0,
+            challenges_unsolvable: 0,
+        }
+    }
+}
+
+/// Vocabulary for generator mutations.
+const GEN_VOCAB: &[&str] = &[
+    "1", "2", "3", "5", "7", "10", "20",
+    "+", "-", "*",
+    "DUP", "SWAP", "OVER", "DROP",
+    "1+", "1-", "2*", "2/",
+];
+
+fn random_gen_token(rng: &mut SimpleRng) -> &'static str {
+    GEN_VOCAB[rng.next_usize(GEN_VOCAB.len())]
+}
+
+/// Mutate a generator program using token-level operators.
+pub fn mutate_generator(program: &str, rng: &mut SimpleRng) -> String {
+    let mut tokens = evolve::tokenize(program);
+    if tokens.is_empty() {
+        tokens.push(random_gen_token(rng).to_string());
+        return evolve::detokenize(&tokens);
+    }
+    match rng.next_usize(4) {
+        0 => { // Replace
+            let pos = rng.next_usize(tokens.len());
+            tokens[pos] = random_gen_token(rng).to_string();
+        }
+        1 => { // Insert
+            if tokens.len() < 10 {
+                let pos = rng.next_usize(tokens.len() + 1);
+                tokens.insert(pos, random_gen_token(rng).to_string());
+            }
+        }
+        2 => { // Delete
+            if tokens.len() > 1 {
+                let pos = rng.next_usize(tokens.len());
+                tokens.remove(pos);
+            }
+        }
+        _ => { // Swap
+            if tokens.len() >= 2 {
+                let a = rng.next_usize(tokens.len());
+                let b = rng.next_usize(tokens.len());
+                tokens.swap(a, b);
+            }
+        }
+    }
+    evolve::detokenize(&tokens)
+}
+
+/// Evaluate a generator: run its program with `input_val` on the stack.
+/// Returns (proposed_target, fitness_score).
+pub fn evaluate_generator(program: &str, input_val: i64) -> (Option<i64>, f64) {
+    // Build a Forth snippet: push input, run generator, print result.
+    let code = format!("{} {}", input_val, program);
+    // We can't run a full VM here (no sandbox access at this level),
+    // so we do a simple stack simulation for the limited vocabulary.
+    match simulate_stack(&code) {
+        Some(result) => {
+            if result == input_val { return (Some(result), 1.0); } // trivial
+            if result <= 0 || result > 1_000_000 { return (Some(result), 5.0); } // likely unsolvable
+            // Score based on "interestingness"
+            let input_digits = digit_count(input_val);
+            let result_digits = digit_count(result);
+            let digit_ratio = result_digits as f64 / input_digits.max(1) as f64;
+            let mut score = 100.0;
+            // Bonus for moderate difficulty increase
+            if digit_ratio > 0.5 && digit_ratio < 3.0 { score += 30.0; }
+            // Penalty for being a simple multiple
+            if input_val != 0 && result % input_val == 0 && result / input_val < 4 {
+                score -= 20.0;
+            }
+            (Some(result), score)
+        }
+        None => (None, 0.0), // crash
+    }
+}
+
+fn digit_count(n: i64) -> u32 {
+    if n == 0 { return 1; }
+    let mut d = 0;
+    let mut v = n.unsigned_abs();
+    while v > 0 { d += 1; v /= 10; }
+    d
+}
+
+/// Simple stack simulator for the generator vocabulary.
+fn simulate_stack(code: &str) -> Option<i64> {
+    let mut stack: Vec<i64> = Vec::new();
+    for token in code.split_whitespace() {
+        match token {
+            "DUP" => { let a = *stack.last()?; stack.push(a); }
+            "DROP" => { stack.pop()?; }
+            "SWAP" => {
+                let len = stack.len();
+                if len < 2 { return None; }
+                stack.swap(len - 1, len - 2);
+            }
+            "OVER" => {
+                let len = stack.len();
+                if len < 2 { return None; }
+                stack.push(stack[len - 2]);
+            }
+            "+" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.wrapping_add(b)); }
+            "-" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.wrapping_sub(b)); }
+            "*" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.saturating_mul(b)); }
+            "1+" => { let a = stack.pop()?; stack.push(a + 1); }
+            "1-" => { let a = stack.pop()?; stack.push(a - 1); }
+            "2*" => { let a = stack.pop()?; stack.push(a * 2); }
+            "2/" => { let a = stack.pop()?; stack.push(a / 2); }
+            _ => {
+                if let Ok(n) = token.parse::<i64>() {
+                    stack.push(n);
+                }
+                // Unknown tokens ignored (graceful)
+            }
+        }
+        // Safety: cap stack size
+        if stack.len() > 20 { return None; }
+    }
+    stack.last().copied()
+}
+
+#[derive(Clone, Debug)]
+pub struct GeneratorPopulation {
+    pub genomes: Vec<GeneratorGenome>,
+    pub generation: u32,
+    pub best: Option<GeneratorGenome>,
+}
+
+impl GeneratorPopulation {
+    pub fn new(rng: &mut SimpleRng) -> Self {
+        let seeds = vec!["5 +", "DUP *", "2 *", "1+", "3 *", "DUP 2 * +", "10 +", "DUP 3 * 2 +"];
+        let mut genomes: Vec<GeneratorGenome> = seeds.iter()
+            .map(|s| GeneratorGenome::new(s))
+            .collect();
+        // Fill to 20 with mutations of seeds
+        while genomes.len() < 20 {
+            let base = &seeds[rng.next_usize(seeds.len())];
+            genomes.push(GeneratorGenome::new(&mutate_generator(base, rng)));
+        }
+        GeneratorPopulation { genomes, generation: 0, best: None }
+    }
+
+    /// Run one generation of meta-evolution.
+    pub fn evolve_generators(&mut self, rng: &mut SimpleRng) {
+        // Sort by fitness descending.
+        self.genomes.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
+
+        if let Some(best) = self.genomes.first() {
+            self.best = Some(best.clone());
+        }
+
+        let pop_size = self.genomes.len();
+        let elites = 3.min(pop_size);
+        let mut next = Vec::with_capacity(pop_size);
+
+        // Keep elites
+        for g in self.genomes.iter().take(elites) {
+            next.push(g.clone());
+        }
+
+        // Produce offspring
+        while next.len() < pop_size {
+            // Tournament select
+            let mut best_idx = rng.next_usize(self.genomes.len());
+            for _ in 0..2 {
+                let idx = rng.next_usize(self.genomes.len());
+                if self.genomes[idx].fitness > self.genomes[best_idx].fitness {
+                    best_idx = idx;
+                }
+            }
+            let parent = &self.genomes[best_idx];
+            let child_prog = mutate_generator(&parent.program, rng);
+            next.push(GeneratorGenome::new(&child_prog));
+        }
+
+        self.genomes = next;
+        self.generation += 1;
+    }
+
+    /// Evaluate all generators against a solved target value.
+    pub fn evaluate_all(&mut self, solved_target: i64) {
+        for g in &mut self.genomes {
+            let (_, score) = evaluate_generator(&g.program, solved_target);
+            // Blend with history (moving average).
+            g.fitness = g.fitness * 0.7 + score * 0.3;
+        }
+    }
+
+    /// Run the best generator to produce a new target.
+    pub fn generate_target(&mut self, solved_target: i64) -> Option<(i64, String)> {
+        let best = self.best.as_ref().or_else(|| self.genomes.first())?;
+        let (target, _) = evaluate_generator(&best.program, solved_target);
+        let target = target?;
+        if target <= 0 || target > 1_000_000 || target == solved_target {
+            return None;
+        }
+        Some((target, best.program.clone()))
+    }
+
+    pub fn format_top(&self, n: usize) -> String {
+        let mut sorted = self.genomes.clone();
+        sorted.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        let mut out = format!("--- generator population (top {}) ---\n", n.min(sorted.len()));
+        for (i, g) in sorted.iter().take(n).enumerate() {
+            out.push_str(&format!(
+                "  {}. \"{}\" fitness={:.0} generated={} solved={}\n",
+                i + 1, g.program, g.fitness, g.challenges_generated, g.challenges_solved
+            ));
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Landscape engine
 // ---------------------------------------------------------------------------
 
@@ -294,15 +534,20 @@ pub struct LandscapeEngine {
     pub environment: EnvironmentCycle,
     pub challenges_generated: u64,
     pub depth: u32,
+    pub meta: GeneratorPopulation,
+    pub evolved_count: u64,
 }
 
 impl LandscapeEngine {
     pub fn new() -> Self {
+        let mut rng = SimpleRng::new(0xCAFE);
         LandscapeEngine {
             generators: vec![GeneratorKind::Arithmetic, GeneratorKind::Composition],
             environment: EnvironmentCycle::new(),
             challenges_generated: 0,
             depth: 0,
+            meta: GeneratorPopulation::new(&mut rng),
+            evolved_count: 0,
         }
     }
 
@@ -315,6 +560,7 @@ impl LandscapeEngine {
     ) -> Vec<Challenge> {
         let mut new_challenges = Vec::new();
 
+        // Authored generators (ArithmeticLadder, CompositionLadder).
         for gen in &self.generators {
             let parent_difficulty = gen.difficulty_level(challenge);
             let generated = gen.generate_next(
@@ -327,6 +573,47 @@ impl LandscapeEngine {
                 }
                 new_challenges.push(ch);
             }
+        }
+
+        // Evolved generator: run the best meta-evolved generator.
+        let solved_target: i64 = challenge.target_output.trim().parse().unwrap_or(0);
+        if solved_target > 0 {
+            // Evaluate all generators against this solved target.
+            self.meta.evaluate_all(solved_target);
+            // Try to generate a new challenge from the best generator.
+            if let Some((new_target, gen_program)) = self.meta.generate_target(solved_target) {
+                let h = {
+                    let mut h: u64 = 0xcbf29ce484222325;
+                    for b in gen_program.bytes() { h ^= b as u64; h = h.wrapping_mul(0x100000001b3); }
+                    h
+                };
+                new_challenges.push(Challenge {
+                    id: 0,
+                    name: format!("evolved-{:08x}", h & 0xFFFFFFFF),
+                    description: format!("evolved challenge from generator: {}", gen_program),
+                    target_output: format!("{} ", new_target),
+                    test_input: None,
+                    max_steps: 10000,
+                    seed_programs: vec![
+                        solution.to_string(),
+                        format!("{} .", new_target),
+                    ],
+                    origin: ChallengeOrigin::BuiltIn,
+                    reward: 80 + (self.meta.best.as_ref().map_or(0.0, |b| b.fitness) * 0.5) as i64,
+                    solved: false,
+                    solution: None,
+                    solver: None,
+                    attempts: 0,
+                });
+                self.evolved_count += 1;
+                // Update generator stats.
+                if let Some(ref mut best) = self.meta.best {
+                    best.challenges_generated += 1;
+                }
+            }
+            // Run one generation of meta-evolution.
+            let mut rng = SimpleRng::new(self.challenges_generated + 1);
+            self.meta.evolve_generators(&mut rng);
         }
 
         self.challenges_generated += new_challenges.len() as u64;
@@ -346,9 +633,21 @@ impl LandscapeEngine {
     }
 
     pub fn format_landscape(&self) -> String {
+        let authored = self.challenges_generated - self.evolved_count;
+        let best_gen = self.meta.best.as_ref()
+            .map(|b| format!("\"{}\"", b.program))
+            .unwrap_or_else(|| "(none)".into());
         format!(
-            "--- landscape ---\ndepth: {}\nchallenges generated: {}\nenvironment: {}\n",
-            self.depth, self.challenges_generated, self.current_environment()
+            "--- landscape ---\n\
+             depth: {}\n\
+             challenges generated: {} ({} authored, {} evolved)\n\
+             environment: {}\n\
+             authored generators: {}\n\
+             evolved generators: {} (best: {})\n",
+            self.depth, self.challenges_generated, authored, self.evolved_count,
+            self.current_environment(),
+            self.generators.len(),
+            self.meta.genomes.len(), best_gen,
         )
     }
 }
@@ -509,7 +808,10 @@ mod tests {
         };
         let generated = engine.on_challenge_solved(&ch, "42 .", &[&ch]);
         // Arithmetic won't match (no "fib" in name), composition needs 2 solved.
-        assert!(generated.is_empty());
+        // But meta-evolved generators may produce one from target 42.
+        // Authored generators produce 0, evolved may produce 0 or 1.
+        let authored = generated.iter().filter(|c| !c.name.starts_with("evolved-")).count();
+        assert_eq!(authored, 0);
     }
 
     #[test]
@@ -518,5 +820,72 @@ mod tests {
         let s = engine.format_landscape();
         assert!(s.contains("depth: 0"));
         assert!(s.contains("environment: normal"));
+        assert!(s.contains("evolved generators: 20"));
+    }
+
+    // --- Meta-evolution tests ---
+
+    #[test]
+    fn test_evaluate_generator_trivial() {
+        let (_, score) = evaluate_generator("", 55); // no-op, returns input
+        assert!(score <= 1.0);
+    }
+
+    #[test]
+    fn test_evaluate_generator_crash() {
+        let (_, score) = evaluate_generator("DROP DROP DROP", 55);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_evaluate_generator_valid() {
+        let (target, score) = evaluate_generator("5 +", 55);
+        assert_eq!(target, Some(60));
+        assert!(score > 50.0);
+    }
+
+    #[test]
+    fn test_evaluate_generator_square() {
+        let (target, _) = evaluate_generator("DUP *", 55);
+        assert_eq!(target, Some(3025));
+    }
+
+    #[test]
+    fn test_seed_generators_valid() {
+        let seeds = ["5 +", "DUP *", "2 *", "1+", "3 *"];
+        for seed in &seeds {
+            let (target, score) = evaluate_generator(seed, 55);
+            assert!(target.is_some(), "seed '{}' produced no output", seed);
+            assert!(score > 0.0, "seed '{}' scored 0", seed);
+        }
+    }
+
+    #[test]
+    fn test_meta_evolution_produces_next_gen() {
+        let mut rng = SimpleRng::new(42);
+        let mut pop = GeneratorPopulation::new(&mut rng);
+        assert_eq!(pop.genomes.len(), 20);
+        pop.evaluate_all(55);
+        pop.evolve_generators(&mut rng);
+        assert_eq!(pop.genomes.len(), 20);
+        assert_eq!(pop.generation, 1);
+        assert!(pop.best.is_some());
+    }
+
+    #[test]
+    fn test_simulate_stack() {
+        assert_eq!(simulate_stack("10 5 +"), Some(15));
+        assert_eq!(simulate_stack("7 DUP *"), Some(49));
+        assert_eq!(simulate_stack("3 2 * 1+"), Some(7));
+        assert_eq!(simulate_stack("DROP"), None); // underflow
+    }
+
+    #[test]
+    fn test_mutate_generator_valid() {
+        let mut rng = SimpleRng::new(99);
+        for _ in 0..20 {
+            let m = mutate_generator("5 +", &mut rng);
+            assert!(!m.is_empty());
+        }
     }
 }
