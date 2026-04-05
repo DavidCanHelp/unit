@@ -4,8 +4,8 @@
 // BEGIN/UNTIL/WHILE/REPEAT), VARIABLE, CONSTANT, CREATE/DOES>, string
 // literals, comments, and the prelude loader.
 
-use crate::types::{Cell, Entry, Instruction};
 use super::{P_DO_RT, P_LOOP_RT};
+use crate::types::{Cell, Entry, Instruction};
 
 impl super::VM {
     // -----------------------------------------------------------------------

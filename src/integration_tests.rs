@@ -39,14 +39,21 @@ mod tests {
         // Mark solved.
         assert!(reg.mark_solved(id, solution, test_node()));
         assert!(reg.get_challenge(id).unwrap().solved);
-        assert_eq!(reg.get_challenge(id).unwrap().solution.as_deref(), Some(solution));
+        assert_eq!(
+            reg.get_challenge(id).unwrap().solution.as_deref(),
+            Some(solution)
+        );
 
         // Feed to landscape — should generate harder challenges.
         let mut engine = LandscapeEngine::new();
         let solved = reg.get_challenge(id).unwrap().clone();
         let all_solved: Vec<&Challenge> = vec![&solved];
         let new = engine.on_challenge_solved(&solved, solution, &all_solved);
-        assert!(new.len() >= 2, "expected at least 2 child challenges, got {}", new.len());
+        assert!(
+            new.len() >= 2,
+            "expected at least 2 child challenges, got {}",
+            new.len()
+        );
 
         // Should contain fib15 and parsimony challenge.
         assert!(new.iter().any(|c| c.name.contains("fib15")));
@@ -86,7 +93,7 @@ mod tests {
         e.earn(CHALLENGE_SOLVE_REWARD, "challenge"); // +100
         e.earn(CHALLENGE_SOLVE_REWARD, "challenge"); // +100
         e.earn(CHALLENGE_SOLVE_REWARD, "challenge"); // +100
-        // Now at about -500 + 500 = 0, may need one more.
+                                                     // Now at about -500 + 500 = 0, may need one more.
         e.earn(TASK_REWARD, "task"); // +50, should push above 0
         assert!(!e.is_throttled());
         assert!(e.energy > 0);
@@ -103,7 +110,8 @@ mod tests {
 
         // Detect a goal failure.
         det.detect_goal_failure(
-            42, 7,
+            42,
+            7,
             "10 0 DO I SQUARE . LOOP",
             "unknown word SQUARE",
             Some("0 1 4 9 16 25 36 49 64 81 "),
@@ -126,9 +134,7 @@ mod tests {
 
         // Register in ChallengeRegistry.
         let mut reg = ChallengeRegistry::new(&test_node());
-        let id = reg.register_discovered(
-            &name, &desc, &target, None, seeds, test_node(), reward,
-        );
+        let id = reg.register_discovered(&name, &desc, &target, None, seeds, test_node(), reward);
         let ch = reg.get_challenge(id).unwrap();
         assert!(!ch.solved);
         assert_eq!(ch.reward, 50);
@@ -145,16 +151,23 @@ mod tests {
 
         // Solve fib10.
         let fib10 = Challenge {
-            id: 1, name: "fib10".into(), description: "".into(),
-            target_output: "55 ".into(), test_input: None, max_steps: 10000,
-            seed_programs: vec![], origin: ChallengeOrigin::BuiltIn,
-            reward: 100, solved: true,
+            id: 1,
+            name: "fib10".into(),
+            description: "".into(),
+            target_output: "55 ".into(),
+            test_input: None,
+            max_steps: 10000,
+            seed_programs: vec![],
+            origin: ChallengeOrigin::BuiltIn,
+            reward: 100,
+            solved: true,
             solution: Some("0 1 10 0 DO OVER + SWAP LOOP DROP .".into()),
-            solver: Some(test_node()), attempts: 1, solutions: vec![],
+            solver: Some(test_node()),
+            attempts: 1,
+            solutions: vec![],
         };
-        let gen1 = engine.on_challenge_solved(
-            &fib10, "0 1 10 0 DO OVER + SWAP LOOP DROP .", &[&fib10],
-        );
+        let gen1 =
+            engine.on_challenge_solved(&fib10, "0 1 10 0 DO OVER + SWAP LOOP DROP .", &[&fib10]);
         let depth1 = engine.depth();
         assert!(depth1 > 0, "depth should increase after fib10");
 
@@ -170,9 +183,8 @@ mod tests {
         fib15.solution = Some("0 1 15 0 DO OVER + SWAP LOOP DROP .".into());
         fib15.solver = Some(test_node());
         let all_solved = vec![&fib10, &fib15];
-        let gen2 = engine.on_challenge_solved(
-            &fib15, "0 1 15 0 DO OVER + SWAP LOOP DROP .", &all_solved,
-        );
+        let gen2 =
+            engine.on_challenge_solved(&fib15, "0 1 15 0 DO OVER + SWAP LOOP DROP .", &all_solved);
 
         // Should generate fib20.
         let fib20 = gen2.iter().find(|c| c.name == "fib20");
@@ -245,7 +257,10 @@ mod tests {
         // Merge solved into B — should propagate solved status.
         reg_b.merge_challenge(solved);
         assert!(reg_b.get_challenge(id).unwrap().solved);
-        assert_eq!(reg_b.get_challenge(id).unwrap().solution.as_deref(), Some("42 ."));
+        assert_eq!(
+            reg_b.get_challenge(id).unwrap().solution.as_deref(),
+            Some("42 .")
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -261,7 +276,9 @@ mod tests {
         e.spend(300, "gp");
         e.spend(150, "spawn");
         e.earn(200, "challenge");
-        for _ in 0..10 { e.tick(); }
+        for _ in 0..10 {
+            e.tick();
+        }
 
         // Verify consistency.
         assert_eq!(e.total_earned, 500 + 200 + 10); // 500 + 200 + 10 passive
@@ -320,26 +337,34 @@ mod tests {
         assert_eq!(env.apply_to_reward(100, 0), 100);
 
         // Advance to Harsh.
-        for _ in 0..500 { env.tick(); }
+        for _ in 0..500 {
+            env.tick();
+        }
         assert_eq!(env.current_condition(), "harsh");
         assert_eq!(env.apply_to_max_steps(10000), 5000);
         assert_eq!(env.apply_to_reward(100, 0), 200);
 
         // Advance to Abundant.
-        for _ in 0..500 { env.tick(); }
+        for _ in 0..500 {
+            env.tick();
+        }
         assert_eq!(env.current_condition(), "abundant");
         assert_eq!(env.apply_to_max_steps(10000), 20000);
         assert_eq!(env.apply_to_reward(100, 0), 100);
 
         // Advance to Competitive.
-        for _ in 0..500 { env.tick(); }
+        for _ in 0..500 {
+            env.tick();
+        }
         assert_eq!(env.current_condition(), "competitive");
         assert_eq!(env.apply_to_reward(100, 0), 100); // 100/(0+1) = 100
-        assert_eq!(env.apply_to_reward(100, 3), 25);  // 100/(3+1) = 25
-        assert_eq!(env.apply_to_reward(100, 9), 10);  // 100/(9+1) = 10
+        assert_eq!(env.apply_to_reward(100, 3), 25); // 100/(3+1) = 25
+        assert_eq!(env.apply_to_reward(100, 9), 10); // 100/(9+1) = 10
 
         // Full cycle back to Normal.
-        for _ in 0..500 { env.tick(); }
+        for _ in 0..500 {
+            env.tick();
+        }
         assert_eq!(env.current_condition(), "normal");
     }
 

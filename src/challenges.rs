@@ -4,9 +4,9 @@
 // be built-in, discovered from failures, or received from mesh peers.
 // The GP engine evolves solutions; solutions become dictionary words.
 
-use std::collections::HashMap;
 use crate::evolve::FitnessChallenge;
 use crate::mesh::NodeId;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,22 +76,25 @@ impl ChallengeRegistry {
         seeds: Vec<String>,
     ) -> ChallengeId {
         let id = self.next_id();
-        self.challenges.insert(id, Challenge {
+        self.challenges.insert(
             id,
-            name: name.to_string(),
-            description: format!("built-in challenge: {}", name),
-            target_output: target_output.to_string(),
-            test_input: None,
-            max_steps: 10000,
-            seed_programs: seeds,
-            origin: ChallengeOrigin::BuiltIn,
-            reward: 100,
-            solved: false,
-            solution: None,
-            solver: None,
-            attempts: 0,
-            solutions: vec![],
-        });
+            Challenge {
+                id,
+                name: name.to_string(),
+                description: format!("built-in challenge: {}", name),
+                target_output: target_output.to_string(),
+                test_input: None,
+                max_steps: 10000,
+                seed_programs: seeds,
+                origin: ChallengeOrigin::BuiltIn,
+                reward: 100,
+                solved: false,
+                solution: None,
+                solver: None,
+                attempts: 0,
+                solutions: vec![],
+            },
+        );
         id
     }
 
@@ -107,25 +110,28 @@ impl ChallengeRegistry {
         reward: i64,
     ) -> ChallengeId {
         let id = self.next_id();
-        self.challenges.insert(id, Challenge {
+        self.challenges.insert(
             id,
-            name: name.to_string(),
-            description: desc.to_string(),
-            target_output: target_output.to_string(),
-            test_input,
-            max_steps: 10000,
-            seed_programs,
-            origin: ChallengeOrigin::Discovered {
-                source_node,
-                discovered_at: 0,
+            Challenge {
+                id,
+                name: name.to_string(),
+                description: desc.to_string(),
+                target_output: target_output.to_string(),
+                test_input,
+                max_steps: 10000,
+                seed_programs,
+                origin: ChallengeOrigin::Discovered {
+                    source_node,
+                    discovered_at: 0,
+                },
+                reward,
+                solved: false,
+                solution: None,
+                solver: None,
+                attempts: 0,
+                solutions: vec![],
             },
-            reward,
-            solved: false,
-            solution: None,
-            solver: None,
-            attempts: 0,
-            solutions: vec![],
-        });
+        );
         id
     }
 
@@ -138,9 +144,7 @@ impl ChallengeRegistry {
                 ch.solver = Some(solver);
             }
             // Track all distinct solutions (cap at 20).
-            if ch.solutions.len() < 20
-                && !ch.solutions.iter().any(|(p, _)| p == solution)
-            {
+            if ch.solutions.len() < 20 && !ch.solutions.iter().any(|(p, _)| p == solution) {
                 ch.solutions.push((solution.to_string(), solver));
             }
             return is_first;
@@ -160,7 +164,10 @@ impl ChallengeRegistry {
                     let tokens = prog.split_whitespace().count();
                     out.push_str(&format!(
                         "  {}. \"{}\" ({} tokens) from {}\n",
-                        i + 1, prog, tokens, crate::mesh::id_to_hex(solver)
+                        i + 1,
+                        prog,
+                        tokens,
+                        crate::mesh::id_to_hex(solver)
                     ));
                 }
                 out
@@ -171,7 +178,9 @@ impl ChallengeRegistry {
 
     pub fn colony_diversity(&self) -> String {
         let solved: Vec<&Challenge> = self.challenges.values().filter(|c| c.solved).collect();
-        if solved.is_empty() { return "no solved challenges yet\n".to_string(); }
+        if solved.is_empty() {
+            return "no solved challenges yet\n".to_string();
+        }
         let total_solutions: usize = solved.iter().map(|c| c.solutions.len()).sum();
         let avg = total_solutions as f64 / solved.len() as f64;
         let most_diverse = solved.iter().max_by_key(|c| c.solutions.len());
@@ -180,15 +189,18 @@ impl ChallengeRegistry {
             solved.len(), total_solutions, avg
         );
         if let Some(md) = most_diverse {
-            out.push_str(&format!("most diverse: {} ({} solutions)\n", md.name, md.solutions.len()));
+            out.push_str(&format!(
+                "most diverse: {} ({} solutions)\n",
+                md.name,
+                md.solutions.len()
+            ));
         }
         out
     }
 
     pub fn get_unsolved(&self) -> Vec<&Challenge> {
-        let mut unsolved: Vec<&Challenge> = self.challenges.values()
-            .filter(|c| !c.solved)
-            .collect();
+        let mut unsolved: Vec<&Challenge> =
+            self.challenges.values().filter(|c| !c.solved).collect();
         unsolved.sort_by(|a, b| b.reward.cmp(&a.reward));
         unsolved
     }
@@ -248,7 +260,8 @@ impl ChallengeRegistry {
     }
 
     pub fn active(&self) -> Option<&Challenge> {
-        self.active_challenge.and_then(|id| self.challenges.get(&id))
+        self.active_challenge
+            .and_then(|id| self.challenges.get(&id))
     }
 
     pub fn set_active(&mut self, id: ChallengeId) -> bool {
@@ -275,7 +288,9 @@ impl ChallengeRegistry {
 // ---------------------------------------------------------------------------
 
 pub fn sexp_challenge_broadcast(ch: &Challenge) -> String {
-    let seeds: Vec<String> = ch.seed_programs.iter()
+    let seeds: Vec<String> = ch
+        .seed_programs
+        .iter()
         .map(|s| format!("\"{}\"", s.replace('"', "\\\"")))
         .collect();
     format!(
@@ -289,7 +304,11 @@ pub fn sexp_challenge_broadcast(ch: &Challenge) -> String {
     )
 }
 
-pub fn sexp_solution_broadcast(challenge_id: ChallengeId, solution: &str, solver_hex: &str) -> String {
+pub fn sexp_solution_broadcast(
+    challenge_id: ChallengeId,
+    solution: &str,
+    solver_hex: &str,
+) -> String {
     format!(
         "(solution :challenge-id {} :program \"{}\" :solver \"{}\")",
         challenge_id,
@@ -349,7 +368,10 @@ mod tests {
         assert!(!reg.get_challenge(id).unwrap().solved);
         assert!(reg.mark_solved(id, "42 .", test_node_id()));
         assert!(reg.get_challenge(id).unwrap().solved);
-        assert_eq!(reg.get_challenge(id).unwrap().solution.as_deref(), Some("42 ."));
+        assert_eq!(
+            reg.get_challenge(id).unwrap().solution.as_deref(),
+            Some("42 .")
+        );
         // Can't solve again
         assert!(!reg.mark_solved(id, "other", test_node_id()));
     }
@@ -365,7 +387,10 @@ mod tests {
             test_input: None,
             max_steps: 5000,
             seed_programs: vec![],
-            origin: ChallengeOrigin::Discovered { source_node: [0; 8], discovered_at: 0 },
+            origin: ChallengeOrigin::Discovered {
+                source_node: [0; 8],
+                discovered_at: 0,
+            },
             reward: 50,
             solved: false,
             solution: None,
@@ -414,9 +439,8 @@ mod tests {
     fn test_get_unsolved_ordering() {
         let mut reg = ChallengeRegistry::new(&test_node_id());
         reg.register_builtin("low", "1 ", vec![]);
-        let high_id = reg.register_discovered(
-            "high", "important", "99 ", None, vec![], [0; 8], 200
-        );
+        let high_id =
+            reg.register_discovered("high", "important", "99 ", None, vec![], [0; 8], 200);
         let unsolved = reg.get_unsolved();
         assert_eq!(unsolved.len(), 2);
         assert_eq!(unsolved[0].id, high_id); // higher reward first
@@ -426,9 +450,7 @@ mod tests {
     fn test_next_unsolved_picks_highest() {
         let mut reg = ChallengeRegistry::new(&test_node_id());
         reg.register_builtin("low", "1 ", vec![]);
-        let high_id = reg.register_discovered(
-            "high", "desc", "99 ", None, vec![], [0; 8], 200
-        );
+        let high_id = reg.register_discovered("high", "desc", "99 ", None, vec![], [0; 8], 200);
         let picked = reg.next_unsolved();
         assert_eq!(picked, Some(high_id));
         assert_eq!(reg.active_challenge, Some(high_id));

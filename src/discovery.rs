@@ -4,9 +4,9 @@
 // distributed sub-goal timeouts/errors, and manual reports. Detected
 // problems are queued for registration as challenges.
 
-use std::collections::HashSet;
 use crate::evolve;
 use crate::features::mutation::SimpleRng;
+use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,8 +97,12 @@ impl ProblemDetector {
         error: &str,
         expected_output: Option<&str>,
     ) {
-        if code.split_whitespace().count() < 3 { return; }
-        if self.is_duplicate(code) { return; }
+        if code.split_whitespace().count() < 3 {
+            return;
+        }
+        if self.is_duplicate(code) {
+            return;
+        }
         self.push(DiscoveredProblem {
             source: ProblemSource::GoalFailure { goal_id, task_id },
             failed_code: code.to_string(),
@@ -109,7 +113,9 @@ impl ProblemDetector {
     }
 
     pub fn detect_dist_timeout(&mut self, goal_id: u64, seq: usize, expr: &str) {
-        if self.is_duplicate(expr) { return; }
+        if self.is_duplicate(expr) {
+            return;
+        }
         self.push(DiscoveredProblem {
             source: ProblemSource::DistGoalTimeout { goal_id, seq },
             failed_code: expr.to_string(),
@@ -120,7 +126,9 @@ impl ProblemDetector {
     }
 
     pub fn detect_dist_error(&mut self, goal_id: u64, seq: usize, expr: &str, error: &str) {
-        if self.is_duplicate(expr) { return; }
+        if self.is_duplicate(expr) {
+            return;
+        }
         self.push(DiscoveredProblem {
             source: ProblemSource::DistGoalError { goal_id, seq },
             failed_code: expr.to_string(),
@@ -131,9 +139,13 @@ impl ProblemDetector {
     }
 
     pub fn detect_manual(&mut self, code: &str, description: &str) {
-        if self.is_duplicate(code) { return; }
+        if self.is_duplicate(code) {
+            return;
+        }
         self.push(DiscoveredProblem {
-            source: ProblemSource::Manual { description: description.to_string() },
+            source: ProblemSource::Manual {
+                description: description.to_string(),
+            },
             failed_code: code.to_string(),
             expected_output: None,
             error_message: "manual report".to_string(),
@@ -153,9 +165,13 @@ impl ProblemDetector {
         let h = hash_code(&problem.failed_code);
         let name = format!("auto-{:08x}", h & 0xFFFFFFFF);
         let desc = match &problem.source {
-            ProblemSource::GoalFailure { .. } => format!("goal task failed: {}", problem.error_message),
+            ProblemSource::GoalFailure { .. } => {
+                format!("goal task failed: {}", problem.error_message)
+            }
             ProblemSource::DistGoalTimeout { .. } => "distributed sub-goal timeout".into(),
-            ProblemSource::DistGoalError { .. } => format!("distributed sub-goal error: {}", problem.error_message),
+            ProblemSource::DistGoalError { .. } => {
+                format!("distributed sub-goal error: {}", problem.error_message)
+            }
             ProblemSource::Manual { description } => description.clone(),
         };
         let target = problem.expected_output.clone().unwrap_or_default();
@@ -188,7 +204,13 @@ mod tests {
     #[test]
     fn test_detect_goal_failure() {
         let mut det = ProblemDetector::new();
-        det.detect_goal_failure(1, 2, "10 0 DO I . LOOP", "timeout", Some("0 1 2 3 4 5 6 7 8 9"));
+        det.detect_goal_failure(
+            1,
+            2,
+            "10 0 DO I . LOOP",
+            "timeout",
+            Some("0 1 2 3 4 5 6 7 8 9"),
+        );
         assert_eq!(det.pending.len(), 1);
         assert_eq!(det.pending[0].failed_code, "10 0 DO I . LOOP");
     }
@@ -222,7 +244,7 @@ mod tests {
     fn test_max_pending_cap() {
         let mut det = ProblemDetector::new();
         for i in 0..30 {
-            det.detect_manual(&format!("code {} {} {}", i, i+1, i+2), "test");
+            det.detect_manual(&format!("code {} {} {}", i, i + 1, i + 2), "test");
         }
         assert_eq!(det.pending.len(), 20);
     }
@@ -230,7 +252,10 @@ mod tests {
     #[test]
     fn test_problem_to_challenge_params() {
         let problem = DiscoveredProblem {
-            source: ProblemSource::GoalFailure { goal_id: 1, task_id: 2 },
+            source: ProblemSource::GoalFailure {
+                goal_id: 1,
+                task_id: 2,
+            },
             failed_code: "10 0 DO I . LOOP".to_string(),
             expected_output: Some("0 1 2 3 4 5 6 7 8 9 ".to_string()),
             error_message: "timeout".to_string(),

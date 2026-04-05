@@ -96,12 +96,7 @@ pub fn fib10_challenge() -> FitnessChallenge {
 
 /// Score a candidate. Returns (fitness, output_string).
 /// This is called by the VM which provides the sandbox evaluator.
-pub fn score_candidate(
-    output: &str,
-    success: bool,
-    target: &str,
-    token_count: usize,
-) -> f64 {
+pub fn score_candidate(output: &str, success: bool, target: &str, token_count: usize) -> f64 {
     if !success {
         return 0.0; // crashed or timed out
     }
@@ -124,16 +119,11 @@ pub fn score_candidate(
 
 const VOCAB: &[&str] = &[
     // Numbers
-    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "20", "55",
-    // Arithmetic
-    "+", "-", "*",
-    // Stack ops
-    "DUP", "DROP", "SWAP", "OVER", "ROT",
-    // Comparison
-    "<", ">", "=",
-    // Control flow
-    "IF", "THEN", "ELSE", "DO", "LOOP", "I",
-    // Output
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "20", "55", // Arithmetic
+    "+", "-", "*", // Stack ops
+    "DUP", "DROP", "SWAP", "OVER", "ROT", // Comparison
+    "<", ">", "=", // Control flow
+    "IF", "THEN", "ELSE", "DO", "LOOP", "I", // Output
     ".",
 ];
 
@@ -158,29 +148,36 @@ pub fn mutate(program: &str, rng: &mut SimpleRng) -> String {
 
     let op = rng.next_usize(5);
     match op {
-        0 => { // Token swap
+        0 => {
+            // Token swap
             if tokens.len() >= 2 {
                 let a = rng.next_usize(tokens.len());
                 let mut b = rng.next_usize(tokens.len());
-                while b == a && tokens.len() > 1 { b = rng.next_usize(tokens.len()); }
+                while b == a && tokens.len() > 1 {
+                    b = rng.next_usize(tokens.len());
+                }
                 tokens.swap(a, b);
             }
         }
-        1 => { // Token insert
+        1 => {
+            // Token insert
             let pos = rng.next_usize(tokens.len() + 1);
             tokens.insert(pos, random_token(rng).to_string());
         }
-        2 => { // Token delete
+        2 => {
+            // Token delete
             if tokens.len() > 1 {
                 let pos = rng.next_usize(tokens.len());
                 tokens.remove(pos);
             }
         }
-        3 => { // Token replace
+        3 => {
+            // Token replace
             let pos = rng.next_usize(tokens.len());
             tokens[pos] = random_token(rng).to_string();
         }
-        _ => { // Double mutation
+        _ => {
+            // Double mutation
             let pos = rng.next_usize(tokens.len());
             tokens[pos] = random_token(rng).to_string();
             if tokens.len() >= 2 {
@@ -195,15 +192,23 @@ pub fn mutate(program: &str, rng: &mut SimpleRng) -> String {
 pub fn crossover(a: &str, b: &str, rng: &mut SimpleRng) -> String {
     let ta = tokenize(a);
     let tb = tokenize(b);
-    if ta.is_empty() { return b.to_string(); }
-    if tb.is_empty() { return a.to_string(); }
+    if ta.is_empty() {
+        return b.to_string();
+    }
+    if tb.is_empty() {
+        return a.to_string();
+    }
     let cut_a = rng.next_usize(ta.len());
     let cut_b = rng.next_usize(tb.len());
     let mut result: Vec<String> = ta[..cut_a].to_vec();
     result.extend_from_slice(&tb[cut_b..]);
-    if result.is_empty() { result.push(".".to_string()); }
+    if result.is_empty() {
+        result.push(".".to_string());
+    }
     // Limit length to prevent bloat
-    if result.len() > 30 { result.truncate(30); }
+    if result.len() > 30 {
+        result.truncate(30);
+    }
     detokenize(&result)
 }
 
@@ -226,7 +231,11 @@ pub fn tournament_select<'a>(pop: &'a [Candidate], rng: &mut SimpleRng) -> &'a C
 // Population initialization
 // ---------------------------------------------------------------------------
 
-pub fn init_population(challenge: &FitnessChallenge, pop_size: usize, rng: &mut SimpleRng) -> Vec<Candidate> {
+pub fn init_population(
+    challenge: &FitnessChallenge,
+    pop_size: usize,
+    rng: &mut SimpleRng,
+) -> Vec<Candidate> {
     let mut pop = Vec::with_capacity(pop_size);
     // Add seeds
     for seed in &challenge.seed_programs {
@@ -259,7 +268,11 @@ pub fn next_generation(pop: &[Candidate], gen: u32, rng: &mut SimpleRng) -> Vec<
 
     // Sort by fitness descending
     let mut sorted: Vec<&Candidate> = pop.iter().collect();
-    sorted.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.fitness
+            .partial_cmp(&a.fitness)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut next = Vec::with_capacity(pop_size);
 
@@ -300,7 +313,10 @@ pub fn serialize_best(state: &EvolutionState) -> String {
     if let Some(ref best) = state.best {
         format!(
             "gen={} fitness={} tokens={} program={}",
-            best.generation, best.fitness, best.token_count(), best.program
+            best.generation,
+            best.fitness,
+            best.token_count(),
+            best.program
         )
     } else {
         "no evolution state".into()
@@ -319,7 +335,7 @@ mod tests {
     fn test_score_correct() {
         let f = score_candidate("55 ", true, "55 ", 10);
         assert!(f >= 900.0); // 1000 - 10*10 = 900
-        // Shorter program scores higher
+                             // Shorter program scores higher
         let f2 = score_candidate("55 ", true, "55 ", 5);
         assert!(f2 > f); // 1000 - 5*10 = 950 > 900
     }

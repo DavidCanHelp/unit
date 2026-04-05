@@ -105,8 +105,10 @@ impl EnergyState {
     pub fn format(&self) -> String {
         format!(
             "energy: {}/{} (earned: {}, spent: {}, efficiency: {:.2})",
-            self.energy, self.max_energy,
-            self.total_earned, self.total_spent,
+            self.energy,
+            self.max_energy,
+            self.total_earned,
+            self.total_spent,
             self.efficiency()
         )
     }
@@ -115,7 +117,8 @@ impl EnergyState {
         format!(
             "  {} energy={}/{} eff={:.2}{}",
             crate::mesh::id_to_hex(id),
-            self.energy, self.max_energy,
+            self.energy,
+            self.max_energy,
             self.efficiency(),
             if self.throttled { " [THROTTLED]" } else { "" }
         )
@@ -141,7 +144,10 @@ pub enum EnergyEvent {
 pub fn sexp_energy_status(node_hex: &str, state: &EnergyState) -> String {
     format!(
         "(energy-status :id \"{}\" :energy {} :max {} :efficiency {:.2})",
-        node_hex, state.energy, state.max_energy, state.efficiency()
+        node_hex,
+        state.energy,
+        state.max_energy,
+        state.efficiency()
     )
 }
 

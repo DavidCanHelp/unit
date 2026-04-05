@@ -6,7 +6,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mesh::NodeId;
-use crate::types::{Cell, Instruction, Entry};
+use crate::types::{Cell, Entry, Instruction};
 
 // ---------------------------------------------------------------------------
 // UnitSnapshot — the JSON-serializable state of a unit
@@ -69,10 +69,16 @@ pub fn to_json(snap: &UnitSnapshot) -> String {
     let mut j = String::with_capacity(4096);
     j.push_str("{\n");
     j.push_str("  \"version\": 1,\n");
-    j.push_str(&format!("  \"node_id\": \"{}\",\n", escape_json_string(&snap.node_id)));
+    j.push_str(&format!(
+        "  \"node_id\": \"{}\",\n",
+        escape_json_string(&snap.node_id)
+    ));
     j.push_str(&format!("  \"timestamp\": {},\n", snap.timestamp));
     j.push_str(&format!("  \"fitness\": {},\n", snap.fitness));
-    j.push_str(&format!("  \"tasks_completed\": {},\n", snap.tasks_completed));
+    j.push_str(&format!(
+        "  \"tasks_completed\": {},\n",
+        snap.tasks_completed
+    ));
     j.push_str(&format!("  \"generation\": {},\n", snap.generation));
 
     // Energy
@@ -82,13 +88,21 @@ pub fn to_json(snap: &UnitSnapshot) -> String {
     j.push_str(&format!("  \"energy_spent\": {},\n", snap.energy_spent));
 
     // Landscape
-    j.push_str(&format!("  \"landscape_depth\": {},\n", snap.landscape_depth));
-    j.push_str(&format!("  \"landscape_generated\": {},\n", snap.landscape_generated));
+    j.push_str(&format!(
+        "  \"landscape_depth\": {},\n",
+        snap.landscape_depth
+    ));
+    j.push_str(&format!(
+        "  \"landscape_generated\": {},\n",
+        snap.landscape_generated
+    ));
 
     // Stack
     j.push_str("  \"stack\": [");
     for (i, v) in snap.stack.iter().enumerate() {
-        if i > 0 { j.push_str(", "); }
+        if i > 0 {
+            j.push_str(", ");
+        }
         j.push_str(&format!("{}", v));
     }
     j.push_str("],\n");
@@ -96,17 +110,32 @@ pub fn to_json(snap: &UnitSnapshot) -> String {
     // Mutation stats
     j.push_str("  \"mutation_stats\": {\n");
     j.push_str(&format!("    \"total\": {},\n", snap.mutation_stats.total));
-    j.push_str(&format!("    \"neutral\": {},\n", snap.mutation_stats.neutral));
-    j.push_str(&format!("    \"beneficial\": {},\n", snap.mutation_stats.beneficial));
-    j.push_str(&format!("    \"harmful\": {},\n", snap.mutation_stats.harmful));
+    j.push_str(&format!(
+        "    \"neutral\": {},\n",
+        snap.mutation_stats.neutral
+    ));
+    j.push_str(&format!(
+        "    \"beneficial\": {},\n",
+        snap.mutation_stats.beneficial
+    ));
+    j.push_str(&format!(
+        "    \"harmful\": {},\n",
+        snap.mutation_stats.harmful
+    ));
     j.push_str(&format!("    \"lethal\": {}\n", snap.mutation_stats.lethal));
     j.push_str("  },\n");
 
     // Words (user-defined)
     j.push_str("  \"words\": {\n");
     for (i, (name, source)) in snap.words.iter().enumerate() {
-        j.push_str(&format!("    \"{}\": \"{}\"", escape_json_string(name), escape_json_string(source)));
-        if i + 1 < snap.words.len() { j.push(','); }
+        j.push_str(&format!(
+            "    \"{}\": \"{}\"",
+            escape_json_string(name),
+            escape_json_string(source)
+        ));
+        if i + 1 < snap.words.len() {
+            j.push(',');
+        }
         j.push('\n');
     }
     j.push_str("  },\n");
@@ -115,7 +144,9 @@ pub fn to_json(snap: &UnitSnapshot) -> String {
     j.push_str(&format!("  \"memory_here\": {},\n", snap.memory_here));
     j.push_str("  \"memory\": [");
     for (i, v) in snap.memory.iter().enumerate() {
-        if i > 0 { j.push_str(", "); }
+        if i > 0 {
+            j.push_str(", ");
+        }
         j.push_str(&format!("{}", v));
     }
     j.push_str("]\n");
@@ -233,7 +264,9 @@ pub fn from_json(input: &str) -> Option<UnitSnapshot> {
                 _ => {}
             }
         } else if let Some((key, val)) = parse_kv_string(line) {
-            if key.as_str() == "node_id" { snap.node_id = val }
+            if key.as_str() == "node_id" {
+                snap.node_id = val
+            }
         }
     }
 
@@ -288,7 +321,10 @@ fn unescape_json_string(s: &str) -> String {
                 Some('n') => out.push('\n'),
                 Some('r') => out.push('\r'),
                 Some('t') => out.push('\t'),
-                Some(other) => { out.push('\\'); out.push(other); }
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
                 None => out.push('\\'),
             }
         } else {
@@ -491,7 +527,10 @@ mod tests {
         assert_eq!(snap.tasks_completed, restored.tasks_completed);
         assert_eq!(snap.generation, restored.generation);
         assert_eq!(snap.mutation_stats.total, restored.mutation_stats.total);
-        assert_eq!(snap.mutation_stats.beneficial, restored.mutation_stats.beneficial);
+        assert_eq!(
+            snap.mutation_stats.beneficial,
+            restored.mutation_stats.beneficial
+        );
         assert_eq!(snap.words, restored.words);
         assert_eq!(snap.memory_here, restored.memory_here);
         assert_eq!(snap.memory, restored.memory);
@@ -510,8 +549,12 @@ mod tests {
             words: vec![],
             memory_here: 0,
             memory: vec![],
-            energy: 1000, energy_max: 5000, energy_earned: 0, energy_spent: 0,
-            landscape_depth: 0, landscape_generated: 0,
+            energy: 1000,
+            energy_max: 5000,
+            energy_earned: 0,
+            energy_spent: 0,
+            landscape_depth: 0,
+            landscape_generated: 0,
         };
         let json = to_json(&snap);
         let restored = from_json(&json).unwrap();
@@ -530,13 +573,18 @@ mod tests {
             tasks_completed: 0,
             generation: 0,
             mutation_stats: MutStats::default(),
-            words: vec![
-                ("HELLO".to_string(), ": HELLO .\" hello\\nworld\" ;".to_string()),
-            ],
+            words: vec![(
+                "HELLO".to_string(),
+                ": HELLO .\" hello\\nworld\" ;".to_string(),
+            )],
             memory_here: 0,
             memory: vec![],
-            energy: 1000, energy_max: 5000, energy_earned: 0, energy_spent: 0,
-            landscape_depth: 0, landscape_generated: 0,
+            energy: 1000,
+            energy_max: 5000,
+            energy_earned: 0,
+            energy_spent: 0,
+            landscape_depth: 0,
+            landscape_generated: 0,
         };
         let json = to_json(&snap);
         let restored = from_json(&json).unwrap();
@@ -573,9 +621,7 @@ mod tests {
                 Instruction::Primitive(7), // P_ADD
             ],
         };
-        let prims = vec![
-            ("+".to_string(), 7usize),
-        ];
+        let prims = vec![("+".to_string(), 7usize)];
         let dict = vec![entry.clone()];
         let source = decompile_word(&entry, &dict, &prims);
         assert_eq!(source, ": TEST 42 + ;");
@@ -590,8 +636,14 @@ mod tests {
 
     #[test]
     fn test_msg_resurrect_sexp() {
-        let sexp = crate::sexp::parse("(resurrect :id \"abc\" :fitness 42 :gen 0 :saved-at \"1711900800\")").unwrap();
+        let sexp = crate::sexp::parse(
+            "(resurrect :id \"abc\" :fitness 42 :gen 0 :saved-at \"1711900800\")",
+        )
+        .unwrap();
         assert_eq!(crate::sexp::msg_type(&sexp), Some("resurrect"));
-        assert_eq!(sexp.get_key(":saved-at").unwrap().as_str(), Some("1711900800"));
+        assert_eq!(
+            sexp.get_key(":saved-at").unwrap().as_str(),
+            Some("1711900800")
+        );
     }
 }

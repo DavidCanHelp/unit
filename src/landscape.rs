@@ -14,7 +14,9 @@ use crate::features::mutation::SimpleRng;
 // ---------------------------------------------------------------------------
 
 pub fn fib(n: u32) -> u64 {
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     let mut a: u64 = 0;
     let mut b: u64 = 1;
     for _ in 1..n {
@@ -52,7 +54,9 @@ impl GeneratorKind {
     ) -> Vec<Challenge> {
         match self {
             GeneratorKind::Arithmetic => arithmetic_generate(solved, solution),
-            GeneratorKind::Composition => composition_generate(solved, solution, all_solved, rng_seed),
+            GeneratorKind::Composition => {
+                composition_generate(solved, solution, all_solved, rng_seed)
+            }
         }
     }
 
@@ -77,7 +81,8 @@ impl GeneratorKind {
 fn extract_fib_index(name: &str) -> Option<u32> {
     // Match "fib10", "fib15", "fib-20", etc.
     let lower = name.to_lowercase();
-    let digits: String = lower.chars()
+    let digits: String = lower
+        .chars()
         .skip_while(|c| !c.is_ascii_digit())
         .take_while(|c| c.is_ascii_digit())
         .collect();
@@ -156,10 +161,7 @@ fn arithmetic_generate(solved: &Challenge, solution: &str) -> Vec<Challenge> {
                 target_output: format!("{} ", square),
                 test_input: None,
                 max_steps: 10000,
-                seed_programs: vec![
-                    format!("{} DUP * .", fib_val),
-                    format!("{} .", square),
-                ],
+                seed_programs: vec![format!("{} DUP * .", fib_val), format!("{} .", square)],
                 origin: ChallengeOrigin::BuiltIn,
                 reward: 80,
                 solved: false,
@@ -181,18 +183,25 @@ fn composition_generate(
     rng_seed: u64,
 ) -> Vec<Challenge> {
     // Only generate occasionally (use rng_seed as cheap randomness).
-    if !rng_seed.is_multiple_of(3) { return Vec::new(); }
+    if !rng_seed.is_multiple_of(3) {
+        return Vec::new();
+    }
 
     // Need at least 2 solved challenges with numeric outputs.
-    let numeric_solved: Vec<&&Challenge> = all_solved.iter()
+    let numeric_solved: Vec<&&Challenge> = all_solved
+        .iter()
         .filter(|c| c.target_output.trim().parse::<i64>().is_ok())
         .collect();
-    if numeric_solved.len() < 2 { return Vec::new(); }
+    if numeric_solved.len() < 2 {
+        return Vec::new();
+    }
 
     // Pick two (deterministic from rng_seed).
     let idx_a = (rng_seed as usize) % numeric_solved.len();
     let idx_b = ((rng_seed as usize) / 7 + 1) % numeric_solved.len();
-    if idx_a == idx_b { return Vec::new(); }
+    if idx_a == idx_b {
+        return Vec::new();
+    }
 
     let a = numeric_solved[idx_a];
     let b = numeric_solved[idx_b];
@@ -203,7 +212,9 @@ fn composition_generate(
 
     let sol_a = a.solution.as_deref().unwrap_or("");
     let sol_b = b.solution.as_deref().unwrap_or("");
-    if sol_a.is_empty() || sol_b.is_empty() { return Vec::new(); }
+    if sol_a.is_empty() || sol_b.is_empty() {
+        return Vec::new();
+    }
 
     // Strip trailing "." from solutions to get stack-producing programs.
     let prog_a = sol_a.trim_end_matches('.').trim();
@@ -324,10 +335,8 @@ impl GeneratorGenome {
 
 /// Vocabulary for generator mutations.
 const GEN_VOCAB: &[&str] = &[
-    "1", "2", "3", "5", "7", "10", "20",
-    "+", "-", "*",
-    "DUP", "SWAP", "OVER", "DROP",
-    "1+", "1-", "2*", "2/",
+    "1", "2", "3", "5", "7", "10", "20", "+", "-", "*", "DUP", "SWAP", "OVER", "DROP", "1+", "1-",
+    "2*", "2/",
 ];
 
 fn random_gen_token(rng: &mut SimpleRng) -> &'static str {
@@ -342,23 +351,27 @@ pub fn mutate_generator(program: &str, rng: &mut SimpleRng) -> String {
         return evolve::detokenize(&tokens);
     }
     match rng.next_usize(4) {
-        0 => { // Replace
+        0 => {
+            // Replace
             let pos = rng.next_usize(tokens.len());
             tokens[pos] = random_gen_token(rng).to_string();
         }
-        1 => { // Insert
+        1 => {
+            // Insert
             if tokens.len() < 10 {
                 let pos = rng.next_usize(tokens.len() + 1);
                 tokens.insert(pos, random_gen_token(rng).to_string());
             }
         }
-        2 => { // Delete
+        2 => {
+            // Delete
             if tokens.len() > 1 {
                 let pos = rng.next_usize(tokens.len());
                 tokens.remove(pos);
             }
         }
-        _ => { // Swap
+        _ => {
+            // Swap
             if tokens.len() >= 2 {
                 let a = rng.next_usize(tokens.len());
                 let b = rng.next_usize(tokens.len());
@@ -378,15 +391,21 @@ pub fn evaluate_generator(program: &str, input_val: i64) -> (Option<i64>, f64) {
     // so we do a simple stack simulation for the limited vocabulary.
     match simulate_stack(&code) {
         Some(result) => {
-            if result == input_val { return (Some(result), 1.0); } // trivial
-            if result <= 0 || result > 1_000_000 { return (Some(result), 5.0); } // likely unsolvable
-            // Score based on "interestingness"
+            if result == input_val {
+                return (Some(result), 1.0);
+            } // trivial
+            if result <= 0 || result > 1_000_000 {
+                return (Some(result), 5.0);
+            } // likely unsolvable
+              // Score based on "interestingness"
             let input_digits = digit_count(input_val);
             let result_digits = digit_count(result);
             let digit_ratio = result_digits as f64 / input_digits.max(1) as f64;
             let mut score = 100.0;
             // Bonus for moderate difficulty increase
-            if digit_ratio > 0.5 && digit_ratio < 3.0 { score += 30.0; }
+            if digit_ratio > 0.5 && digit_ratio < 3.0 {
+                score += 30.0;
+            }
             // Penalty for being a simple multiple
             if input_val != 0 && result % input_val == 0 && result / input_val < 4 {
                 score -= 20.0;
@@ -398,10 +417,15 @@ pub fn evaluate_generator(program: &str, input_val: i64) -> (Option<i64>, f64) {
 }
 
 fn digit_count(n: i64) -> u32 {
-    if n == 0 { return 1; }
+    if n == 0 {
+        return 1;
+    }
     let mut d = 0;
     let mut v = n.unsigned_abs();
-    while v > 0 { d += 1; v /= 10; }
+    while v > 0 {
+        d += 1;
+        v /= 10;
+    }
     d
 }
 
@@ -410,28 +434,72 @@ fn simulate_stack(code: &str) -> Option<i64> {
     let mut stack: Vec<i64> = Vec::new();
     for token in code.split_whitespace() {
         match token {
-            "DUP" => { let a = *stack.last()?; stack.push(a); }
-            "DROP" => { stack.pop()?; }
+            "DUP" => {
+                let a = *stack.last()?;
+                stack.push(a);
+            }
+            "DROP" => {
+                stack.pop()?;
+            }
             "SWAP" => {
                 let len = stack.len();
-                if len < 2 { return None; }
+                if len < 2 {
+                    return None;
+                }
                 stack.swap(len - 1, len - 2);
             }
             "OVER" => {
                 let len = stack.len();
-                if len < 2 { return None; }
+                if len < 2 {
+                    return None;
+                }
                 stack.push(stack[len - 2]);
             }
-            "+" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.wrapping_add(b)); }
-            "-" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.wrapping_sub(b)); }
-            "*" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.saturating_mul(b)); }
-            "1+" => { let a = stack.pop()?; stack.push(a + 1); }
-            "1-" => { let a = stack.pop()?; stack.push(a - 1); }
-            "2*" => { let a = stack.pop()?; stack.push(a * 2); }
-            "2/" => { let a = stack.pop()?; stack.push(a / 2); }
-            "ABS" => { let a = stack.pop()?; stack.push(a.abs()); }
-            "MAX" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.max(b)); }
-            "MIN" => { let b = stack.pop()?; let a = stack.pop()?; stack.push(a.min(b)); }
+            "+" => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                stack.push(a.wrapping_add(b));
+            }
+            "-" => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                stack.push(a.wrapping_sub(b));
+            }
+            "*" => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                stack.push(a.saturating_mul(b));
+            }
+            "1+" => {
+                let a = stack.pop()?;
+                stack.push(a + 1);
+            }
+            "1-" => {
+                let a = stack.pop()?;
+                stack.push(a - 1);
+            }
+            "2*" => {
+                let a = stack.pop()?;
+                stack.push(a * 2);
+            }
+            "2/" => {
+                let a = stack.pop()?;
+                stack.push(a / 2);
+            }
+            "ABS" => {
+                let a = stack.pop()?;
+                stack.push(a.abs());
+            }
+            "MAX" => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                stack.push(a.max(b));
+            }
+            "MIN" => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                stack.push(a.min(b));
+            }
             _ => {
                 if let Ok(n) = token.parse::<i64>() {
                     stack.push(n);
@@ -440,7 +508,9 @@ fn simulate_stack(code: &str) -> Option<i64> {
             }
         }
         // Safety: cap stack size
-        if stack.len() > 20 { return None; }
+        if stack.len() > 20 {
+            return None;
+        }
     }
     stack.last().copied()
 }
@@ -454,22 +524,38 @@ pub struct GeneratorPopulation {
 
 impl GeneratorPopulation {
     pub fn new(rng: &mut SimpleRng) -> Self {
-        let seeds = ["5 +", "DUP *", "2 *", "1+", "3 *", "DUP 2 * +", "10 +", "DUP 3 * 2 +"];
-        let mut genomes: Vec<GeneratorGenome> = seeds.iter()
-            .map(|s| GeneratorGenome::new(s))
-            .collect();
+        let seeds = [
+            "5 +",
+            "DUP *",
+            "2 *",
+            "1+",
+            "3 *",
+            "DUP 2 * +",
+            "10 +",
+            "DUP 3 * 2 +",
+        ];
+        let mut genomes: Vec<GeneratorGenome> =
+            seeds.iter().map(|s| GeneratorGenome::new(s)).collect();
         // Fill to 20 with mutations of seeds
         while genomes.len() < 20 {
             let base = &seeds[rng.next_usize(seeds.len())];
             genomes.push(GeneratorGenome::new(&mutate_generator(base, rng)));
         }
-        GeneratorPopulation { genomes, generation: 0, best: None }
+        GeneratorPopulation {
+            genomes,
+            generation: 0,
+            best: None,
+        }
     }
 
     /// Run one generation of meta-evolution.
     pub fn evolve_generators(&mut self, rng: &mut SimpleRng) {
         // Sort by fitness descending.
-        self.genomes.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        self.genomes.sort_by(|a, b| {
+            b.fitness
+                .partial_cmp(&a.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         if let Some(best) = self.genomes.first() {
             self.best = Some(best.clone());
@@ -525,12 +611,23 @@ impl GeneratorPopulation {
 
     pub fn format_top(&self, n: usize) -> String {
         let mut sorted = self.genomes.clone();
-        sorted.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
-        let mut out = format!("--- generator population (top {}) ---\n", n.min(sorted.len()));
+        sorted.sort_by(|a, b| {
+            b.fitness
+                .partial_cmp(&a.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut out = format!(
+            "--- generator population (top {}) ---\n",
+            n.min(sorted.len())
+        );
         for (i, g) in sorted.iter().take(n).enumerate() {
             out.push_str(&format!(
                 "  {}. \"{}\" fitness={:.0} generated={} solved={}\n",
-                i + 1, g.program, g.fitness, g.challenges_generated, g.challenges_solved
+                i + 1,
+                g.program,
+                g.fitness,
+                g.challenges_generated,
+                g.challenges_solved
             ));
         }
         out
@@ -552,7 +649,11 @@ pub struct ScoringGenome {
 
 impl ScoringGenome {
     pub fn new(program: &str) -> Self {
-        ScoringGenome { program: program.to_string(), fitness: 0.0, generators_scored: 0 }
+        ScoringGenome {
+            program: program.to_string(),
+            fitness: 0.0,
+            generators_scored: 0,
+        }
     }
 }
 
@@ -581,19 +682,25 @@ pub struct ScoringPopulation {
 
 impl ScoringPopulation {
     pub fn new(rng: &mut SimpleRng) -> Self {
-        let seeds = ["- ABS 100 SWAP - 0 MAX",
+        let seeds = [
+            "- ABS 100 SWAP - 0 MAX",
             "DROP 50",
             "- ABS",
             "- ABS 1+ 1000 SWAP -",
-            "SWAP DROP DUP * 100 SWAP -"];
-        let mut scorers: Vec<ScoringGenome> = seeds.iter()
-            .map(|s| ScoringGenome::new(s))
-            .collect();
+            "SWAP DROP DUP * 100 SWAP -",
+        ];
+        let mut scorers: Vec<ScoringGenome> = seeds.iter().map(|s| ScoringGenome::new(s)).collect();
         while scorers.len() < 10 {
             let base = seeds[rng.next_usize(seeds.len())];
             scorers.push(ScoringGenome::new(&mutate_generator(base, rng)));
         }
-        ScoringPopulation { scorers, generation: 0, best: None, history: Vec::new(), cycles_completed: 0 }
+        ScoringPopulation {
+            scorers,
+            generation: 0,
+            best: None,
+            history: Vec::new(),
+            cycles_completed: 0,
+        }
     }
 
     pub fn record_history(&mut self, gen_program: &str, challenge_id: u64, was_solved: bool) {
@@ -609,7 +716,9 @@ impl ScoringPopulation {
 
     /// Evaluate scoring functions against history.
     pub fn evaluate_from_history(&mut self) {
-        if self.history.len() < 10 { return; }
+        if self.history.len() < 10 {
+            return;
+        }
         for scorer in &mut self.scorers {
             let mut total_score = 0.0;
             for entry in &self.history {
@@ -619,11 +728,17 @@ impl ScoringPopulation {
                 // Score the generator using this scoring function.
                 let scorer_score = evaluate_scorer(&scorer.program, 55, output).unwrap_or(0);
                 // If this scorer ranked the generator high AND the challenge was solved: good.
-                if entry.was_solved && scorer_score > 50 { total_score += 50.0; }
-                else if entry.was_solved && scorer_score > 20 { total_score += 20.0; }
-                else if !entry.was_solved && scorer_score < 20 { total_score += 10.0; }
+                if entry.was_solved && scorer_score > 50 {
+                    total_score += 50.0;
+                } else if entry.was_solved && scorer_score > 20 {
+                    total_score += 20.0;
+                } else if !entry.was_solved && scorer_score < 20 {
+                    total_score += 10.0;
+                }
                 // If this scorer ranked a bad generator high: bad.
-                else if !entry.was_solved && scorer_score > 50 { total_score -= 10.0; }
+                else if !entry.was_solved && scorer_score > 50 {
+                    total_score -= 10.0;
+                }
             }
             scorer.fitness = scorer.fitness * 0.5 + (total_score / self.history.len() as f64) * 0.5;
             scorer.generators_scored += 1;
@@ -632,7 +747,11 @@ impl ScoringPopulation {
 
     /// Run one generation of scorer evolution.
     pub fn evolve_scorers(&mut self, rng: &mut SimpleRng) {
-        self.scorers.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        self.scorers.sort_by(|a, b| {
+            b.fitness
+                .partial_cmp(&a.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         if let Some(best) = self.scorers.first() {
             self.best = Some(best.clone());
         }
@@ -654,10 +773,19 @@ impl ScoringPopulation {
 
     pub fn format_top(&self, n: usize) -> String {
         let mut sorted = self.scorers.clone();
-        sorted.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.fitness
+                .partial_cmp(&a.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let mut out = format!("--- scoring population (top {}) ---\n", n.min(sorted.len()));
         for (i, s) in sorted.iter().take(n).enumerate() {
-            out.push_str(&format!("  {}. \"{}\" fitness={:.0}\n", i + 1, s.program, s.fitness));
+            out.push_str(&format!(
+                "  {}. \"{}\" fitness={:.0}\n",
+                i + 1,
+                s.program,
+                s.fitness
+            ));
         }
         out
     }
@@ -710,9 +838,8 @@ impl LandscapeEngine {
         // Authored generators (ArithmeticLadder, CompositionLadder).
         for gen in &self.generators {
             let parent_difficulty = gen.difficulty_level(challenge);
-            let generated = gen.generate_next(
-                challenge, solution, all_solved, self.challenges_generated,
-            );
+            let generated =
+                gen.generate_next(challenge, solution, all_solved, self.challenges_generated);
             for ch in generated {
                 let child_difficulty = gen.difficulty_level(&ch);
                 if child_difficulty > parent_difficulty && child_difficulty > self.depth {
@@ -731,7 +858,10 @@ impl LandscapeEngine {
             if let Some((new_target, gen_program)) = self.meta.generate_target(solved_target) {
                 let h = {
                     let mut h: u64 = 0xcbf29ce484222325;
-                    for b in gen_program.bytes() { h ^= b as u64; h = h.wrapping_mul(0x100000001b3); }
+                    for b in gen_program.bytes() {
+                        h ^= b as u64;
+                        h = h.wrapping_mul(0x100000001b3);
+                    }
                     h
                 };
                 new_challenges.push(Challenge {
@@ -741,10 +871,7 @@ impl LandscapeEngine {
                     target_output: format!("{} ", new_target),
                     test_input: None,
                     max_steps: 10000,
-                    seed_programs: vec![
-                        solution.to_string(),
-                        format!("{} .", new_target),
-                    ],
+                    seed_programs: vec![solution.to_string(), format!("{} .", new_target)],
                     origin: ChallengeOrigin::BuiltIn,
                     reward: 80 + (self.meta.best.as_ref().map_or(0.0, |b| b.fitness) * 0.5) as i64,
                     solved: false,
@@ -789,7 +916,10 @@ impl LandscapeEngine {
 
     pub fn format_landscape(&self) -> String {
         let authored = self.challenges_generated - self.evolved_count;
-        let best_gen = self.meta.best.as_ref()
+        let best_gen = self
+            .meta
+            .best
+            .as_ref()
             .map(|b| format!("\"{}\"", b.program))
             .unwrap_or_else(|| "(none)".into());
         format!(
@@ -800,11 +930,16 @@ impl LandscapeEngine {
              authored generators: {}\n\
              evolved generators: {} (best: {})\n\
              scoring functions: {} (gen {})\n",
-            self.depth, self.challenges_generated, authored, self.evolved_count,
+            self.depth,
+            self.challenges_generated,
+            authored,
+            self.evolved_count,
             self.current_environment(),
             self.generators.len(),
-            self.meta.genomes.len(), best_gen,
-            self.scoring.scorers.len(), self.scoring.generation,
+            self.meta.genomes.len(),
+            best_gen,
+            self.scoring.scorers.len(),
+            self.scoring.generation,
         )
     }
 }
@@ -906,13 +1041,21 @@ mod tests {
     fn test_environment_cycle() {
         let mut env = EnvironmentCycle::new();
         assert_eq!(env.current_condition(), "normal");
-        for _ in 0..500 { env.tick(); }
+        for _ in 0..500 {
+            env.tick();
+        }
         assert_eq!(env.current_condition(), "harsh");
-        for _ in 0..500 { env.tick(); }
+        for _ in 0..500 {
+            env.tick();
+        }
         assert_eq!(env.current_condition(), "abundant");
-        for _ in 0..500 { env.tick(); }
+        for _ in 0..500 {
+            env.tick();
+        }
         assert_eq!(env.current_condition(), "competitive");
-        for _ in 0..500 { env.tick(); }
+        for _ in 0..500 {
+            env.tick();
+        }
         assert_eq!(env.current_condition(), "normal"); // back to start
     }
 
@@ -920,9 +1063,13 @@ mod tests {
     fn test_apply_to_max_steps() {
         let mut env = EnvironmentCycle::new();
         assert_eq!(env.apply_to_max_steps(10000), 10000); // normal
-        for _ in 0..500 { env.tick(); } // harsh
+        for _ in 0..500 {
+            env.tick();
+        } // harsh
         assert_eq!(env.apply_to_max_steps(10000), 5000);
-        for _ in 0..500 { env.tick(); } // abundant
+        for _ in 0..500 {
+            env.tick();
+        } // abundant
         assert_eq!(env.apply_to_max_steps(10000), 20000);
     }
 
@@ -930,9 +1077,13 @@ mod tests {
     fn test_apply_to_reward() {
         let mut env = EnvironmentCycle::new();
         assert_eq!(env.apply_to_reward(100, 0), 100); // normal
-        for _ in 0..500 { env.tick(); } // harsh
+        for _ in 0..500 {
+            env.tick();
+        } // harsh
         assert_eq!(env.apply_to_reward(100, 0), 200);
-        for _ in 0..1000 { env.tick(); } // competitive
+        for _ in 0..1000 {
+            env.tick();
+        } // competitive
         assert_eq!(env.apply_to_reward(100, 3), 25); // 100/(3+1)
     }
 
@@ -969,7 +1120,10 @@ mod tests {
         // Arithmetic won't match (no "fib" in name), composition needs 2 solved.
         // But meta-evolved generators may produce one from target 42.
         // Authored generators produce 0, evolved may produce 0 or 1.
-        let authored = generated.iter().filter(|c| !c.name.starts_with("evolved-")).count();
+        let authored = generated
+            .iter()
+            .filter(|c| !c.name.starts_with("evolved-"))
+            .count();
         assert_eq!(authored, 0);
     }
 

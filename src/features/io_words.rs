@@ -97,12 +97,8 @@ pub fn http_get(url: &str) -> Result<(Vec<u8>, u16), String> {
 
     let mut stream =
         TcpStream::connect(addr.as_str()).map_err(|e| format!("connect {}: {}", addr, e))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .ok();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
 
     let req = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: unit/0.4.0\r\n\r\n",
@@ -125,12 +121,8 @@ pub fn http_post(url: &str, body: &[u8]) -> Result<(Vec<u8>, u16), String> {
 
     let mut stream =
         TcpStream::connect(addr.as_str()).map_err(|e| format!("connect {}: {}", addr, e))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .ok();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
 
     let req = format!(
         "POST {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\nUser-Agent: unit/0.4.0\r\n\r\n",
@@ -177,5 +169,7 @@ pub fn timestamp() -> i64 {
             .as_secs() as i64
     }
     #[cfg(target_arch = "wasm32")]
-    { 0 }
+    {
+        0
+    }
 }

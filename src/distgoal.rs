@@ -26,24 +26,24 @@ pub struct SubGoal {
     pub expr: String,        // Forth code to evaluate
     pub assigned_to: String, // "local" or peer hex ID
     pub result: Option<String>,
-    pub sent_at: u64,        // counter-based (not time)
+    pub sent_at: u64, // counter-based (not time)
 }
 
 #[derive(Clone, Debug)]
 pub struct DistGoal {
     pub id: GoalId,
-    pub parent_id: String,   // node that initiated
+    pub parent_id: String, // node that initiated
     pub sub_goals: Vec<SubGoal>,
     pub status: DistStatus,
     pub combiner: Combiner,
-    pub tick: u64,            // monotonic counter for timeouts
+    pub tick: u64, // monotonic counter for timeouts
 }
 
 #[derive(Clone, Debug)]
 pub enum Combiner {
-    List,    // collect all results as a list
-    Sum,     // sum numeric results
-    Concat,  // concatenate output strings
+    List,   // collect all results as a list
+    Sum,    // sum numeric results
+    Concat, // concatenate output strings
 }
 
 #[derive(Clone, Debug, Default)]
@@ -131,7 +131,8 @@ impl DistEngine {
     pub fn pending_remote_subgoals(&self, goal_id: GoalId) -> Vec<(usize, String, String)> {
         // Returns (seq, expr, peer_id) for sub-goals assigned to non-local peers
         if let Some(goal) = self.goals.get(&goal_id) {
-            goal.sub_goals.iter()
+            goal.sub_goals
+                .iter()
                 .filter(|sg| sg.assigned_to != "local" && sg.result.is_none())
                 .map(|sg| (sg.seq, sg.expr.clone(), sg.assigned_to.clone()))
                 .collect()
@@ -143,7 +144,8 @@ impl DistEngine {
     /// Get sub-goals assigned to "local" that haven't been computed yet.
     pub fn pending_local_subgoals(&self, goal_id: GoalId) -> Vec<(usize, String)> {
         if let Some(goal) = self.goals.get(&goal_id) {
-            goal.sub_goals.iter()
+            goal.sub_goals
+                .iter()
                 .filter(|sg| sg.assigned_to == "local" && sg.result.is_none())
                 .map(|sg| (sg.seq, sg.expr.clone()))
                 .collect()
@@ -155,9 +157,13 @@ impl DistEngine {
     /// Get sub-goals that have timed out (assigned to remote, no result after timeout_ticks).
     pub fn timed_out_subgoals(&self, goal_id: GoalId) -> Vec<(usize, String)> {
         if let Some(goal) = self.goals.get(&goal_id) {
-            goal.sub_goals.iter()
-                .filter(|sg| sg.assigned_to != "local" && sg.result.is_none()
-                    && self.tick - sg.sent_at > self.timeout_ticks)
+            goal.sub_goals
+                .iter()
+                .filter(|sg| {
+                    sg.assigned_to != "local"
+                        && sg.result.is_none()
+                        && self.tick - sg.sent_at > self.timeout_ticks
+                })
                 .map(|sg| (sg.seq, sg.expr.clone()))
                 .collect()
         } else {
@@ -177,14 +183,17 @@ impl DistEngine {
 
     /// Is the goal complete?
     pub fn is_complete(&self, goal_id: GoalId) -> bool {
-        self.goals.get(&goal_id)
+        self.goals
+            .get(&goal_id)
             .is_some_and(|g| g.status == DistStatus::Complete)
     }
 
     /// Combine results into final output.
     pub fn combine_results(&self, goal_id: GoalId) -> Option<String> {
         let goal = self.goals.get(&goal_id)?;
-        let results: Vec<String> = goal.sub_goals.iter()
+        let results: Vec<String> = goal
+            .sub_goals
+            .iter()
             .filter_map(|sg| sg.result.clone())
             .collect();
         if results.len() != goal.sub_goals.len() {
@@ -193,7 +202,8 @@ impl DistEngine {
         Some(match goal.combiner {
             Combiner::List => results.join(" "),
             Combiner::Sum => {
-                let total: i64 = results.iter()
+                let total: i64 = results
+                    .iter()
                     .filter_map(|r| r.trim().parse::<i64>().ok())
                     .sum();
                 format!("{}", total)
@@ -209,18 +219,30 @@ impl DistEngine {
         }
         let mut out = String::new();
         for (id, goal) in &self.goals {
-            let done = goal.sub_goals.iter().filter(|sg| sg.result.is_some()).count();
+            let done = goal
+                .sub_goals
+                .iter()
+                .filter(|sg| sg.result.is_some())
+                .count();
             let total = goal.sub_goals.len();
             out.push_str(&format!(
                 "goal #{}: {:?} ({}/{} complete)\n",
                 id, goal.status, done, total
             ));
             for sg in &goal.sub_goals {
-                let status = if sg.result.is_some() { "done" } else { "pending" };
+                let status = if sg.result.is_some() {
+                    "done"
+                } else {
+                    "pending"
+                };
                 out.push_str(&format!(
                     "  [{}] {} -> {} ({})\n",
                     sg.seq,
-                    if sg.expr.len() > 30 { format!("{}...", &sg.expr[..30]) } else { sg.expr.clone() },
+                    if sg.expr.len() > 30 {
+                        format!("{}...", &sg.expr[..30])
+                    } else {
+                        sg.expr.clone()
+                    },
                     sg.assigned_to,
                     status
                 ));
@@ -235,7 +257,8 @@ impl DistEngine {
 // ---------------------------------------------------------------------------
 
 pub fn parse_pipe_expressions(input: &str) -> Vec<String> {
-    input.split('|')
+    input
+        .split('|')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
@@ -248,21 +271,29 @@ pub fn parse_pipe_expressions(input: &str) -> Vec<String> {
 pub fn sexp_sub_goal(goal_id: GoalId, seq: usize, from: &str, expr: &str) -> String {
     format!(
         "(sub-goal :id {} :seq {} :from \"{}\" :expr \"{}\")",
-        goal_id, seq, from, expr.replace('"', "\\\"")
+        goal_id,
+        seq,
+        from,
+        expr.replace('"', "\\\"")
     )
 }
 
 pub fn sexp_sub_result(goal_id: GoalId, seq: usize, from: &str, result: &str) -> String {
     format!(
         "(sub-result :id {} :seq {} :from \"{}\" :result \"{}\")",
-        goal_id, seq, from, result.replace('"', "\\\"")
+        goal_id,
+        seq,
+        from,
+        result.replace('"', "\\\"")
     )
 }
 
 pub fn sexp_dist_complete(goal_id: GoalId, results: &str, peers: usize) -> String {
     format!(
         "(dist-complete :id {} :results \"{}\" :peers {})",
-        goal_id, results.replace('"', "\\\""), peers
+        goal_id,
+        results.replace('"', "\\\""),
+        peers
     )
 }
 
@@ -302,7 +333,14 @@ mod tests {
         let mut eng = DistEngine::new();
         let peers = vec!["aaa".into(), "bbb".into()];
         let id = eng.create_goal(
-            vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into(), "f".into()],
+            vec![
+                "a".into(),
+                "b".into(),
+                "c".into(),
+                "d".into(),
+                "e".into(),
+                "f".into(),
+            ],
             "self",
             &peers,
         );
@@ -354,7 +392,9 @@ mod tests {
         let peers = vec!["aaa".into()];
         let id = eng.create_goal(vec!["a".into(), "b".into()], "self", &peers);
         // Advance ticks past timeout
-        for _ in 0..10 { eng.advance_tick(); }
+        for _ in 0..10 {
+            eng.advance_tick();
+        }
         let timed_out = eng.timed_out_subgoals(id);
         // Only the remote one (assigned to "aaa") should time out
         assert_eq!(timed_out.len(), 1);
@@ -367,7 +407,9 @@ mod tests {
         eng.timeout_ticks = 5;
         let peers = vec!["aaa".into()];
         let id = eng.create_goal(vec!["x".into(), "y".into()], "self", &peers);
-        for _ in 0..10 { eng.advance_tick(); }
+        for _ in 0..10 {
+            eng.advance_tick();
+        }
         eng.fallback_to_local(id, 1);
         let goal = &eng.goals[&id];
         assert_eq!(goal.sub_goals[1].assigned_to, "local");

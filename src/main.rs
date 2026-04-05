@@ -37,9 +37,9 @@ mod integration_tests;
 
 // --- Core nanobot ---
 #[allow(dead_code)]
-pub mod mesh;
-#[allow(dead_code)]
 pub mod goals;
+#[allow(dead_code)]
+pub mod mesh;
 
 // --- Replication & persistence ---
 #[allow(dead_code)]
@@ -54,9 +54,9 @@ pub mod features {
     #[allow(dead_code)]
     pub mod io_words;
     #[allow(dead_code)]
-    pub mod mutation;
-    #[allow(dead_code)]
     pub mod monitor;
+    #[allow(dead_code)]
+    pub mod mutation;
     #[allow(dead_code)]
     pub mod ws_bridge;
 }
@@ -80,8 +80,8 @@ unsafe fn libc_kill(pid: i32, sig: i32) -> i32 {
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use features::{fitness, io_words, monitor, mutation, ws_bridge};
 use types::{Cell, Instruction, PAD};
-use features::{fitness, io_words, mutation, monitor, ws_bridge};
 use vm::VM;
 use vm::*; // import P_* constants
 
@@ -99,10 +99,30 @@ impl VM {
         if let Some(ref m) = self.mesh {
             let st = m.state_lock();
             let total = st.goals.goals.len() as Cell;
-            let pending = st.goals.goals.values().filter(|g| g.status == goals::GoalStatus::Pending).count() as Cell;
-            let active = st.goals.goals.values().filter(|g| g.status == goals::GoalStatus::Active).count() as Cell;
-            let completed = st.goals.goals.values().filter(|g| g.status == goals::GoalStatus::Completed).count() as Cell;
-            let failed = st.goals.goals.values().filter(|g| g.status == goals::GoalStatus::Failed).count() as Cell;
+            let pending = st
+                .goals
+                .goals
+                .values()
+                .filter(|g| g.status == goals::GoalStatus::Pending)
+                .count() as Cell;
+            let active = st
+                .goals
+                .goals
+                .values()
+                .filter(|g| g.status == goals::GoalStatus::Active)
+                .count() as Cell;
+            let completed = st
+                .goals
+                .goals
+                .values()
+                .filter(|g| g.status == goals::GoalStatus::Completed)
+                .count() as Cell;
+            let failed = st
+                .goals
+                .goals
+                .values()
+                .filter(|g| g.status == goals::GoalStatus::Failed)
+                .count() as Cell;
             drop(st);
             self.stack.push(total);
             self.stack.push(pending);
@@ -110,7 +130,9 @@ impl VM {
             self.stack.push(completed);
             self.stack.push(failed);
         } else {
-            for _ in 0..5 { self.stack.push(0); }
+            for _ in 0..5 {
+                self.stack.push(0);
+            }
         }
     }
 
@@ -119,10 +141,30 @@ impl VM {
         if let Some(ref m) = self.mesh {
             let st = m.state_lock();
             let total = st.goals.tasks.len() as Cell;
-            let waiting = st.goals.tasks.values().filter(|t| t.status == goals::TaskStatus::Waiting).count() as Cell;
-            let running = st.goals.tasks.values().filter(|t| t.status == goals::TaskStatus::Running).count() as Cell;
-            let done = st.goals.tasks.values().filter(|t| t.status == goals::TaskStatus::Done).count() as Cell;
-            let failed = st.goals.tasks.values().filter(|t| t.status == goals::TaskStatus::Failed).count() as Cell;
+            let waiting = st
+                .goals
+                .tasks
+                .values()
+                .filter(|t| t.status == goals::TaskStatus::Waiting)
+                .count() as Cell;
+            let running = st
+                .goals
+                .tasks
+                .values()
+                .filter(|t| t.status == goals::TaskStatus::Running)
+                .count() as Cell;
+            let done = st
+                .goals
+                .tasks
+                .values()
+                .filter(|t| t.status == goals::TaskStatus::Done)
+                .count() as Cell;
+            let failed = st
+                .goals
+                .tasks
+                .values()
+                .filter(|t| t.status == goals::TaskStatus::Failed)
+                .count() as Cell;
             drop(st);
             self.stack.push(total);
             self.stack.push(waiting);
@@ -130,36 +172,50 @@ impl VM {
             self.stack.push(done);
             self.stack.push(failed);
         } else {
-            for _ in 0..5 { self.stack.push(0); }
+            for _ in 0..5 {
+                self.stack.push(0);
+            }
         }
     }
 
     /// MESH-AVG-FITNESS ( -- avg )
     fn prim_mesh_avg_fitness(&mut self) {
-        let avg = self.mesh.as_ref().map(|m| {
-            let peers = m.peer_fitness_list();
-            if peers.is_empty() {
-                self.fitness.score
-            } else {
-                let total: i64 = peers.iter().map(|p| p.score).sum::<i64>() + self.fitness.score;
-                total / (peers.len() as i64 + 1)
-            }
-        }).unwrap_or(0);
+        let avg = self
+            .mesh
+            .as_ref()
+            .map(|m| {
+                let peers = m.peer_fitness_list();
+                if peers.is_empty() {
+                    self.fitness.score
+                } else {
+                    let total: i64 =
+                        peers.iter().map(|p| p.score).sum::<i64>() + self.fitness.score;
+                    total / (peers.len() as i64 + 1)
+                }
+            })
+            .unwrap_or(0);
         self.stack.push(avg);
     }
 
     /// CHECK-WATCHES ( -- ) run all due watch checks.
     fn prim_check_watches(&mut self) {
         let due = self.monitor.due_watches();
-        for wid in due { self.run_watch_check(wid); }
+        for wid in due {
+            self.run_watch_check(wid);
+        }
     }
 
     /// RUN-HANDLERS ( -- ) run alert handlers for active alerts.
     fn prim_run_handlers(&mut self) {
-        let handlers: Vec<(u32, String)> = self.monitor.alerts.iter()
+        let handlers: Vec<(u32, String)> = self
+            .monitor
+            .alerts
+            .iter()
             .filter(|a| !a.acknowledged)
             .filter_map(|a| {
-                self.monitor.watches.get(&a.watch_id)
+                self.monitor
+                    .watches
+                    .get(&a.watch_id)
                     .and_then(|w| w.alert_handler.clone())
                     .map(|h| (a.id, h))
             })
@@ -171,16 +227,22 @@ impl VM {
 
     /// MUTATE-RANDOM ( -- flag ) apply a random mutation, push -1 if success, 0 if fail.
     fn prim_mutate_random_atom(&mut self) {
-        let mutable_indices: Vec<usize> = self.dictionary.iter().enumerate()
+        let mutable_indices: Vec<usize> = self
+            .dictionary
+            .iter()
+            .enumerate()
             .filter(|(_, e)| mutation::is_mutable(e))
-            .map(|(i, _)| i).collect();
+            .map(|(i, _)| i)
+            .collect();
         if mutable_indices.is_empty() {
             self.stack.push(0);
             return;
         }
         let idx = mutable_indices[self.rng.next_usize(mutable_indices.len())];
         let dict_len = self.dictionary.len();
-        if let Some(mut record) = mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
+        if let Some(mut record) =
+            mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len)
+        {
             record.word_index = idx;
             self.mutation_history.push(record);
             self.stack.push(-1); // success
@@ -202,7 +264,9 @@ impl VM {
             self.output_buffer = Some(String::new());
             self.timed_out = false;
             #[cfg(not(target_arch = "wasm32"))]
-            { self.deadline = Some(Instant::now() + Duration::from_millis(100)); }
+            {
+                self.deadline = Some(Instant::now() + Duration::from_millis(100));
+            }
             self.execute_body(&body);
             combined.push_str(&self.output_buffer.take().unwrap_or_default());
             combined.push_str(&format!("{:?}", self.stack));
@@ -214,9 +278,13 @@ impl VM {
     }
 
     fn prim_smart_mutate(&mut self) {
-        let mutable_indices: Vec<usize> = self.dictionary.iter().enumerate()
+        let mutable_indices: Vec<usize> = self
+            .dictionary
+            .iter()
+            .enumerate()
             .filter(|(_, e)| mutation::is_mutable(e))
-            .map(|(i, _)| i).collect();
+            .map(|(i, _)| i)
+            .collect();
         if mutable_indices.is_empty() {
             self.emit_str("no mutable words\n");
             self.stack.push(0);
@@ -227,21 +295,34 @@ impl VM {
         let before_hash = self.snapshot_word(idx);
 
         let dict_len = self.dictionary.len();
-        let record = match mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
-            Some(mut r) => { r.word_index = idx; r }
-            None => { self.stack.push(0); return; }
-        };
+        let record =
+            match mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
+                Some(mut r) => {
+                    r.word_index = idx;
+                    r
+                }
+                None => {
+                    self.stack.push(0);
+                    return;
+                }
+            };
 
         let after_hash = self.snapshot_word(idx);
         let class = if after_hash == before_hash {
             mutation::MutationClass::Neutral
         } else {
             let score = self.run_benchmark();
-            if score >= 0 { mutation::MutationClass::Beneficial }
-            else { mutation::MutationClass::Harmful }
+            if score >= 0 {
+                mutation::MutationClass::Beneficial
+            } else {
+                mutation::MutationClass::Harmful
+            }
         };
 
-        let kept = matches!(class, mutation::MutationClass::Neutral | mutation::MutationClass::Beneficial);
+        let kept = matches!(
+            class,
+            mutation::MutationClass::Neutral | mutation::MutationClass::Beneficial
+        );
         if kept {
             self.mutation_history.push(record.clone());
         } else {
@@ -250,8 +331,13 @@ impl VM {
 
         self.mutation_stats.record(&class);
         self.last_mutation_result = Some(mutation::SmartMutationResult {
-            word_name, strategy: record.strategy.clone(), class,
-            before_hash, after_hash, kept, description: record.description,
+            word_name,
+            strategy: record.strategy.clone(),
+            class,
+            before_hash,
+            after_hash,
+            kept,
+            description: record.description,
         });
         self.stack.push(if kept { -1 } else { 0 });
     }
@@ -260,7 +346,9 @@ impl VM {
         if let Some(ref r) = self.last_mutation_result {
             self.emit_str(&format!(
                 "last: {} [{}] {} {}\n",
-                r.word_name, r.strategy.label(), r.class.label(),
+                r.word_name,
+                r.strategy.label(),
+                r.class.label(),
                 if r.kept { "(kept)" } else { "(reverted)" }
             ));
         } else {
@@ -333,7 +421,8 @@ impl VM {
     // -----------------------------------------------------------------------
 
     fn make_json_snapshot(&self) -> snapshot::UnitSnapshot {
-        let node_id = self.node_id_cache
+        let node_id = self
+            .node_id_cache
             .map(|id| crate::mesh::id_to_hex(&id))
             .unwrap_or_else(|| "offline".to_string());
         #[cfg(not(target_arch = "wasm32"))]
@@ -453,7 +542,10 @@ impl VM {
                 ));
                 if let Some(ref m) = self.mesh {
                     let sexp = crate::sexp::msg_resurrect(
-                        &id, snap.fitness, snap.generation, snap.timestamp,
+                        &id,
+                        snap.fitness,
+                        snap.generation,
+                        snap.timestamp,
                     );
                     m.send_sexp(&sexp.to_string());
                 }
@@ -490,7 +582,9 @@ impl VM {
         } else {
             self.auto_snapshot_secs = secs as u64;
             #[cfg(not(target_arch = "wasm32"))]
-            { self.auto_snapshot_last = Some(Instant::now()); }
+            {
+                self.auto_snapshot_last = Some(Instant::now());
+            }
             self.emit_str(&format!("auto-snapshot: every {}s\n", secs));
         }
     }
@@ -515,16 +609,22 @@ impl VM {
             self.emit_str("hibernated (in-memory)\n");
         }
         #[cfg(not(target_arch = "wasm32"))]
-        { self.running = false; }
+        {
+            self.running = false;
+        }
         #[cfg(target_arch = "wasm32")]
-        { self.emit_str("(browser mode — snapshot saved, VM stays alive)\n"); }
+        {
+            self.emit_str("(browser mode — snapshot saved, VM stays alive)\n");
+        }
     }
 
     fn prim_export_genome(&mut self) {
         let kernel_count = self.kernel_word_count;
         let mut genome = String::new();
         for entry in &self.dictionary[kernel_count..] {
-            if entry.hidden { continue; }
+            if entry.hidden {
+                continue;
+            }
             let source = snapshot::decompile_word(entry, &self.dictionary, &self.primitive_names);
             genome.push_str(&source);
             genome.push('\n');
@@ -559,7 +659,9 @@ impl VM {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn check_auto_snapshot(&mut self) {
-        if self.auto_snapshot_secs == 0 { return; }
+        if self.auto_snapshot_secs == 0 {
+            return;
+        }
         if let Some(last) = self.auto_snapshot_last {
             if last.elapsed() >= Duration::from_secs(self.auto_snapshot_secs) {
                 self.auto_snapshot_last = Some(Instant::now());
@@ -599,7 +701,10 @@ impl VM {
         let (target, programs) = match self.evolution.as_ref() {
             Some(evo) => (
                 evo.challenge.target_output.clone(),
-                evo.population.iter().map(|c| c.program.clone()).collect::<Vec<_>>(),
+                evo.population
+                    .iter()
+                    .map(|c| c.program.clone())
+                    .collect::<Vec<_>>(),
             ),
             None => return,
         };
@@ -609,7 +714,12 @@ impl VM {
         for prog in &programs {
             let result = self.execute_sandbox(prog);
             let tc = evolve::tokenize(prog).len();
-            scores.push(evolve::score_candidate(&result.output, result.success, &target, tc));
+            scores.push(evolve::score_candidate(
+                &result.output,
+                result.success,
+                &target,
+                tc,
+            ));
         }
 
         // Apply scores and update best.
@@ -652,7 +762,9 @@ impl VM {
         for _ in 0..10 {
             {
                 let evo = self.evolution.as_ref().unwrap();
-                if evo.generation >= evo.max_generations || !evo.running { break; }
+                if evo.generation >= evo.max_generations || !evo.running {
+                    break;
+                }
             }
 
             // Energy cost per generation.
@@ -669,7 +781,10 @@ impl VM {
             let evo = self.evolution.as_ref().unwrap();
             let gen = evo.generation;
             let best_fitness = evo.best.as_ref().map_or(0.0, |b| b.fitness);
-            let best_prog = evo.best.as_ref().map_or(String::new(), |b| b.program.clone());
+            let best_prog = evo
+                .best
+                .as_ref()
+                .map_or(String::new(), |b| b.program.clone());
             let best_tokens = evo.best.as_ref().map_or(0, |b| b.token_count());
             let pop_size = evo.population.len();
             let challenge_name = evo.challenge.name.clone();
@@ -683,7 +798,10 @@ impl VM {
                 if best_fitness > 0.0 {
                     sexp_broadcasts.push(format!(
                         "(evolve-share :gen {} :fitness {:.0} :program \"{}\" :challenge \"{}\")",
-                        gen, best_fitness, best_prog.replace('"', "\\\""), challenge_name
+                        gen,
+                        best_fitness,
+                        best_prog.replace('"', "\\\""),
+                        challenge_name
                     ));
                 }
             }
@@ -697,13 +815,15 @@ impl VM {
                 // Install solution and mark challenge solved.
                 if let Some(active_id) = self.challenge_registry.active_challenge {
                     let solver = self.node_id_cache.unwrap_or([0; 8]);
-                    self.challenge_registry.mark_solved(active_id, &best_prog, solver);
+                    self.challenge_registry
+                        .mark_solved(active_id, &best_prog, solver);
                     if let Some(ch) = self.challenge_registry.get_challenge(active_id) {
                         let ch_name = ch.name.clone();
                         // Broadcast solution to mesh.
                         if let Some(ref m) = self.mesh {
                             let hex = m.id_hex().to_string();
-                            let sexp = challenges::sexp_solution_broadcast(active_id, &best_prog, &hex);
+                            let sexp =
+                                challenges::sexp_solution_broadcast(active_id, &best_prog, &hex);
                             sexp_broadcasts.push(sexp);
                         }
                         // Install as dictionary word (deferred to after borrow).
@@ -727,7 +847,7 @@ impl VM {
                 let rest = stripped.trim_end();
                 if let Some(idx) = rest.find('|') {
                     let name = &rest[..idx];
-                    let prog = &rest[idx+1..];
+                    let prog = &rest[idx + 1..];
                     self.install_solution(name, prog);
                     // Generate harder challenges from the solution.
                     self.generate_landscape_challenges(name, prog);
@@ -747,11 +867,19 @@ impl VM {
         // Final status.
         let evo = self.evolution.as_ref().unwrap();
         if evo.running && evo.generation < evo.max_generations {
-            self.emit_str(&format!("[gen {}] evolving... type GP-EVOLVE to continue, GP-STATUS for details\n", evo.generation));
+            self.emit_str(&format!(
+                "[gen {}] evolving... type GP-EVOLVE to continue, GP-STATUS for details\n",
+                evo.generation
+            ));
         } else if !evo.running || evo.generation >= evo.max_generations {
             if messages.is_empty() {
                 let best = evo.best.as_ref().map_or("(none)".to_string(), |b| {
-                    format!("\"{}\" (fitness={:.0}, {} tokens)", b.program, b.fitness, b.token_count())
+                    format!(
+                        "\"{}\" (fitness={:.0}, {} tokens)",
+                        b.program,
+                        b.fitness,
+                        b.token_count()
+                    )
                 });
                 self.emit_str(&format!("evolution complete: {}\n", best));
             }
@@ -763,7 +891,12 @@ impl VM {
         match &self.evolution {
             Some(evo) => {
                 let best = evo.best.as_ref().map_or("(none)".to_string(), |b| {
-                    format!("\"{}\" (fitness={:.0}, {} tokens)", b.program, b.fitness, b.token_count())
+                    format!(
+                        "\"{}\" (fitness={:.0}, {} tokens)",
+                        b.program,
+                        b.fitness,
+                        b.token_count()
+                    )
                 });
                 self.emit_str(&format!(
                     "--- evolution ---\nchallenge: {}\ngeneration: {}/{}\nrunning: {}\nbest: {}\npop: {}\nimmigrants: {}\n",
@@ -780,7 +913,10 @@ impl VM {
             Some(evo) => match &evo.best {
                 Some(best) => self.emit_str(&format!(
                     "{}\n(fitness={:.0}, gen={}, {} tokens)\n",
-                    best.program, best.fitness, best.generation, best.token_count()
+                    best.program,
+                    best.fitness,
+                    best.generation,
+                    best.token_count()
                 )),
                 None => self.emit_str("no best candidate yet\n"),
             },
@@ -816,10 +952,18 @@ impl VM {
         }
 
         // Get peer list.
-        let peer_ids: Vec<String> = self.mesh.as_ref()
-            .map(|m| m.peer_details().iter().map(|(id, _, _)| id.clone()).collect())
+        let peer_ids: Vec<String> = self
+            .mesh
+            .as_ref()
+            .map(|m| {
+                m.peer_details()
+                    .iter()
+                    .map(|(id, _, _)| id.clone())
+                    .collect()
+            })
             .unwrap_or_default();
-        let my_id = self.node_id_cache
+        let my_id = self
+            .node_id_cache
             .map(|id| crate::mesh::id_to_hex(&id))
             .unwrap_or_else(|| "local".to_string());
 
@@ -846,20 +990,23 @@ impl VM {
         // If all done (no remote, or no peers), deliver immediately.
         if self.dist_engine.is_complete(goal_id) {
             if let Some(combined) = self.dist_engine.combine_results(goal_id) {
-                let total = self.dist_engine.goals.get(&goal_id)
+                let total = self
+                    .dist_engine
+                    .goals
+                    .get(&goal_id)
                     .map_or(0, |g| g.sub_goals.len());
                 self.emit_str(&format!("{}\n", combined));
                 if remote_count > 0 {
                     self.emit_str(&format!(
                         "(distributed {} sub-goals, {} local, {} remote)\n",
-                        total, total - remote_count, remote_count
+                        total,
+                        total - remote_count,
+                        remote_count
                     ));
                 }
                 // Broadcast completion.
                 if let Some(ref m) = self.mesh {
-                    let sexp = distgoal::sexp_dist_complete(
-                        goal_id, &combined, peer_ids.len()
-                    );
+                    let sexp = distgoal::sexp_dist_complete(goal_id, &combined, peer_ids.len());
                     m.send_sexp(&sexp);
                 }
             }
@@ -868,8 +1015,12 @@ impl VM {
                 "dist-goal #{}: {} sub-goals distributed ({} local, {} remote)\n\
                  waiting for results... type DIST-STATUS to check\n",
                 goal_id,
-                self.dist_engine.goals.get(&goal_id).map_or(0, |g| g.sub_goals.len()),
-                local.len(), remote_count
+                self.dist_engine
+                    .goals
+                    .get(&goal_id)
+                    .map_or(0, |g| g.sub_goals.len()),
+                local.len(),
+                remote_count
             ));
         }
     }
@@ -895,9 +1046,16 @@ impl VM {
 
     fn prim_immune_status(&mut self) {
         let total = self.challenge_registry.challenges.len();
-        let solved = self.challenge_registry.challenges.values().filter(|c| c.solved).count();
+        let solved = self
+            .challenge_registry
+            .challenges
+            .values()
+            .filter(|c| c.solved)
+            .count();
         let unsolved = total - solved;
-        let antibodies = self.dictionary.iter()
+        let antibodies = self
+            .dictionary
+            .iter()
             .filter(|e| e.name.starts_with("SOL-"))
             .count();
         self.emit_str(&format!(
@@ -909,7 +1067,9 @@ impl VM {
             self.emit_str(&format!("active: #{} {}\n", active.id, active.name));
         }
         // List antibody words
-        let sol_words: Vec<&str> = self.dictionary.iter()
+        let sol_words: Vec<&str> = self
+            .dictionary
+            .iter()
             .filter(|e| e.name.starts_with("SOL-"))
             .map(|e| e.name.as_str())
             .collect();
@@ -919,7 +1079,9 @@ impl VM {
     }
 
     fn prim_antibodies(&mut self) {
-        let sol_words: Vec<String> = self.dictionary.iter()
+        let sol_words: Vec<String> = self
+            .dictionary
+            .iter()
             .filter(|e| e.name.starts_with("SOL-"))
             .map(|e| e.name.clone())
             .collect();
@@ -952,14 +1114,20 @@ impl VM {
              \x20 task success: {}\n\
              \x20 challenge solved: {}\n\
              \x20 passive regen: {}/tick\n",
-            self.energy.energy, self.energy.max_energy,
-            self.energy.total_earned, self.energy.total_spent,
-            self.energy.efficiency(), self.energy.peak_energy,
+            self.energy.energy,
+            self.energy.max_energy,
+            self.energy.total_earned,
+            self.energy.total_spent,
+            self.energy.efficiency(),
+            self.energy.peak_energy,
             self.energy.starving_ticks,
             if self.energy.throttled { "YES" } else { "no" },
-            energy::SPAWN_COST, energy::GP_GENERATION_COST,
-            energy::EVAL_STEP_COST_PER_1000, energy::MESH_SEND_COST,
-            energy::TASK_REWARD, energy::CHALLENGE_SOLVE_REWARD,
+            energy::SPAWN_COST,
+            energy::GP_GENERATION_COST,
+            energy::EVAL_STEP_COST_PER_1000,
+            energy::MESH_SEND_COST,
+            energy::TASK_REWARD,
+            energy::CHALLENGE_SOLVE_REWARD,
             energy::PASSIVE_REGEN,
         );
         self.emit_str(&out);
@@ -968,25 +1136,40 @@ impl VM {
     /// Generate harder challenges from a solved one via the landscape engine.
     fn generate_landscape_challenges(&mut self, challenge_name: &str, solution: &str) {
         // Find the solved challenge by name.
-        let solved = self.challenge_registry.challenges.values()
+        let solved = self
+            .challenge_registry
+            .challenges
+            .values()
             .find(|c| c.name == challenge_name && c.solved)
             .cloned();
         let solved = match solved {
             Some(c) => c,
             None => return,
         };
-        let all_solved: Vec<&challenges::Challenge> = self.challenge_registry.challenges.values()
+        let all_solved: Vec<&challenges::Challenge> = self
+            .challenge_registry
+            .challenges
+            .values()
             .filter(|c| c.solved)
             .collect();
-        let new_challenges = self.landscape.on_challenge_solved(&solved, solution, &all_solved);
-        if new_challenges.is_empty() { return; }
+        let new_challenges = self
+            .landscape
+            .on_challenge_solved(&solved, solution, &all_solved);
+        if new_challenges.is_empty() {
+            return;
+        }
         let count = new_challenges.len();
         let depth = self.landscape.depth();
         let my_id = self.node_id_cache.unwrap_or([0; 8]);
         for ch in new_challenges {
             let id = self.challenge_registry.register_discovered(
-                &ch.name, &ch.description, &ch.target_output,
-                ch.test_input.clone(), ch.seed_programs.clone(), my_id, ch.reward,
+                &ch.name,
+                &ch.description,
+                &ch.target_output,
+                ch.test_input.clone(),
+                ch.seed_programs.clone(),
+                my_id,
+                ch.reward,
             );
             // Broadcast to mesh.
             if let Some(ref m) = self.mesh {
@@ -1011,7 +1194,8 @@ impl VM {
         }
         let def = format!(": {} {} ;", word_name, program);
         self.interpret_line(&def);
-        self.energy.earn(energy::CHALLENGE_SOLVE_REWARD, "challenge-solved");
+        self.energy
+            .earn(energy::CHALLENGE_SOLVE_REWARD, "challenge-solved");
         self.emit_str(&format!("[immune] learned word: {}\n", word_name));
     }
 
@@ -1027,50 +1211,57 @@ impl VM {
                     match crate::sexp::msg_type(&sexp) {
                         Some("sub-goal") => {
                             // A peer asked us to compute something.
-                            let goal_id = sexp.get_key(":id")
-                                .and_then(|s| s.as_number())
-                                .unwrap_or(0) as u64;
-                            let seq = sexp.get_key(":seq")
+                            let goal_id =
+                                sexp.get_key(":id").and_then(|s| s.as_number()).unwrap_or(0) as u64;
+                            let seq = sexp
+                                .get_key(":seq")
                                 .and_then(|s| s.as_number())
                                 .unwrap_or(0) as usize;
-                            let _from = sexp.get_key(":from")
+                            let _from = sexp
+                                .get_key(":from")
                                 .and_then(|s| s.as_str())
-                                .unwrap_or("unknown").to_string();
-                            let expr = sexp.get_key(":expr")
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let expr = sexp
+                                .get_key(":expr")
                                 .and_then(|s| s.as_str())
-                                .unwrap_or("").to_string();
+                                .unwrap_or("")
+                                .to_string();
                             if !expr.is_empty() {
                                 let result = self.execute_sandbox(&expr);
                                 let output = result.output.trim().to_string();
-                                let my_id = self.node_id_cache
+                                let my_id = self
+                                    .node_id_cache
                                     .map(|id| crate::mesh::id_to_hex(&id))
                                     .unwrap_or_else(|| "local".to_string());
                                 if let Some(ref m2) = self.mesh {
-                                    let reply = distgoal::sexp_sub_result(
-                                        goal_id, seq, &my_id, &output
-                                    );
+                                    let reply =
+                                        distgoal::sexp_sub_result(goal_id, seq, &my_id, &output);
                                     m2.send_sexp(&reply);
                                 }
                             }
                         }
                         Some("sub-result") => {
                             // A peer sent back a result.
-                            let goal_id = sexp.get_key(":id")
-                                .and_then(|s| s.as_number())
-                                .unwrap_or(0) as u64;
-                            let seq = sexp.get_key(":seq")
+                            let goal_id =
+                                sexp.get_key(":id").and_then(|s| s.as_number()).unwrap_or(0) as u64;
+                            let seq = sexp
+                                .get_key(":seq")
                                 .and_then(|s| s.as_number())
                                 .unwrap_or(0) as usize;
-                            let result_str = sexp.get_key(":result")
+                            let result_str = sexp
+                                .get_key(":result")
                                 .and_then(|s| s.as_str())
-                                .unwrap_or("").to_string();
+                                .unwrap_or("")
+                                .to_string();
                             self.dist_engine.record_result(goal_id, seq, &result_str);
 
                             // Check if goal is now complete.
                             if self.dist_engine.is_complete(goal_id) {
                                 if let Some(combined) = self.dist_engine.combine_results(goal_id) {
                                     self.emit_str(&format!(
-                                        "dist-goal #{} complete: {}\n", goal_id, combined
+                                        "dist-goal #{} complete: {}\n",
+                                        goal_id, combined
                                     ));
                                 }
                             }
@@ -1091,13 +1282,12 @@ impl VM {
                 let output = result.output.trim().to_string();
                 self.dist_engine.record_result(gid, seq, &output);
                 self.emit_str(&format!(
-                    "(fallback: computed sub-goal {} locally — peer timeout)\n", seq
+                    "(fallback: computed sub-goal {} locally — peer timeout)\n",
+                    seq
                 ));
                 if self.dist_engine.is_complete(gid) {
                     if let Some(combined) = self.dist_engine.combine_results(gid) {
-                        self.emit_str(&format!(
-                            "dist-goal #{} complete: {}\n", gid, combined
-                        ));
+                        self.emit_str(&format!("dist-goal #{} complete: {}\n", gid, combined));
                     }
                 }
             }
@@ -1151,7 +1341,9 @@ impl VM {
         let addr_str = self.parse_until('"');
         let addr: SocketAddr = match addr_str.trim().parse().or_else(|_| {
             use std::net::ToSocketAddrs;
-            addr_str.trim().to_socket_addrs()
+            addr_str
+                .trim()
+                .to_socket_addrs()
                 .map_err(|e| e.to_string())
                 .and_then(|mut a| a.next().ok_or_else(|| "no address".into()))
         }) {
@@ -1187,8 +1379,14 @@ impl VM {
             let (peers, port) = m.mesh_stats();
             self.emit_str(&format!(
                 "--- mesh stats ---\nport: {}\npeers: {}\naddress: {}\nkey: {}\n",
-                port, peers, m.my_addr(),
-                if m.mesh_key.is_some() { "enabled" } else { "disabled" }
+                port,
+                peers,
+                m.my_addr(),
+                if m.mesh_key.is_some() {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
             ));
         } else {
             self.emit_str("mesh offline\n");
@@ -1212,7 +1410,10 @@ impl VM {
             st.auto_discover = !st.auto_discover;
             let on = st.auto_discover;
             drop(st);
-            self.emit_str(&format!("auto-discover: {}\n", if on { "ON" } else { "OFF" }));
+            self.emit_str(&format!(
+                "auto-discover: {}\n",
+                if on { "ON" } else { "OFF" }
+            ));
         }
     }
 
@@ -1322,7 +1523,9 @@ impl VM {
 
     /// Compile shared words received from peers.
     fn process_shared_words(&mut self) {
-        let words = self.mesh.as_ref()
+        let words = self
+            .mesh
+            .as_ref()
             .map(|m| m.recv_shared_words())
             .unwrap_or_default();
         for word in words {
@@ -1388,7 +1591,11 @@ impl VM {
     fn prim_accept_req(&mut self) {
         if let Some(ref m) = self.mesh {
             if let Some((sender, rid)) = m.accept_oldest() {
-                self.emit_str(&format!("accepted request #{} from {}\n", rid, mesh::id_to_hex(&sender)));
+                self.emit_str(&format!(
+                    "accepted request #{} from {}\n",
+                    rid,
+                    mesh::id_to_hex(&sender)
+                ));
             } else {
                 self.emit_str("no pending requests\n");
             }
@@ -1638,7 +1845,9 @@ impl VM {
         self.compiling = false;
         self.timed_out = false;
         #[cfg(not(target_arch = "wasm32"))]
-        { self.deadline = Some(Instant::now() + Duration::from_secs(self.execution_timeout)); }
+        {
+            self.deadline = Some(Instant::now() + Duration::from_secs(self.execution_timeout));
+        }
 
         // Execute.
         for line in code.lines() {
@@ -1792,10 +2001,7 @@ impl VM {
                     println!();
                 }
                 if !result.success {
-                    println!(
-                        "  FAILED: {}",
-                        result.error.as_deref().unwrap_or("unknown")
-                    );
+                    println!("  FAILED: {}", result.error.as_deref().unwrap_or("unknown"));
                 }
                 if let Some(ref m) = self.mesh {
                     m.complete_task_with_result(task_id, result);
@@ -1812,12 +2018,15 @@ impl VM {
     fn prim_complete(&mut self) {
         let task_id = self.pop() as u64;
         if let Some(ref m) = self.mesh {
-            m.complete_task_with_result(task_id, goals::TaskResult {
-                stack_snapshot: vec![],
-                output: String::new(),
-                success: true,
-                error: None,
-            });
+            m.complete_task_with_result(
+                task_id,
+                goals::TaskResult {
+                    stack_snapshot: vec![],
+                    output: String::new(),
+                    success: true,
+                    error: None,
+                },
+            );
             println!("task #{} completed", task_id);
         } else {
             eprintln!("COMPLETE: mesh offline");
@@ -1861,7 +2070,7 @@ impl VM {
         if let Some(split_pos) = code.find(" SPLIT ") {
             let before = &code[..split_pos];
             let after = &code[split_pos + 7..]; // skip " SPLIT "
-            // Evaluate the "before" part to get total and N from the stack.
+                                                // Evaluate the "before" part to get total and N from the stack.
             let saved = self.stack.clone();
             self.interpret_line(before);
             let n = self.pop();
@@ -1871,12 +2080,20 @@ impl VM {
             if n > 0 && total > 0 {
                 if let Some(ref m) = self.mesh {
                     let mut st = m.state_lock();
-                    let goal_id = st.goals.create_split_goal(total, n, after, priority, m.id_bytes());
+                    let goal_id =
+                        st.goals
+                            .create_split_goal(total, n, after, priority, m.id_bytes());
                     drop(st);
                     m.set_load(self.dictionary.len() as u32);
                     self.stack.push(goal_id as Cell);
                     if !self.silent {
-                        println!("goal #{} created [split {}×{}]: {}", goal_id, n, total / n, after.chars().take(40).collect::<String>());
+                        println!(
+                            "goal #{} created [split {}×{}]: {}",
+                            goal_id,
+                            n,
+                            total / n,
+                            after.chars().take(40).collect::<String>()
+                        );
                     }
                     return;
                 }
@@ -1922,10 +2139,7 @@ impl VM {
     fn prim_auto_claim(&mut self) {
         self.auto_claim = !self.auto_claim;
         if !self.silent {
-            println!(
-                "auto-claim: {}",
-                if self.auto_claim { "ON" } else { "OFF" }
-            );
+            println!("auto-claim: {}", if self.auto_claim { "ON" } else { "OFF" });
         }
     }
 
@@ -1959,15 +2173,14 @@ impl VM {
             return;
         }
         // Extract the claimed task info while borrowing mesh immutably.
-        let claimed = self
-            .mesh
-            .as_ref()
-            .and_then(|m| m.claim_executable_task());
+        let claimed = self.mesh.as_ref().and_then(|m| m.claim_executable_task());
 
         if let Some((task_id, goal_id, desc, code)) = claimed {
             println!(
                 "[auto] claimed task #{} (goal #{}): {}",
-                task_id, goal_id, desc.chars().take(50).collect::<String>()
+                task_id,
+                goal_id,
+                desc.chars().take(50).collect::<String>()
             );
             // Execute in sandbox with timing.
             #[cfg(not(target_arch = "wasm32"))]
@@ -2023,16 +2236,9 @@ impl VM {
                 m.clear_auto_replicate();
                 m.set_load(self.dictionary.len() as u32);
                 let goals = m.clone_goals();
-                let state_bytes = mesh::serialize_state(
-                    &self.dictionary,
-                    &self.memory,
-                    self.here,
-                    Some(&goals),
-                );
-                let reason = format!(
-                    "auto: goal_load dict={}",
-                    self.dictionary.len()
-                );
+                let state_bytes =
+                    mesh::serialize_state(&self.dictionary, &self.memory, self.here, Some(&goals));
+                let reason = format!("auto: goal_load dict={}", self.dictionary.len());
                 match m.propose_replicate(&reason, state_bytes) {
                     Ok(()) => println!("auto-replication proposed"),
                     Err(e) => {
@@ -2343,7 +2549,9 @@ impl VM {
         }
         let idx = mutable_indices[self.rng.next_usize(mutable_indices.len())];
         let dict_len = self.dictionary.len();
-        if let Some(mut record) = mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
+        if let Some(mut record) =
+            mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len)
+        {
             record.word_index = idx;
             self.emit_str(&format!("mutated: {}\n", record.format()));
             self.mutation_history.push(record);
@@ -2382,7 +2590,9 @@ impl VM {
                 return;
             }
             let dict_len = self.dictionary.len();
-            if let Some(mut record) = mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
+            if let Some(mut record) =
+                mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len)
+            {
                 record.word_index = idx;
                 self.emit_str(&format!("mutated: {}\n", record.format()));
                 self.mutation_history.push(record);
@@ -2398,7 +2608,11 @@ impl VM {
         if let Some(record) = self.mutation_history.pop() {
             if record.word_index < self.dictionary.len() {
                 mutation::undo_mutation(&mut self.dictionary[record.word_index], &record);
-                self.emit_str(&format!("undone: {} [{}]\n", record.word_name, record.strategy.label()));
+                self.emit_str(&format!(
+                    "undone: {} [{}]\n",
+                    record.word_name,
+                    record.strategy.label()
+                ));
             }
         } else {
             self.emit_str("nothing to undo\n");
@@ -2447,7 +2661,11 @@ impl VM {
         self.fitness.auto_evolve = !self.fitness.auto_evolve;
         self.emit_str(&format!(
             "auto-evolve: {}\n",
-            if self.fitness.auto_evolve { "ON" } else { "OFF" }
+            if self.fitness.auto_evolve {
+                "ON"
+            } else {
+                "OFF"
+            }
         ));
     }
 
@@ -2462,7 +2680,10 @@ impl VM {
             }
         } else {
             self.fitness.benchmark_code = Some(code.clone());
-            self.emit_str(&format!("benchmark set: {}\n", code.chars().take(50).collect::<String>()));
+            self.emit_str(&format!(
+                "benchmark set: {}\n",
+                code.chars().take(50).collect::<String>()
+            ));
         }
     }
 
@@ -2471,7 +2692,10 @@ impl VM {
         if idx < self.code_strings.len() {
             let code = self.code_strings[idx].clone();
             self.fitness.benchmark_code = Some(code.clone());
-            self.emit_str(&format!("benchmark set: {}\n", code.chars().take(50).collect::<String>()));
+            self.emit_str(&format!(
+                "benchmark set: {}\n",
+                code.chars().take(50).collect::<String>()
+            ));
         }
     }
 
@@ -2494,7 +2718,8 @@ impl VM {
                 if peers.is_empty() {
                     self.fitness.score
                 } else {
-                    let total: i64 = peers.iter().map(|p| p.score).sum::<i64>() + self.fitness.score;
+                    let total: i64 =
+                        peers.iter().map(|p| p.score).sum::<i64>() + self.fitness.score;
                     total / (peers.len() as i64 + 1)
                 }
             })
@@ -2517,7 +2742,9 @@ impl VM {
         }
         let idx = mutable_indices[self.rng.next_usize(mutable_indices.len())];
         let dict_len = self.dictionary.len();
-        if let Some(mut record) = mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len) {
+        if let Some(mut record) =
+            mutation::mutate_entry(&mut self.dictionary[idx], &mut self.rng, dict_len)
+        {
             record.word_index = idx;
 
             // Run benchmark after mutation.
@@ -2526,7 +2753,9 @@ impl VM {
             if after_score >= before_score {
                 self.emit_str(&format!(
                     "evolve: kept mutation ({} -> {}): {}\n",
-                    before_score, after_score, record.format()
+                    before_score,
+                    after_score,
+                    record.format()
                 ));
                 self.mutation_history.push(record);
             } else {
@@ -2602,28 +2831,50 @@ impl VM {
         // The broadcast happens by updating the mesh_json which gets
         // pushed to all connected browsers on the next 2s tick.
         if let Ok(mut json) = self.ws_mesh_json.lock() {
-            *json = format!(r#"{{"type":"broadcast","message":"{}"}}"#, msg.replace('"', "\\\""));
+            *json = format!(
+                r#"{{"type":"broadcast","message":"{}"}}"#,
+                msg.replace('"', "\\\"")
+            );
         }
         self.emit_str(&format!("ws broadcast: {}\n", msg));
     }
 
     fn update_ws_mesh_json(&mut self) {
-        let id_hex = self.node_id_cache
+        let id_hex = self
+            .node_id_cache
             .map(|id| mesh::id_to_hex(&id))
             .unwrap_or_default();
-        let peer_details = self.mesh.as_ref()
-            .map(|m| m.peer_details()).unwrap_or_default();
-        let goal_stats = self.mesh.as_ref()
-            .map(|m| m.goal_stats()).unwrap_or((0, 0, 0, 0));
-        let recent = self.mesh.as_ref()
-            .map(|m| m.drain_recent_events()).unwrap_or_default();
-        let children: Vec<(String, u32)> = self.spawn_state.children.iter()
+        let peer_details = self
+            .mesh
+            .as_ref()
+            .map(|m| m.peer_details())
+            .unwrap_or_default();
+        let goal_stats = self
+            .mesh
+            .as_ref()
+            .map(|m| m.goal_stats())
+            .unwrap_or((0, 0, 0, 0));
+        let recent = self
+            .mesh
+            .as_ref()
+            .map(|m| m.drain_recent_events())
+            .unwrap_or_default();
+        let children: Vec<(String, u32)> = self
+            .spawn_state
+            .children
+            .iter()
             .map(|c| (mesh::id_to_hex(&c.node_id), self.spawn_state.generation + 1))
             .collect();
         let json = ws_bridge::build_mesh_json(
-            &id_hex, self.fitness.score, self.spawn_state.generation,
-            &peer_details, goal_stats, &recent, &children,
-            self.monitor.watches.len(), self.monitor.alerts.len(),
+            &id_hex,
+            self.fitness.score,
+            self.spawn_state.generation,
+            &peer_details,
+            goal_stats,
+            &recent,
+            &children,
+            self.monitor.watches.len(),
+            self.monitor.alerts.len(),
         );
         if let Ok(mut j) = self.ws_mesh_json.lock() {
             *j = json;
@@ -2632,10 +2883,14 @@ impl VM {
 
     fn poll_ws_events(&mut self) {
         // Process incoming WS events (goal submissions from browsers).
-        let events: Vec<ws_bridge::WsEvent> = self.ws_events.as_ref()
+        let events: Vec<ws_bridge::WsEvent> = self
+            .ws_events
+            .as_ref()
             .map(|rx| {
                 let mut evts = Vec::new();
-                while let Ok(e) = rx.try_recv() { evts.push(e); }
+                while let Ok(e) = rx.try_recv() {
+                    evts.push(e);
+                }
                 evts
             })
             .unwrap_or_default();
@@ -2645,7 +2900,11 @@ impl VM {
                 ws_bridge::WsEvent::GoalSubmit { code, priority } => {
                     if let Some(ref m) = self.mesh {
                         let gid = m.create_goal(&code, priority, Some(code.clone()));
-                        println!("[ws] goal #{} from browser: {}", gid, code.chars().take(40).collect::<String>());
+                        println!(
+                            "[ws] goal #{} from browser: {}",
+                            gid,
+                            code.chars().take(40).collect::<String>()
+                        );
                     }
                 }
                 ws_bridge::WsEvent::ClientConnected { id } => {
@@ -2740,7 +2999,8 @@ impl VM {
             }
         } else if let Ok(watch_id) = target.trim().parse::<u32>() {
             let level = self.pop();
-            self.monitor.set_alert_level(watch_id, monitor::AlertLevel::from_val(level));
+            self.monitor
+                .set_alert_level(watch_id, monitor::AlertLevel::from_val(level));
             self.emit_str(&format!("alert threshold set for watch #{}\n", watch_id));
         }
     }
@@ -2750,17 +3010,22 @@ impl VM {
         if idx < self.code_strings.len() {
             if let Ok(watch_id) = self.code_strings[idx].trim().parse::<u32>() {
                 let level = self.pop();
-                self.monitor.set_alert_level(watch_id, monitor::AlertLevel::from_val(level));
+                self.monitor
+                    .set_alert_level(watch_id, monitor::AlertLevel::from_val(level));
             }
         }
     }
 
     fn prim_dashboard(&mut self) {
         let peer_count = self.mesh.as_ref().map(|m| m.peer_count()).unwrap_or(0);
-        let goal_summary = self.mesh.as_ref()
+        let goal_summary = self
+            .mesh
+            .as_ref()
             .map(|m| m.format_goals())
             .unwrap_or_default();
-        let s = self.monitor.format_dashboard(peer_count, self.fitness.score, &goal_summary);
+        let s = self
+            .monitor
+            .format_dashboard(peer_count, self.fitness.score, &goal_summary);
         self.emit_str(&s);
     }
 
@@ -2779,11 +3044,15 @@ impl VM {
             self.emit_str("EVERY: no code to schedule\n");
             return;
         }
-        let id = self.monitor.add_schedule(remaining.clone(), interval.max(1));
+        let id = self
+            .monitor
+            .add_schedule(remaining.clone(), interval.max(1));
         self.stack.push(id as Cell);
         self.emit_str(&format!(
             "schedule #{} every {}s: {}\n",
-            id, interval, remaining.chars().take(40).collect::<String>()
+            id,
+            interval,
+            remaining.chars().take(40).collect::<String>()
         ));
     }
 
@@ -2803,10 +3072,15 @@ impl VM {
             self.run_watch_check(*wid);
         }
         // Run handlers for active alerts.
-        let handlers: Vec<(u32, String)> = self.monitor.alerts.iter()
+        let handlers: Vec<(u32, String)> = self
+            .monitor
+            .alerts
+            .iter()
             .filter(|a| !a.acknowledged)
             .filter_map(|a| {
-                self.monitor.watches.get(&a.watch_id)
+                self.monitor
+                    .watches
+                    .get(&a.watch_id)
                     .and_then(|w| w.alert_handler.clone())
                     .map(|h| (a.id, h))
             })
@@ -2821,17 +3095,19 @@ impl VM {
     /// Execute a watch check for a specific watch ID.
     fn run_watch_check(&mut self, watch_id: u32) {
         #[cfg(target_arch = "wasm32")]
-        { let _ = watch_id; return; } // watches require native I/O
+        {
+            let _ = watch_id;
+            return;
+        } // watches require native I/O
         #[cfg(not(target_arch = "wasm32"))]
         {
-        let kind = match self.monitor.watches.get(&watch_id) {
-            Some(w) => w.kind.clone(),
-            None => return,
-        };
-        let start = Instant::now();
-        let status = match kind {
-            monitor::WatchKind::Url(ref url) => {
-                match io_words::http_get(url) {
+            let kind = match self.monitor.watches.get(&watch_id) {
+                Some(w) => w.kind.clone(),
+                None => return,
+            };
+            let start = Instant::now();
+            let status = match kind {
+                monitor::WatchKind::Url(ref url) => match io_words::http_get(url) {
                     Ok((_, code)) => {
                         let ms = start.elapsed().as_millis() as u64;
                         if (200..400).contains(&code) {
@@ -2841,50 +3117,57 @@ impl VM {
                         }
                     }
                     Err(e) => monitor::WatchStatus::down(-1, e),
-                }
-            }
-            monitor::WatchKind::File(ref path) => {
-                if io_words::file_exists(path) {
-                    let ms = start.elapsed().as_millis() as u64;
-                    match std::fs::metadata(path) {
-                        Ok(m) => monitor::WatchStatus::up(0, ms, format!("{}b", m.len())),
-                        Err(e) => monitor::WatchStatus::down(-1, e.to_string()),
-                    }
-                } else {
-                    monitor::WatchStatus::down(-1, "not found".into())
-                }
-            }
-            monitor::WatchKind::Process(ref name) => {
-                match io_words::shell_exec(&format!("pgrep -x {} >/dev/null 2>&1 && echo UP || echo DOWN", name)) {
-                    Ok((stdout, _)) => {
+                },
+                monitor::WatchKind::File(ref path) => {
+                    if io_words::file_exists(path) {
                         let ms = start.elapsed().as_millis() as u64;
-                        let out = String::from_utf8_lossy(&stdout).trim().to_string();
-                        if out.contains("UP") {
-                            monitor::WatchStatus::up(0, ms, "running".into())
-                        } else {
-                            monitor::WatchStatus::down(-1, "not running".into())
+                        match std::fs::metadata(path) {
+                            Ok(m) => monitor::WatchStatus::up(0, ms, format!("{}b", m.len())),
+                            Err(e) => monitor::WatchStatus::down(-1, e.to_string()),
                         }
+                    } else {
+                        monitor::WatchStatus::down(-1, "not found".into())
                     }
-                    Err(e) => monitor::WatchStatus::down(-1, e),
+                }
+                monitor::WatchKind::Process(ref name) => {
+                    match io_words::shell_exec(&format!(
+                        "pgrep -x {} >/dev/null 2>&1 && echo UP || echo DOWN",
+                        name
+                    )) {
+                        Ok((stdout, _)) => {
+                            let ms = start.elapsed().as_millis() as u64;
+                            let out = String::from_utf8_lossy(&stdout).trim().to_string();
+                            if out.contains("UP") {
+                                monitor::WatchStatus::up(0, ms, "running".into())
+                            } else {
+                                monitor::WatchStatus::down(-1, "not running".into())
+                            }
+                        }
+                        Err(e) => monitor::WatchStatus::down(-1, e),
+                    }
+                }
+            };
+
+            // Record the check result.
+            if let Some(alert) = self.monitor.record_check(watch_id, status.clone()) {
+                self.emit_str(&format!(
+                    "ALERT [{}] watch #{}: {}\n",
+                    alert.level.label(),
+                    watch_id,
+                    alert.message
+                ));
+                // Run alert handler if defined.
+                let handler = self
+                    .monitor
+                    .watches
+                    .get(&watch_id)
+                    .and_then(|w| w.alert_handler.clone());
+                if let Some(code) = handler {
+                    self.interpret_line(&code);
+                    // Fitness bonus for attempted remediation.
+                    self.fitness.score += 15;
                 }
             }
-        };
-
-        // Record the check result.
-        if let Some(alert) = self.monitor.record_check(watch_id, status.clone()) {
-            self.emit_str(&format!(
-                "ALERT [{}] watch #{}: {}\n",
-                alert.level.label(), watch_id, alert.message
-            ));
-            // Run alert handler if defined.
-            let handler = self.monitor.watches.get(&watch_id)
-                .and_then(|w| w.alert_handler.clone());
-            if let Some(code) = handler {
-                self.interpret_line(&code);
-                // Fitness bonus for attempted remediation.
-                self.fitness.score += 15;
-            }
-        }
         } // end #[cfg(not(wasm32))]
     }
 
@@ -2917,7 +3200,8 @@ impl VM {
         if !self.energy.can_afford(energy::SPAWN_COST) {
             self.emit_str(&format!(
                 "insufficient energy to spawn (need {}, have {})\n",
-                energy::SPAWN_COST, self.energy.energy
+                energy::SPAWN_COST,
+                self.energy.energy
             ));
             return;
         }
@@ -3033,10 +3317,22 @@ impl VM {
         if self.spawn_state.children.is_empty() {
             self.emit_str("  (no children)\n");
         } else {
-            let lines: Vec<String> = self.spawn_state.children.iter().map(|c| {
-                format!("  pid={} id={} age={}s\n", c.pid, mesh::id_to_hex(&c.node_id), c.spawned_at.elapsed().as_secs())
-            }).collect();
-            for line in &lines { self.emit_str(line); }
+            let lines: Vec<String> = self
+                .spawn_state
+                .children
+                .iter()
+                .map(|c| {
+                    format!(
+                        "  pid={} id={} age={}s\n",
+                        c.pid,
+                        mesh::id_to_hex(&c.node_id),
+                        c.spawned_at.elapsed().as_secs()
+                    )
+                })
+                .collect();
+            for line in &lines {
+                self.emit_str(line);
+            }
         }
     }
 
@@ -3147,7 +3443,9 @@ impl VM {
         self.rng = mutation::SimpleRng::new(u64::from_be_bytes(new_id));
         self.emit_str(&format!(
             "reidentified: {} -> {}\n",
-            old_id.map(|id| mesh::id_to_hex(&id)).unwrap_or_else(|| "none".into()),
+            old_id
+                .map(|id| mesh::id_to_hex(&id))
+                .unwrap_or_else(|| "none".into()),
             mesh::id_to_hex(&new_id),
         ));
     }
@@ -3158,7 +3456,9 @@ impl VM {
 
     fn make_snapshot(&self) -> persist::VmSnapshot {
         let node_id = self.node_id_cache.unwrap_or([0u8; 8]);
-        let goals = self.mesh.as_ref()
+        let goals = self
+            .mesh
+            .as_ref()
             .map(|m| m.clone_goals())
             .unwrap_or_else(goals::GoalRegistry::empty);
         persist::VmSnapshot {
@@ -3177,7 +3477,11 @@ impl VM {
             let snap = self.make_snapshot();
             let data = persist::serialize_snapshot(&snap);
             match persist::save_state(&id, &data) {
-                Ok(()) => self.emit_str(&format!("saved {} bytes to {}\n", data.len(), persist::state_dir(&id))),
+                Ok(()) => self.emit_str(&format!(
+                    "saved {} bytes to {}\n",
+                    data.len(),
+                    persist::state_dir(&id)
+                )),
                 Err(e) => self.emit_str(&format!("save failed: {}\n", e)),
             }
         } else {
@@ -3306,7 +3610,8 @@ impl VM {
             let goal_id = self.pop() as u64;
             let result = self.mesh.as_ref().and_then(|m| {
                 let mut st = m.state_lock();
-                st.goals.create_subtask(goal_id, code.clone(), Some(code.clone()))
+                st.goals
+                    .create_subtask(goal_id, code.clone(), Some(code.clone()))
             });
             if let Some(tid) = result {
                 self.emit_str(&format!("subtask #{} added to goal #{}\n", tid, goal_id));
@@ -3329,7 +3634,10 @@ impl VM {
         if ok {
             self.emit_str(&format!("goal #{} forked into {} tasks\n", goal_id, n));
         } else {
-            self.emit_str(&format!("fork failed: goal #{} not found or no code\n", goal_id));
+            self.emit_str(&format!(
+                "fork failed: goal #{} not found or no code\n",
+                goal_id
+            ));
         }
     }
 
@@ -3348,7 +3656,9 @@ impl VM {
                     if let Some(r) = result {
                         if !r.stack_snapshot.is_empty() {
                             s.push_str(" stack=");
-                            for v in &r.stack_snapshot { s.push_str(&format!("{} ", v)); }
+                            for v in &r.stack_snapshot {
+                                s.push_str(&format!("{} ", v));
+                            }
                         }
                         if !r.output.is_empty() {
                             s.push_str(&format!(" output=\"{}\"", r.output.trim_end()));
@@ -3395,7 +3705,8 @@ impl VM {
         let values: Vec<Cell> = if let Some(ref m) = self.mesh {
             let st = m.state_lock();
             let results = st.goals.collect_results(goal_id);
-            results.iter()
+            results
+                .iter()
                 .filter_map(|(_, r)| r.as_ref())
                 .flat_map(|r| r.stack_snapshot.iter().copied())
                 .collect()
@@ -3529,26 +3840,60 @@ struct CliArgs {
 fn parse_args() -> Option<CliArgs> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut cli = CliArgs {
-        port: None, peers: None, ws_port: None, eval_code: None,
-        file_path: None, no_mesh: false, no_prelude: false,
-        swarm: false, trust: None, quiet: false,
+        port: None,
+        peers: None,
+        ws_port: None,
+        eval_code: None,
+        file_path: None,
+        no_mesh: false,
+        no_prelude: false,
+        swarm: false,
+        trust: None,
+        quiet: false,
     };
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "-h" | "--help" => { print_help(); std::process::exit(0); }
-            "-v" | "--version" => { println!("{}", VERSION); std::process::exit(0); }
+            "-h" | "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
+            "-v" | "--version" => {
+                println!("{}", VERSION);
+                std::process::exit(0);
+            }
             "-q" | "--quiet" => cli.quiet = true,
-            "--port" => { i += 1; cli.port = args.get(i).and_then(|s| s.parse().ok()); }
-            "--peers" => { i += 1; cli.peers = args.get(i).cloned(); }
-            "--ws-port" => { i += 1; cli.ws_port = args.get(i).and_then(|s| s.parse().ok()); }
-            "--eval" => { i += 1; cli.eval_code = args.get(i).cloned(); }
-            "--file" => { i += 1; cli.file_path = args.get(i).cloned(); }
+            "--port" => {
+                i += 1;
+                cli.port = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--peers" => {
+                i += 1;
+                cli.peers = args.get(i).cloned();
+            }
+            "--ws-port" => {
+                i += 1;
+                cli.ws_port = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--eval" => {
+                i += 1;
+                cli.eval_code = args.get(i).cloned();
+            }
+            "--file" => {
+                i += 1;
+                cli.file_path = args.get(i).cloned();
+            }
             "--no-mesh" => cli.no_mesh = true,
             "--no-prelude" => cli.no_prelude = true,
             "--swarm" => cli.swarm = true,
-            "--trust" => { i += 1; cli.trust = args.get(i).cloned(); }
-            other => { eprintln!("unknown option: {}", other); std::process::exit(1); }
+            "--trust" => {
+                i += 1;
+                cli.trust = args.get(i).cloned();
+            }
+            other => {
+                eprintln!("unknown option: {}", other);
+                std::process::exit(1);
+            }
         }
         i += 1;
     }
@@ -3565,11 +3910,13 @@ fn main() {
     vm.silent = cli.quiet;
 
     // Port: CLI flag > env var > default 0.
-    let port: u16 = cli.port
+    let port: u16 = cli
+        .port
         .or_else(|| std::env::var("UNIT_PORT").ok().and_then(|s| s.parse().ok()))
         .unwrap_or(0);
 
-    let peers_str = cli.peers
+    let peers_str = cli
+        .peers
         .or_else(|| std::env::var("UNIT_PEERS").ok())
         .or_else(|| std::env::var("UNIT_SEEDS").ok())
         .unwrap_or_default();
@@ -3583,7 +3930,10 @@ fn main() {
                 use std::net::ToSocketAddrs;
                 match s.to_socket_addrs() {
                     Ok(mut addrs) => addrs.next(),
-                    Err(e) => { eprintln!("resolve {}: {}", s, e); None }
+                    Err(e) => {
+                        eprintln!("resolve {}: {}", s, e);
+                        None
+                    }
                 }
             })
         })
@@ -3592,7 +3942,9 @@ fn main() {
     // Start mesh unless --no-mesh.
     if !cli.no_mesh {
         let env_node_id: Option<[u8; 8]> = std::env::var("UNIT_NODE_ID").ok().and_then(|hex| {
-            if hex.len() != 16 { return None; }
+            if hex.len() != 16 {
+                return None;
+            }
             let mut id = [0u8; 8];
             for i in 0..8 {
                 id[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
@@ -3612,7 +3964,11 @@ fn main() {
                 vm.challenge_registry = challenges::ChallengeRegistry::new(&id);
                 // Register fib10 as a built-in challenge.
                 let fib = challenges::fib10_as_challenge();
-                vm.challenge_registry.register_builtin(&fib.name, &fib.target_output, fib.seed_programs);
+                vm.challenge_registry.register_builtin(
+                    &fib.name,
+                    &fib.target_output,
+                    fib.seed_programs,
+                );
                 let _ = persist::save_node_id(&id);
                 if resumed && !cli.quiet {
                     eprintln!("resumed identity {}", mesh::id_to_hex(&id));
@@ -3625,7 +3981,9 @@ fn main() {
                         if let Some(ref mut m) = vm.mesh {
                             m.external_addr = Some(addr);
                         }
-                        if !cli.quiet { eprintln!("external address: {}", addr); }
+                        if !cli.quiet {
+                            eprintln!("external address: {}", addr);
+                        }
                     }
                 }
 
@@ -3635,21 +3993,34 @@ fn main() {
                         if let Some(ref mut m) = vm.mesh {
                             m.mesh_key = Some(key);
                         }
-                        if !cli.quiet { eprintln!("mesh-key: enabled"); }
+                        if !cli.quiet {
+                            eprintln!("mesh-key: enabled");
+                        }
                     }
                 }
 
-                let ws_port: u16 = cli.ws_port
-                    .or_else(|| std::env::var("UNIT_WS_PORT").ok().and_then(|s| s.parse().ok()))
+                let ws_port: u16 = cli
+                    .ws_port
+                    .or_else(|| {
+                        std::env::var("UNIT_WS_PORT")
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                    })
                     .unwrap_or_else(|| if port > 0 { port + 2000 } else { 0 });
                 if ws_port > 0 {
                     match ws_bridge::start_ws_bridge(ws_port, vm.ws_mesh_json.clone()) {
                         Ok((ws_st, ws_rx)) => {
                             vm.ws_state = Some(ws_st);
                             vm.ws_events = Some(ws_rx);
-                            if !cli.quiet { eprintln!("ws-bridge: listening on port {}", ws_port); }
+                            if !cli.quiet {
+                                eprintln!("ws-bridge: listening on port {}", ws_port);
+                            }
                         }
-                        Err(e) => { if !cli.quiet { eprintln!("ws-bridge: {}", e); } }
+                        Err(e) => {
+                            if !cli.quiet {
+                                eprintln!("ws-bridge: {}", e);
+                            }
+                        }
                     }
                 }
 
@@ -3665,15 +4036,22 @@ fn main() {
                         for i in 0..8 {
                             match u8::from_str_radix(&parent_hex[i * 2..i * 2 + 2], 16) {
                                 Ok(b) => pid[i] = b,
-                                Err(_) => { ok = false; break; }
+                                Err(_) => {
+                                    ok = false;
+                                    break;
+                                }
                             }
                         }
-                        if ok { vm.spawn_state.parent_id = Some(pid); }
+                        if ok {
+                            vm.spawn_state.parent_id = Some(pid);
+                        }
                     }
                 }
             }
             Err(e) => {
-                if !cli.quiet { eprintln!("mesh: failed to start: {}", e); }
+                if !cli.quiet {
+                    eprintln!("mesh: failed to start: {}", e);
+                }
             }
         }
     }
@@ -3707,34 +4085,36 @@ fn main() {
     if !restored && !cli.no_prelude {
         // Suppress prelude output for --eval and --quiet modes.
         let suppress = cli.eval_code.is_some() || cli.quiet;
-        if suppress { vm.output_buffer = Some(String::new()); }
+        if suppress {
+            vm.output_buffer = Some(String::new());
+        }
         vm.load_prelude();
-        if suppress { vm.output_buffer = None; }
+        if suppress {
+            vm.output_buffer = None;
+        }
     }
     // Record kernel+prelude dictionary size so snapshots only save user words.
     vm.kernel_word_count = vm.dictionary.len();
     vm.silent = false;
 
     // Try JSON resurrection (only if not already restored from binary state).
-    if !restored
-        && vm.try_resurrect() {
-            if !cli.quiet {
-                eprintln!("resurrected from snapshot");
-            }
-            // Broadcast resurrection to mesh.
-            if let Some(id) = vm.node_id_cache {
-                if let Some(json) = snapshot::load_json_snapshot(&id) {
-                    if let Some(snap) = snapshot::from_json(&json) {
-                        if let Some(ref m) = vm.mesh {
-                            let sexp = sexp::msg_resurrect(
-                                &id, snap.fitness, snap.generation, snap.timestamp,
-                            );
-                            m.send_sexp(&sexp.to_string());
-                        }
+    if !restored && vm.try_resurrect() {
+        if !cli.quiet {
+            eprintln!("resurrected from snapshot");
+        }
+        // Broadcast resurrection to mesh.
+        if let Some(id) = vm.node_id_cache {
+            if let Some(json) = snapshot::load_json_snapshot(&id) {
+                if let Some(snap) = snapshot::from_json(&json) {
+                    if let Some(ref m) = vm.mesh {
+                        let sexp =
+                            sexp::msg_resurrect(&id, snap.fitness, snap.generation, snap.timestamp);
+                        m.send_sexp(&sexp.to_string());
                     }
                 }
             }
         }
+    }
 
     // Apply --trust.
     if let Some(ref level) = cli.trust {

@@ -144,18 +144,29 @@ fn ws_decode_frame(data: &[u8]) -> Option<(String, usize)> {
     let mut offset = 2;
 
     if payload_len == 126 {
-        if data.len() < 4 { return None; }
+        if data.len() < 4 {
+            return None;
+        }
         payload_len = u16::from_be_bytes([data[2], data[3]]) as usize;
         offset = 4;
     } else if payload_len == 127 {
-        if data.len() < 10 { return None; }
+        if data.len() < 10 {
+            return None;
+        }
         payload_len = u64::from_be_bytes(data[2..10].try_into().ok()?) as usize;
         offset = 10;
     }
 
     let mask_key = if masked {
-        if data.len() < offset + 4 { return None; }
-        let key = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+        if data.len() < offset + 4 {
+            return None;
+        }
+        let key = [
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ];
         offset += 4;
         Some(key)
     } else {
@@ -313,14 +324,20 @@ fn handle_ws_client(
             Ok(n) => {
                 buf.extend_from_slice(&tmp[..n]);
                 // Check if we have the complete headers.
-                if buf.windows(4).any(|w| w == b"\r\n\r\n") { break; }
-                if buf.len() > 8192 { return; } // safety limit
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+                if buf.len() > 8192 {
+                    return;
+                } // safety limit
             }
             Err(_) => return,
         }
     }
     let request = String::from_utf8_lossy(&buf).to_string();
-    let is_upgrade = request.lines().any(|l| l.to_lowercase().contains("upgrade: websocket"));
+    let is_upgrade = request
+        .lines()
+        .any(|l| l.to_lowercase().contains("upgrade: websocket"));
 
     // Handle OPTIONS preflight (CORS / Private Network Access).
     if request.starts_with("OPTIONS ") {
@@ -343,8 +360,14 @@ fn handle_ws_client(
 fn serve_http(stream: &mut TcpStream, request: &str) {
     let path = request.split_whitespace().nth(1).unwrap_or("/");
     let (content_type, body): (&str, &[u8]) = match path {
-        "/" | "/index.html" => ("text/html; charset=utf-8", include_bytes!("../../web/index.html")),
-        "/unit.js" => ("application/javascript; charset=utf-8", include_bytes!("../../web/unit.js")),
+        "/" | "/index.html" => (
+            "text/html; charset=utf-8",
+            include_bytes!("../../web/index.html"),
+        ),
+        "/unit.js" => (
+            "application/javascript; charset=utf-8",
+            include_bytes!("../../web/unit.js"),
+        ),
         "/unit.wasm" => ("application/wasm", include_bytes!("../../web/unit.wasm")),
         _ => {
             let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
@@ -397,13 +420,19 @@ fn handle_ws_upgrade(
     let _ = stream.flush();
 
     // Switch to short timeout for the frame read loop.
-    stream.set_read_timeout(Some(Duration::from_millis(100))).ok();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .ok();
 
     // Generate client ID.
-    let client_id = format!("browser-{:04x}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() & 0xFFFF);
+    let client_id = format!(
+        "browser-{:04x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+            & 0xFFFF
+    );
 
     // Register client.
     {
@@ -426,7 +455,9 @@ fn handle_ws_upgrade(
     {
         let welcome = r#"{"type":"welcome","id":"server"}"#;
         let frame = ws_encode_text(welcome);
-        if stream.write_all(&frame).is_err() { return; }
+        if stream.write_all(&frame).is_err() {
+            return;
+        }
         let _ = stream.flush();
     }
 
@@ -446,15 +477,18 @@ fn handle_ws_upgrade(
         match stream.read(&mut tmp) {
             Ok(0) => break,
             Ok(n) => {
-                if tmp[0] & 0x0F == 8 { break; }
+                if tmp[0] & 0x0F == 8 {
+                    break;
+                }
                 read_buf.extend_from_slice(&tmp[..n]);
                 while let Some((text, consumed)) = ws_decode_frame(&read_buf) {
                     read_buf.drain(..consumed);
                     handle_browser_message(&text, &client_id, &tx, &state);
                 }
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(_) => break,
         }
 
@@ -486,9 +520,7 @@ fn handle_ws_upgrade(
         let mut st = state.lock().unwrap();
         st.clients.remove(&client_id);
     }
-    let _ = tx.send(WsEvent::ClientDisconnected {
-        id: client_id,
-    });
+    let _ = tx.send(WsEvent::ClientDisconnected { id: client_id });
 }
 
 fn handle_browser_message(
@@ -548,7 +580,9 @@ fn extract_json_number(json: &str, key: &str) -> Option<i64> {
     let rest = &json[pos + pattern.len()..];
     let rest = rest.trim_start().strip_prefix(':')?;
     let rest = rest.trim_start();
-    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '-')
+        .unwrap_or(rest.len());
     rest[..end].parse().ok()
 }
 
@@ -559,7 +593,7 @@ pub fn build_mesh_json(
     self_id: &str,
     self_fitness: i64,
     self_generation: u32,
-    peers: &[(String, i64, String)], // (id_hex, fitness, addr)
+    peers: &[(String, i64, String)],     // (id_hex, fitness, addr)
     goals: (usize, usize, usize, usize), // (total, pending, active, completed)
     recent_events: &[String],
     children: &[(String, u32)], // (id_hex, generation)
@@ -573,8 +607,13 @@ pub fn build_mesh_json(
     // Peers array.
     json.push_str(r#""peers":["#);
     for (i, (id, fit, addr)) in peers.iter().enumerate() {
-        if i > 0 { json.push(','); }
-        json.push_str(&format!(r#"{{"id":"{}","fitness":{},"addr":"{}"}}"#, id, fit, addr));
+        if i > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            r#"{{"id":"{}","fitness":{},"addr":"{}"}}"#,
+            id, fit, addr
+        ));
     }
     json.push_str(r#"],"#);
     // Goals.
@@ -585,7 +624,9 @@ pub fn build_mesh_json(
     // Recent events.
     json.push_str(r#""recent_events":["#);
     for (i, evt) in recent_events.iter().enumerate() {
-        if i > 0 { json.push(','); }
+        if i > 0 {
+            json.push(',');
+        }
         let escaped = evt.replace('\\', "\\\\").replace('"', "\\\"");
         json.push_str(&format!(r#""{}""#, escaped));
     }
@@ -593,11 +634,16 @@ pub fn build_mesh_json(
     // Children.
     json.push_str(r#""children":["#);
     for (i, (id, gen)) in children.iter().enumerate() {
-        if i > 0 { json.push(','); }
+        if i > 0 {
+            json.push(',');
+        }
         json.push_str(&format!(r#"{{"id":"{}","generation":{}}}"#, id, gen));
     }
     json.push_str(r#"],"#);
     // Counts.
-    json.push_str(&format!(r#""watch_count":{},"alert_count":{}}}"#, watch_count, alert_count));
+    json.push_str(&format!(
+        r#""watch_count":{},"alert_count":{}}}"#,
+        watch_count, alert_count
+    ));
     json
 }

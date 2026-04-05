@@ -191,8 +191,7 @@ pub fn spawn_local(
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o755);
-        std::fs::set_permissions(&bin_path, perms)
-            .map_err(|e| format!("chmod: {}", e))?;
+        std::fs::set_permissions(&bin_path, perms).map_err(|e| format!("chmod: {}", e))?;
     }
 
     // Write state.
@@ -202,8 +201,11 @@ pub fn spawn_local(
         .map_err(|e| format!("write state: {}", e))?;
 
     // Write the node-id file so the child boots with this identity.
-    std::fs::write(format!("{}/.unit/spawn/{}/node-id", home, child_hex), &child_hex)
-        .map_err(|e| format!("write node-id: {}", e))?;
+    std::fs::write(
+        format!("{}/.unit/spawn/{}/node-id", home, child_hex),
+        &child_hex,
+    )
+    .map_err(|e| format!("write node-id: {}", e))?;
 
     // Pick a port: 0 = OS-assigned.
     let child_port = 0u16;
@@ -236,11 +238,8 @@ pub fn send_package(addr: &str, package: &[u8]) -> Result<(), String> {
     use std::net::TcpStream;
     use std::time::Duration;
 
-    let mut stream = TcpStream::connect(addr)
-        .map_err(|e| format!("connect {}: {}", addr, e))?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(30)))
-        .ok();
+    let mut stream = TcpStream::connect(addr).map_err(|e| format!("connect {}: {}", addr, e))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
 
     // Send length prefix + package.
     let len_bytes = (package.len() as u64).to_be_bytes();
@@ -256,9 +255,7 @@ pub fn send_package(addr: &str, package: &[u8]) -> Result<(), String> {
 
 /// Listen for incoming replication packages on a TCP port.
 /// Runs in a background thread. Calls `on_receive` for each package.
-pub fn start_replication_listener(
-    port: u16,
-) -> Result<std::sync::mpsc::Receiver<Vec<u8>>, String> {
+pub fn start_replication_listener(port: u16) -> Result<std::sync::mpsc::Receiver<Vec<u8>>, String> {
     use std::io::Read;
     use std::net::TcpListener;
 

@@ -119,11 +119,7 @@ pub struct PeerFitness {
 }
 
 /// Format a leaderboard from a list of peer fitness entries plus self.
-pub fn format_leaderboard(
-    self_id: &NodeId,
-    self_score: i64,
-    peers: &[PeerFitness],
-) -> String {
+pub fn format_leaderboard(self_id: &NodeId, self_score: i64, peers: &[PeerFitness]) -> String {
     let mut entries: Vec<(NodeId, i64)> = peers.iter().map(|p| (p.id, p.score)).collect();
     entries.push((*self_id, self_score));
     entries.sort_by(|a, b| b.1.cmp(&a.1));

@@ -37,10 +37,10 @@ pub struct WatchEntry {
 #[derive(Clone, Debug)]
 pub struct WatchStatus {
     pub ok: bool,
-    pub code: i32,          // HTTP status or exit code
-    pub response_ms: u64,   // response time in ms
-    pub message: String,    // human-readable status
-    pub timestamp: u64,     // unix epoch secs
+    pub code: i32,        // HTTP status or exit code
+    pub response_ms: u64, // response time in ms
+    pub message: String,  // human-readable status
+    pub timestamp: u64,   // unix epoch secs
 }
 
 impl WatchStatus {
@@ -255,11 +255,9 @@ impl MonitorState {
     pub fn due_watches(&self) -> Vec<u32> {
         self.watches
             .values()
-            .filter(|w| {
-                match w.last_check {
-                    None => true,
-                    Some(t) => t.elapsed() >= Duration::from_secs(w.interval_secs),
-                }
+            .filter(|w| match w.last_check {
+                None => true,
+                Some(t) => t.elapsed() >= Duration::from_secs(w.interval_secs),
             })
             .map(|w| w.id)
             .collect()
@@ -364,7 +362,11 @@ impl MonitorState {
             if w.history.is_empty() {
                 return format!("  watch #{}: no history\n", watch_id);
             }
-            let mut out = format!("  watch #{} history ({} entries):\n", watch_id, w.history.len());
+            let mut out = format!(
+                "  watch #{} history ({} entries):\n",
+                watch_id,
+                w.history.len()
+            );
             for (i, s) in w.history.iter().enumerate().rev().take(20) {
                 out.push_str(&format!(
                     "    {}: {} {}ms {}\n",
@@ -389,7 +391,11 @@ impl MonitorState {
             let ack = if a.acknowledged { " [ACK]" } else { "" };
             out.push_str(&format!(
                 "  #{} [{}]{} watch #{}: {}\n",
-                a.id, a.level.label(), ack, a.watch_id, a.message
+                a.id,
+                a.level.label(),
+                ack,
+                a.watch_id,
+                a.message
             ));
         }
         out
@@ -403,7 +409,10 @@ impl MonitorState {
         for a in self.alert_history.iter().rev().take(20) {
             out.push_str(&format!(
                 "  #{} [{}] watch #{}: {}\n",
-                a.id, a.level.label(), a.watch_id, a.message
+                a.id,
+                a.level.label(),
+                a.watch_id,
+                a.message
             ));
         }
         out
@@ -435,12 +444,7 @@ impl MonitorState {
         out
     }
 
-    pub fn format_dashboard(
-        &self,
-        peer_count: usize,
-        fitness: i64,
-        goal_summary: &str,
-    ) -> String {
+    pub fn format_dashboard(&self, peer_count: usize, fitness: i64, goal_summary: &str) -> String {
         let mut out = String::from("╔══════════════════════════════════════╗\n");
         out.push_str("║         UNIT OPS DASHBOARD           ║\n");
         out.push_str("╚══════════════════════════════════════╝\n");
@@ -462,7 +466,9 @@ impl MonitorState {
                 let spark = sparkline(&w.history);
                 out.push_str(&format!(
                     "  #{} [{}] {} {} {}\n",
-                    w.id, status, spark,
+                    w.id,
+                    status,
+                    spark,
                     w.last_status.response_ms,
                     name.chars().take(30).collect::<String>()
                 ));
@@ -478,7 +484,9 @@ impl MonitorState {
             for a in self.alerts.iter().filter(|a| !a.acknowledged) {
                 out.push_str(&format!(
                     "  [{}] watch #{}: {}\n",
-                    a.level.label(), a.watch_id, a.message
+                    a.level.label(),
+                    a.watch_id,
+                    a.message
                 ));
             }
         }
@@ -539,7 +547,9 @@ fn now_secs() -> u64 {
             .as_secs()
     }
     #[cfg(target_arch = "wasm32")]
-    { 0 }
+    {
+        0
+    }
 }
 
 /// Generate an ASCII sparkline from watch history response times.
@@ -548,7 +558,13 @@ fn sparkline(history: &[WatchStatus]) -> String {
         return String::from("        ");
     }
     let bars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let times: Vec<u64> = history.iter().rev().take(8).rev().map(|s| s.response_ms).collect();
+    let times: Vec<u64> = history
+        .iter()
+        .rev()
+        .take(8)
+        .rev()
+        .map(|s| s.response_ms)
+        .collect();
     let max = *times.iter().max().unwrap_or(&1);
     let max = max.max(1);
     times
