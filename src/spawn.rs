@@ -96,6 +96,7 @@ fn read_own_binary() -> Result<Vec<u8>, String> {
 // Child tracking
 // ---------------------------------------------------------------------------
 
+/// Information about a spawned child unit process.
 #[derive(Clone, Debug)]
 pub struct ChildInfo {
     pub pid: u32,
@@ -104,6 +105,7 @@ pub struct ChildInfo {
     pub spawned_at: Instant,
 }
 
+/// Tracks self-replication state including children and spawn limits.
 #[derive(Clone, Debug)]
 pub struct SpawnState {
     pub children: Vec<ChildInfo>,
@@ -123,6 +125,7 @@ impl Default for SpawnState {
 }
 
 impl SpawnState {
+    /// Creates a new spawn state with default limits.
     pub fn new() -> Self {
         SpawnState {
             children: Vec::new(),
@@ -136,6 +139,7 @@ impl SpawnState {
         }
     }
 
+    /// Checks whether spawning is allowed, returning an error if not.
     pub fn can_spawn(&self) -> Result<(), String> {
         if self.quarantine {
             return Err("quarantine active".into());

@@ -1,8 +1,7 @@
-// distgoal.rs — Distributed goal computation for unit
-//
-// A unit breaks a problem into sub-goals, distributes them as S-expressions
-// to mesh peers, collects results, and combines the answer. Map-reduce
-// with nanobots.
+//! Distributed goal computation for unit.
+//!
+//! A unit breaks a problem into sub-goals, distributes them as S-expressions
+//! to mesh peers, collects results, and combines the answer.
 
 use std::collections::HashMap;
 
@@ -10,8 +9,10 @@ use std::collections::HashMap;
 // Types
 // ---------------------------------------------------------------------------
 
+/// Unique identifier for a distributed goal.
 pub type GoalId = u64;
 
+/// Tracks the lifecycle state of a distributed goal.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DistStatus {
     Pending,
@@ -20,6 +21,7 @@ pub enum DistStatus {
     Failed,
 }
 
+/// A single sub-task within a distributed goal, assigned to a local or remote worker.
 #[derive(Clone, Debug)]
 pub struct SubGoal {
     pub seq: usize,
@@ -29,6 +31,7 @@ pub struct SubGoal {
     pub sent_at: u64, // counter-based (not time)
 }
 
+/// A distributed goal composed of multiple sub-goals with a result combiner.
 #[derive(Clone, Debug)]
 pub struct DistGoal {
     pub id: GoalId,
@@ -39,6 +42,7 @@ pub struct DistGoal {
     pub tick: u64, // monotonic counter for timeouts
 }
 
+/// Strategy for combining sub-goal results into a final answer.
 #[derive(Clone, Debug)]
 pub enum Combiner {
     List,   // collect all results as a list
@@ -46,6 +50,7 @@ pub enum Combiner {
     Concat, // concatenate output strings
 }
 
+/// Manages distributed goal creation, assignment, result collection, and timeouts.
 #[derive(Clone, Debug, Default)]
 pub struct DistEngine {
     pub goals: HashMap<GoalId, DistGoal>,
@@ -55,6 +60,7 @@ pub struct DistEngine {
 }
 
 impl DistEngine {
+    /// Creates a new engine with default timeout settings.
     pub fn new() -> Self {
         DistEngine {
             goals: HashMap::new(),
@@ -64,12 +70,14 @@ impl DistEngine {
         }
     }
 
+    /// Allocates and returns the next unique goal ID.
     pub fn next_id(&mut self) -> GoalId {
         let id = self.next_id;
         self.next_id += 1;
         id
     }
 
+    /// Advances the internal tick counter for timeout tracking.
     pub fn advance_tick(&mut self) {
         self.tick += 1;
     }
@@ -256,6 +264,7 @@ impl DistEngine {
 // Parse pipe-separated expressions from DIST-GOAL{ ... }
 // ---------------------------------------------------------------------------
 
+/// Splits a pipe-separated input string into individual Forth expressions.
 pub fn parse_pipe_expressions(input: &str) -> Vec<String> {
     input
         .split('|')
@@ -268,6 +277,7 @@ pub fn parse_pipe_expressions(input: &str) -> Vec<String> {
 // S-expression message constructors
 // ---------------------------------------------------------------------------
 
+/// Builds an S-expression to dispatch a sub-goal to a remote peer.
 pub fn sexp_sub_goal(goal_id: GoalId, seq: usize, from: &str, expr: &str) -> String {
     format!(
         "(sub-goal :id {} :seq {} :from \"{}\" :expr \"{}\")",
@@ -278,6 +288,7 @@ pub fn sexp_sub_goal(goal_id: GoalId, seq: usize, from: &str, expr: &str) -> Str
     )
 }
 
+/// Builds an S-expression to return a sub-goal result to the originator.
 pub fn sexp_sub_result(goal_id: GoalId, seq: usize, from: &str, result: &str) -> String {
     format!(
         "(sub-result :id {} :seq {} :from \"{}\" :result \"{}\")",
@@ -288,6 +299,7 @@ pub fn sexp_sub_result(goal_id: GoalId, seq: usize, from: &str, result: &str) ->
     )
 }
 
+/// Builds an S-expression announcing that a distributed goal is complete.
 pub fn sexp_dist_complete(goal_id: GoalId, results: &str, peers: usize) -> String {
     format!(
         "(dist-complete :id {} :results \"{}\" :peers {})",

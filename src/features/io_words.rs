@@ -15,18 +15,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // File system
 // ---------------------------------------------------------------------------
 
+/// Reads the entire contents of a file as bytes.
 pub fn file_read(path: &str) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|e| format!("{}: {}", path, e))
 }
 
+/// Writes bytes to a file, creating or overwriting it.
 pub fn file_write(path: &str, data: &[u8]) -> Result<(), String> {
     fs::write(path, data).map_err(|e| format!("{}: {}", path, e))
 }
 
+/// Returns true if the path exists on the filesystem.
 pub fn file_exists(path: &str) -> bool {
     fs::metadata(path).is_ok()
 }
 
+/// Lists directory entries sorted alphabetically.
 pub fn file_list(path: &str) -> Result<Vec<String>, String> {
     let entries = fs::read_dir(path).map_err(|e| format!("{}: {}", path, e))?;
     let mut names = Vec::new();
@@ -37,6 +41,7 @@ pub fn file_list(path: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
+/// Deletes a file at the given path.
 pub fn file_delete(path: &str) -> Result<(), String> {
     fs::remove_file(path).map_err(|e| format!("{}: {}", path, e))
 }
@@ -91,6 +96,7 @@ fn parse_http_response(data: &[u8]) -> Result<(Vec<u8>, u16), String> {
     Ok((body, status))
 }
 
+/// Performs an HTTP GET request, returning the response body and status code.
 pub fn http_get(url: &str) -> Result<(Vec<u8>, u16), String> {
     let (host, port, path) = parse_url(url)?;
     let addr = format!("{}:{}", host, port);
@@ -115,6 +121,7 @@ pub fn http_get(url: &str) -> Result<(Vec<u8>, u16), String> {
     parse_http_response(&buf)
 }
 
+/// Performs an HTTP POST request, returning the response body and status code.
 pub fn http_post(url: &str, body: &[u8]) -> Result<(Vec<u8>, u16), String> {
     let (host, port, path) = parse_url(url)?;
     let addr = format!("{}:{}", host, port);
@@ -146,6 +153,7 @@ pub fn http_post(url: &str, body: &[u8]) -> Result<(Vec<u8>, u16), String> {
 // System
 // ---------------------------------------------------------------------------
 
+/// Executes a shell command, returning stdout and exit code.
 pub fn shell_exec(cmd: &str) -> Result<(Vec<u8>, i32), String> {
     let output = Command::new("sh")
         .arg("-c")
@@ -156,10 +164,12 @@ pub fn shell_exec(cmd: &str) -> Result<(Vec<u8>, i32), String> {
     Ok((output.stdout, exit_code))
 }
 
+/// Reads an environment variable by name.
 pub fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+/// Returns the current Unix epoch timestamp in seconds.
 pub fn timestamp() -> i64 {
     #[cfg(not(target_arch = "wasm32"))]
     {

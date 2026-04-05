@@ -1,8 +1,8 @@
-// evolve.rs — Genetic programming engine for unit
-//
-// Evolves Forth programs through mutation and selection to solve
-// fitness challenges. The default challenge: find the shortest
-// program that computes the 10th Fibonacci number (55).
+//! Genetic programming engine for unit.
+//!
+//! Evolves Forth programs through mutation and selection to solve
+//! fitness challenges. The default challenge: find the shortest
+//! program that computes the 10th Fibonacci number (55).
 
 use crate::features::mutation::SimpleRng;
 
@@ -10,6 +10,7 @@ use crate::features::mutation::SimpleRng;
 // Types
 // ---------------------------------------------------------------------------
 
+/// A fitness challenge defining the target output and evaluation constraints.
 #[derive(Clone, Debug)]
 pub struct FitnessChallenge {
     pub name: String,
@@ -18,6 +19,7 @@ pub struct FitnessChallenge {
     pub seed_programs: Vec<String>,
 }
 
+/// A candidate Forth program being evolved, with its fitness score.
 #[derive(Clone, Debug)]
 pub struct Candidate {
     pub program: String,
@@ -27,6 +29,7 @@ pub struct Candidate {
 }
 
 impl Candidate {
+    /// Creates a new candidate from source code with default fitness.
     pub fn new(program: &str) -> Self {
         Candidate {
             program: program.to_string(),
@@ -36,11 +39,13 @@ impl Candidate {
         }
     }
 
+    /// Returns the number of whitespace-delimited tokens in the program.
     pub fn token_count(&self) -> usize {
         self.program.split_whitespace().count()
     }
 }
 
+/// The full state of an evolution run, including population and best candidate.
 #[derive(Clone, Debug)]
 pub struct EvolutionState {
     pub challenge: FitnessChallenge,
@@ -53,6 +58,7 @@ pub struct EvolutionState {
 }
 
 impl EvolutionState {
+    /// Creates a new evolution state for the given challenge.
     pub fn new(challenge: FitnessChallenge, max_gen: u32) -> Self {
         EvolutionState {
             challenge,
@@ -70,6 +76,7 @@ impl EvolutionState {
 // Default challenge: fib10
 // ---------------------------------------------------------------------------
 
+/// Returns the default fib10 challenge: find the shortest program that outputs 55.
 pub fn fib10_challenge() -> FitnessChallenge {
     FitnessChallenge {
         name: "fib10".into(),
@@ -131,14 +138,17 @@ fn random_token(rng: &mut SimpleRng) -> &'static str {
     VOCAB[rng.next_usize(VOCAB.len())]
 }
 
+/// Splits a Forth program into whitespace-delimited tokens.
 pub fn tokenize(program: &str) -> Vec<String> {
     program.split_whitespace().map(|s| s.to_string()).collect()
 }
 
+/// Joins tokens back into a space-separated Forth program string.
 pub fn detokenize(tokens: &[String]) -> String {
     tokens.join(" ")
 }
 
+/// Applies a random token-level mutation (swap, insert, delete, replace, or double).
 pub fn mutate(program: &str, rng: &mut SimpleRng) -> String {
     let mut tokens = tokenize(program);
     if tokens.is_empty() {
@@ -189,6 +199,7 @@ pub fn mutate(program: &str, rng: &mut SimpleRng) -> String {
     detokenize(&tokens)
 }
 
+/// Produces an offspring program by splicing tokens from two parents at random cut points.
 pub fn crossover(a: &str, b: &str, rng: &mut SimpleRng) -> String {
     let ta = tokenize(a);
     let tb = tokenize(b);
@@ -216,6 +227,7 @@ pub fn crossover(a: &str, b: &str, rng: &mut SimpleRng) -> String {
 // Selection
 // ---------------------------------------------------------------------------
 
+/// Selects the fittest candidate from a random tournament of 4.
 pub fn tournament_select<'a>(pop: &'a [Candidate], rng: &mut SimpleRng) -> &'a Candidate {
     let mut best_idx = rng.next_usize(pop.len());
     for _ in 0..3 {
@@ -231,6 +243,7 @@ pub fn tournament_select<'a>(pop: &'a [Candidate], rng: &mut SimpleRng) -> &'a C
 // Population initialization
 // ---------------------------------------------------------------------------
 
+/// Initializes a population from seed programs and random mutations.
 pub fn init_population(
     challenge: &FitnessChallenge,
     pop_size: usize,
@@ -262,6 +275,7 @@ pub fn init_population(
 // Generation step (produces next generation from current)
 // ---------------------------------------------------------------------------
 
+/// Produces the next generation by preserving elites and breeding offspring.
 pub fn next_generation(pop: &[Candidate], gen: u32, rng: &mut SimpleRng) -> Vec<Candidate> {
     let pop_size = pop.len();
     let elite_count = 5.min(pop_size);
@@ -309,6 +323,7 @@ pub fn next_generation(pop: &[Candidate], gen: u32, rng: &mut SimpleRng) -> Vec<
 // Serialization for snapshots
 // ---------------------------------------------------------------------------
 
+/// Serializes the best candidate from an evolution state as a summary string.
 pub fn serialize_best(state: &EvolutionState) -> String {
     if let Some(ref best) = state.best {
         format!(

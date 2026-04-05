@@ -10,6 +10,7 @@ use crate::mesh::NodeId;
 // S-expression type
 // ---------------------------------------------------------------------------
 
+/// An S-expression value used as the mesh wire format.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Sexp {
     Atom(String),
@@ -19,6 +20,7 @@ pub enum Sexp {
 }
 
 impl Sexp {
+    /// Returns the inner string if this is an `Atom`.
     pub fn as_atom(&self) -> Option<&str> {
         match self {
             Sexp::Atom(s) => Some(s),
@@ -26,6 +28,7 @@ impl Sexp {
         }
     }
 
+    /// Returns the inner value if this is a `Number`.
     pub fn as_number(&self) -> Option<i64> {
         match self {
             Sexp::Number(n) => Some(*n),
@@ -33,6 +36,7 @@ impl Sexp {
         }
     }
 
+    /// Returns the inner string if this is a `Str`.
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Sexp::Str(s) => Some(s),
@@ -40,6 +44,7 @@ impl Sexp {
         }
     }
 
+    /// Returns the inner slice if this is a `List`.
     pub fn as_list(&self) -> Option<&[Sexp]> {
         match self {
             Sexp::List(v) => Some(v),
@@ -100,6 +105,7 @@ impl core::fmt::Display for Sexp {
 // Parser
 // ---------------------------------------------------------------------------
 
+/// Error returned when S-expression parsing fails.
 #[derive(Debug)]
 pub struct ParseError(pub String);
 
@@ -109,6 +115,7 @@ impl core::fmt::Display for ParseError {
     }
 }
 
+/// Parses a complete S-expression from the input string.
 pub fn parse(input: &str) -> Result<Sexp, ParseError> {
     let mut pos = 0;
     skip_whitespace(input, &mut pos);
@@ -266,6 +273,7 @@ fn translate_op(op: &str) -> String {
 // Mesh message constructors
 // ---------------------------------------------------------------------------
 
+/// Constructs a `peer-hello` mesh message.
 pub fn msg_peer_hello(id: &NodeId, gen: i64, fitness: i64, peers: usize) -> Sexp {
     Sexp::List(vec![
         Sexp::Atom("peer-hello".into()),
@@ -280,6 +288,7 @@ pub fn msg_peer_hello(id: &NodeId, gen: i64, fitness: i64, peers: usize) -> Sexp
     ])
 }
 
+/// Constructs a `peer-status` mesh message with load information.
 pub fn msg_peer_status(id: &NodeId, peers: usize, fitness: i64, load: u32, capacity: u32) -> Sexp {
     Sexp::List(vec![
         Sexp::Atom("peer-status".into()),
@@ -296,6 +305,7 @@ pub fn msg_peer_status(id: &NodeId, peers: usize, fitness: i64, load: u32, capac
     ])
 }
 
+/// Constructs a `goal` mesh message with executable code.
 pub fn msg_goal(goal_id: u64, code: &str) -> Sexp {
     Sexp::List(vec![
         Sexp::Atom("goal".into()),
@@ -306,6 +316,7 @@ pub fn msg_goal(goal_id: u64, code: &str) -> Sexp {
     ])
 }
 
+/// Constructs a `goal-result` mesh message with execution output.
 pub fn msg_goal_result(goal_id: u64, unit_id: &NodeId, success: bool, output: &str) -> Sexp {
     Sexp::List(vec![
         Sexp::Atom("goal-result".into()),
@@ -320,6 +331,7 @@ pub fn msg_goal_result(goal_id: u64, unit_id: &NodeId, success: bool, output: &s
     ])
 }
 
+/// Constructs a `word-share` mesh message for distributing Forth words.
 pub fn msg_word_share(name: &str, source: &str, origin: &NodeId) -> Sexp {
     Sexp::List(vec![
         Sexp::Atom("word-share".into()),
@@ -332,6 +344,7 @@ pub fn msg_word_share(name: &str, source: &str, origin: &NodeId) -> Sexp {
     ])
 }
 
+/// Constructs a generic `event` mesh message.
 pub fn msg_event(event_type: &str, data: &str) -> Sexp {
     Sexp::List(vec![
         Sexp::Atom("event".into()),
@@ -342,6 +355,7 @@ pub fn msg_event(event_type: &str, data: &str) -> Sexp {
     ])
 }
 
+/// Constructs a `snapshot` mesh message announcing a state save.
 pub fn msg_snapshot(id: &NodeId, fitness: i64, gen: u32) -> Sexp {
     Sexp::List(vec![
         Sexp::Atom("snapshot".into()),
@@ -354,6 +368,7 @@ pub fn msg_snapshot(id: &NodeId, fitness: i64, gen: u32) -> Sexp {
     ])
 }
 
+/// Constructs a `resurrect` mesh message for restoring from a snapshot.
 pub fn msg_resurrect(id: &NodeId, fitness: i64, gen: u32, saved_at: u64) -> Sexp {
     Sexp::List(vec![
         Sexp::Atom("resurrect".into()),

@@ -1,9 +1,8 @@
-// landscape.rs — Dynamic fitness landscape for open-ended evolution
-//
-// When a challenge is SOLVED, the solution reveals harder problems.
-// "Compute fib(10)" leads to "compute fib(15)" leads to "compute fib(20)
-// in fewer tokens." Each solved challenge spawns children, creating
-// progressively harder challenges and open-ended evolutionary pressure.
+//! Dynamic fitness landscape for open-ended evolution.
+//!
+//! When a challenge is solved, the solution reveals harder problems.
+//! Each solved challenge spawns children, creating progressively harder
+//! challenges and open-ended evolutionary pressure.
 
 use crate::challenges::{Challenge, ChallengeOrigin};
 use crate::evolve;
@@ -13,6 +12,7 @@ use crate::features::mutation::SimpleRng;
 // Fibonacci helper
 // ---------------------------------------------------------------------------
 
+/// Computes the nth Fibonacci number iteratively.
 pub fn fib(n: u32) -> u64 {
     if n == 0 {
         return 0;
@@ -31,6 +31,7 @@ pub fn fib(n: u32) -> u64 {
 // Challenge generators
 // ---------------------------------------------------------------------------
 
+/// The type of authored challenge generator (arithmetic ladder or composition).
 #[derive(Clone, Debug)]
 pub enum GeneratorKind {
     Arithmetic,
@@ -38,6 +39,7 @@ pub enum GeneratorKind {
 }
 
 impl GeneratorKind {
+    /// Returns the human-readable name of this generator kind.
     pub fn name(&self) -> &str {
         match self {
             GeneratorKind::Arithmetic => "arithmetic-ladder",
@@ -248,6 +250,7 @@ fn composition_generate(
 // Environment variation
 // ---------------------------------------------------------------------------
 
+/// Cycles through environmental conditions that modify challenge difficulty and rewards.
 #[derive(Clone, Debug)]
 pub struct EnvironmentCycle {
     pub current_idx: usize,
@@ -263,6 +266,7 @@ impl Default for EnvironmentCycle {
 }
 
 impl EnvironmentCycle {
+    /// Creates a new environment cycle starting at the "normal" condition.
     pub fn new() -> Self {
         EnvironmentCycle {
             current_idx: 0,
@@ -277,6 +281,7 @@ impl EnvironmentCycle {
         }
     }
 
+    /// Advances the cycle by one tick, rotating the condition when the cycle completes.
     pub fn tick(&mut self) {
         self.tick_counter += 1;
         if self.tick_counter >= self.cycle_length {
@@ -285,10 +290,12 @@ impl EnvironmentCycle {
         }
     }
 
+    /// Returns the name of the current environmental condition.
     pub fn current_condition(&self) -> &str {
         &self.conditions[self.current_idx]
     }
 
+    /// Adjusts the max evaluation steps based on the current condition.
     pub fn apply_to_max_steps(&self, base: usize) -> usize {
         match self.current_condition() {
             "harsh" => base / 2,
@@ -297,6 +304,7 @@ impl EnvironmentCycle {
         }
     }
 
+    /// Adjusts the reward based on the current condition and attempt count.
     pub fn apply_to_reward(&self, base: i64, attempts: u32) -> i64 {
         match self.current_condition() {
             "harsh" => base * 2,
@@ -310,8 +318,7 @@ impl EnvironmentCycle {
 // Meta-evolution: evolve challenge generators
 // ---------------------------------------------------------------------------
 
-/// A generator genome is a Forth program that transforms a number on the
-/// stack into a new target number for a challenge.
+/// A Forth program that transforms a number on the stack into a new challenge target.
 #[derive(Clone, Debug)]
 pub struct GeneratorGenome {
     pub program: String,
@@ -322,6 +329,7 @@ pub struct GeneratorGenome {
 }
 
 impl GeneratorGenome {
+    /// Creates a new generator genome with the given Forth program.
     pub fn new(program: &str) -> Self {
         GeneratorGenome {
             program: program.to_string(),
@@ -515,6 +523,7 @@ fn simulate_stack(code: &str) -> Option<i64> {
     stack.last().copied()
 }
 
+/// A population of generator genomes undergoing meta-evolution.
 #[derive(Clone, Debug)]
 pub struct GeneratorPopulation {
     pub genomes: Vec<GeneratorGenome>,
@@ -523,6 +532,7 @@ pub struct GeneratorPopulation {
 }
 
 impl GeneratorPopulation {
+    /// Creates a new population seeded with hand-written generator programs.
     pub fn new(rng: &mut SimpleRng) -> Self {
         let seeds = [
             "5 +",
@@ -609,6 +619,7 @@ impl GeneratorPopulation {
         Some((target, best.program.clone()))
     }
 
+    /// Formats the top N generators by fitness as a human-readable string.
     pub fn format_top(&self, n: usize) -> String {
         let mut sorted = self.genomes.clone();
         sorted.sort_by(|a, b| {
@@ -638,8 +649,7 @@ impl GeneratorPopulation {
 // Third-order evolution: evolve the scoring function for generators
 // ---------------------------------------------------------------------------
 
-/// A scoring genome is a Forth program that takes two numbers on the stack
-/// (input_target, output_target) and produces a fitness score.
+/// A Forth program that scores generator outputs given `(input, output)` on the stack.
 #[derive(Clone, Debug)]
 pub struct ScoringGenome {
     pub program: String,
@@ -648,6 +658,7 @@ pub struct ScoringGenome {
 }
 
 impl ScoringGenome {
+    /// Creates a new scoring genome with the given Forth program.
     pub fn new(program: &str) -> Self {
         ScoringGenome {
             program: program.to_string(),
@@ -657,7 +668,7 @@ impl ScoringGenome {
     }
 }
 
-/// History entry: which generator produced which challenge and was it solved.
+/// Records which generator produced which challenge and whether it was solved.
 #[derive(Clone, Debug)]
 pub struct GeneratorHistory {
     pub generator_program: String,
@@ -671,6 +682,7 @@ pub fn evaluate_scorer(program: &str, input_val: i64, output_val: i64) -> Option
     simulate_stack(&code)
 }
 
+/// A population of scoring genomes for third-order meta-evolution.
 #[derive(Clone, Debug)]
 pub struct ScoringPopulation {
     pub scorers: Vec<ScoringGenome>,
@@ -681,6 +693,7 @@ pub struct ScoringPopulation {
 }
 
 impl ScoringPopulation {
+    /// Creates a new scoring population seeded with hand-written scoring functions.
     pub fn new(rng: &mut SimpleRng) -> Self {
         let seeds = [
             "- ABS 100 SWAP - 0 MAX",
@@ -703,6 +716,7 @@ impl ScoringPopulation {
         }
     }
 
+    /// Records a generator's challenge outcome for scorer evaluation.
     pub fn record_history(&mut self, gen_program: &str, challenge_id: u64, was_solved: bool) {
         if self.history.len() >= 50 {
             self.history.remove(0);
@@ -771,6 +785,7 @@ impl ScoringPopulation {
         self.cycles_completed += 1;
     }
 
+    /// Formats the top N scorers by fitness as a human-readable string.
     pub fn format_top(&self, n: usize) -> String {
         let mut sorted = self.scorers.clone();
         sorted.sort_by(|a, b| {
@@ -795,6 +810,7 @@ impl ScoringPopulation {
 // Landscape engine
 // ---------------------------------------------------------------------------
 
+/// Orchestrates open-ended evolution by generating harder challenges from solved ones.
 #[derive(Clone, Debug)]
 pub struct LandscapeEngine {
     pub generators: Vec<GeneratorKind>,
@@ -813,6 +829,7 @@ impl Default for LandscapeEngine {
 }
 
 impl LandscapeEngine {
+    /// Creates a new landscape engine with default generators and environment.
     pub fn new() -> Self {
         let mut rng = SimpleRng::new(0xCAFE);
         LandscapeEngine {
@@ -902,18 +919,22 @@ impl LandscapeEngine {
         new_challenges
     }
 
+    /// Returns the current environmental condition name.
     pub fn current_environment(&self) -> &str {
         self.environment.current_condition()
     }
 
+    /// Advances the environment cycle by one tick.
     pub fn tick(&mut self) {
         self.environment.tick();
     }
 
+    /// Returns the current maximum difficulty depth reached.
     pub fn depth(&self) -> u32 {
         self.depth
     }
 
+    /// Formats the landscape state as a human-readable summary.
     pub fn format_landscape(&self) -> String {
         let authored = self.challenges_generated - self.evolved_count;
         let best_gen = self

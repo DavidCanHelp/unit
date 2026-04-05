@@ -200,6 +200,7 @@ fn ws_encode_pong(ping_data: &[u8]) -> Vec<u8> {
 // Client tracking
 // ---------------------------------------------------------------------------
 
+/// A connected browser client tracked by the WebSocket bridge.
 #[derive(Clone, Debug)]
 pub struct WsClient {
     pub id: String,
@@ -208,6 +209,7 @@ pub struct WsClient {
     pub fitness: i64,
 }
 
+/// Shared state for the WebSocket bridge server.
 pub struct WsBridgeState {
     pub clients: HashMap<String, WsClient>,
     pub messages_relayed: u64,
@@ -215,6 +217,7 @@ pub struct WsBridgeState {
 }
 
 impl WsBridgeState {
+    /// Creates a new bridge state bound to the given port.
     pub fn new(port: u16) -> Self {
         WsBridgeState {
             clients: HashMap::new(),
@@ -223,6 +226,7 @@ impl WsBridgeState {
         }
     }
 
+    /// Formats bridge status including client count and relay stats.
     pub fn format_status(&self) -> String {
         format!(
             "ws-bridge: port={} browsers={} relayed={}\n",
@@ -232,6 +236,7 @@ impl WsBridgeState {
         )
     }
 
+    /// Formats connected browser clients for display.
     pub fn format_clients(&self) -> String {
         if self.clients.is_empty() {
             return "  (no browsers connected)\n".to_string();

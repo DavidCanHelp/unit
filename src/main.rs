@@ -1891,7 +1891,7 @@ impl VM {
     // Goal primitives
     // -----------------------------------------------------------------------
 
-    /// GOAL" <description>" ( priority -- goal-id ) submit a description-only goal.
+    /// GOAL" `<description>`" ( priority -- goal-id ) submit a description-only goal.
     fn prim_goal(&mut self) {
         let desc = self.parse_until('"');
         let priority = self.pop();
@@ -2033,7 +2033,7 @@ impl VM {
         }
     }
 
-    /// GOAL{ <forth code> } ( priority -- goal-id ) submit an executable goal.
+    /// GOAL{ `<forth code>` } ( priority -- goal-id ) submit an executable goal.
     /// Immediate: parses the code at compile time. In compile mode, stores
     /// the code in a side table and compiles Literal(index) + Primitive(RT).
     fn prim_goal_exec(&mut self) {
@@ -2118,7 +2118,7 @@ impl VM {
         }
     }
 
-    /// EVAL" <forth code>" ( -- ) evaluate a string of Forth immediately.
+    /// EVAL" `<forth code>`" ( -- ) evaluate a string of Forth immediately.
     fn prim_eval(&mut self) {
         let code = self.parse_until('"');
         self.interpret_line(&code);
@@ -3596,7 +3596,7 @@ impl VM {
     // Task decomposition primitives
     // -----------------------------------------------------------------------
 
-    /// SUBTASK{ <code> } ( goal-id -- task-id ) add a subtask to a goal.
+    /// SUBTASK{ `<code>` } ( goal-id -- task-id ) add a subtask to a goal.
     fn prim_subtask(&mut self) {
         let code = self.parse_balanced_braces();
         if self.compiling {
@@ -3676,7 +3676,7 @@ impl VM {
         self.emit_str(&out);
     }
 
-    /// REDUCE" <forth code>" ( goal-id -- ) apply reduction across subtask results.
+    /// REDUCE" `<forth code>`" ( goal-id -- ) apply reduction across subtask results.
     fn prim_reduce(&mut self) {
         let code = self.parse_until('"');
         if self.compiling {

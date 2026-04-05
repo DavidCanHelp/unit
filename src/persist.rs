@@ -149,6 +149,7 @@ fn deserialize_instruction(data: &[u8], pos: &mut usize) -> Option<Instruction> 
 // Full VM state snapshot
 // ---------------------------------------------------------------------------
 
+/// Complete serializable snapshot of the VM state.
 pub struct VmSnapshot {
     pub node_id: NodeId,
     pub dictionary: Vec<Entry>,
@@ -159,6 +160,7 @@ pub struct VmSnapshot {
     pub code_strings: Vec<String>,
 }
 
+/// Serializes a VM snapshot into a binary format.
 pub fn serialize_snapshot(snap: &VmSnapshot) -> Vec<u8> {
     let mut buf = Vec::with_capacity(8192);
 
@@ -257,6 +259,7 @@ pub fn serialize_snapshot(snap: &VmSnapshot) -> Vec<u8> {
     buf
 }
 
+/// Deserializes a VM snapshot from binary data.
 pub fn deserialize_snapshot(data: &[u8]) -> Option<VmSnapshot> {
     let mut pos = 0;
 
@@ -424,6 +427,7 @@ pub fn deserialize_snapshot(data: &[u8]) -> Option<VmSnapshot> {
 // File system operations
 // ---------------------------------------------------------------------------
 
+/// Returns the filesystem path to this node's state directory.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn state_dir(node_id: &NodeId) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -434,6 +438,7 @@ pub fn state_dir(node_id: &NodeId) -> String {
     format!("{}/.unit/{}", home, id_hex)
 }
 
+/// Writes VM state to the node's state directory on disk.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_state(node_id: &NodeId, data: &[u8]) -> Result<(), String> {
     let dir = state_dir(node_id);
@@ -443,12 +448,14 @@ pub fn save_state(node_id: &NodeId, data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Loads VM state from the node's state directory, if it exists.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_state(node_id: &NodeId) -> Option<Vec<u8>> {
     let path = format!("{}/state.bin", state_dir(node_id));
     std::fs::read(&path).ok()
 }
 
+/// Saves a timestamped snapshot and returns the snapshot name.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_snapshot(node_id: &NodeId, data: &[u8]) -> Result<String, String> {
     let dir = format!("{}/snapshots", state_dir(node_id));
@@ -463,6 +470,7 @@ pub fn save_snapshot(node_id: &NodeId, data: &[u8]) -> Result<String, String> {
     Ok(name)
 }
 
+/// Lists all saved snapshot names for a node, sorted chronologically.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list_snapshots(node_id: &NodeId) -> Vec<String> {
     let dir = format!("{}/snapshots", state_dir(node_id));
@@ -479,12 +487,14 @@ pub fn list_snapshots(node_id: &NodeId) -> Vec<String> {
     names
 }
 
+/// Loads a named snapshot from disk, if it exists.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_snapshot(node_id: &NodeId, name: &str) -> Option<Vec<u8>> {
     let path = format!("{}/snapshots/{}.bin", state_dir(node_id), name);
     std::fs::read(&path).ok()
 }
 
+/// Deletes the entire state directory for a node.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn delete_state(node_id: &NodeId) -> Result<(), String> {
     let dir = state_dir(node_id);

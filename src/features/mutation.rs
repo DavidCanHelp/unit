@@ -19,17 +19,20 @@ use crate::types::{Entry, Instruction};
 // Simple RNG (LCG — Knuth's constants)
 // ---------------------------------------------------------------------------
 
+/// A simple linear congruential generator for mutation randomness.
 pub struct SimpleRng {
     state: u64,
 }
 
 impl SimpleRng {
+    /// Creates a new RNG seeded with the given value.
     pub fn new(seed: u64) -> Self {
         SimpleRng {
             state: seed.wrapping_add(1),
         }
     }
 
+    /// Returns the next pseudo-random `u64`.
     pub fn next_u64(&mut self) -> u64 {
         self.state = self
             .state
@@ -38,6 +41,7 @@ impl SimpleRng {
         self.state
     }
 
+    /// Returns a pseudo-random `usize` in `[0, max)`.
     pub fn next_usize(&mut self, max: usize) -> usize {
         if max == 0 {
             return 0;
@@ -45,6 +49,7 @@ impl SimpleRng {
         (self.next_u64() as usize) % max
     }
 
+    /// Returns a pseudo-random `i64` in `[min, max)`.
     pub fn next_range(&mut self, min: i64, max: i64) -> i64 {
         if min >= max {
             return min;
@@ -58,6 +63,7 @@ impl SimpleRng {
 // Mutation record
 // ---------------------------------------------------------------------------
 
+/// The type of random mutation applied to a Forth word.
 #[derive(Clone, Debug)]
 pub enum MutationStrategy {
     ConstantTweak,
@@ -67,6 +73,7 @@ pub enum MutationStrategy {
 }
 
 impl MutationStrategy {
+    /// Returns a human-readable label for this strategy.
     pub fn label(&self) -> &str {
         match self {
             MutationStrategy::ConstantTweak => "constant-tweak",
@@ -77,6 +84,7 @@ impl MutationStrategy {
     }
 }
 
+/// Record of a single mutation applied to a word, used for undo.
 #[derive(Clone, Debug)]
 pub struct MutationRecord {
     pub word_name: String,
@@ -88,6 +96,7 @@ pub struct MutationRecord {
 }
 
 impl MutationRecord {
+    /// Formats this mutation record for display.
     pub fn format(&self) -> String {
         format!(
             "  {} [{}]: {}",
@@ -108,6 +117,7 @@ pub enum MutationClass {
 }
 
 impl MutationClass {
+    /// Returns a human-readable label for this classification.
     pub fn label(&self) -> &str {
         match self {
             MutationClass::Neutral => "neutral",
@@ -118,7 +128,7 @@ impl MutationClass {
     }
 }
 
-/// Cumulative mutation statistics.
+/// Cumulative counts of mutations by classification.
 #[derive(Clone, Debug, Default)]
 pub struct MutationStats {
     pub total: u32,
@@ -129,6 +139,7 @@ pub struct MutationStats {
 }
 
 impl MutationStats {
+    /// Records a mutation result by incrementing the appropriate counter.
     pub fn record(&mut self, class: &MutationClass) {
         self.total += 1;
         match class {
@@ -139,6 +150,7 @@ impl MutationStats {
         }
     }
 
+    /// Formats the mutation statistics summary for display.
     pub fn format(&self) -> String {
         format!(
             "mutations: {} total ({} neutral, {} beneficial, {} harmful, {} lethal)",
@@ -147,7 +159,7 @@ impl MutationStats {
     }
 }
 
-/// Result of a smart mutation with classification.
+/// Result of a classified mutation including before/after output hashes.
 #[derive(Clone, Debug)]
 pub struct SmartMutationResult {
     pub word_name: String,

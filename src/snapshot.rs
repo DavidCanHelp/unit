@@ -1,8 +1,8 @@
-// snapshot.rs — JSON-based state persistence for unit
-//
-// Saves/loads a unit's state as human-readable JSON so hackers can
-// inspect and hand-edit a unit's brain. Zero dependencies — hand-written
-// JSON serializer/parser.
+//! JSON-based state persistence for unit.
+//!
+//! Saves and loads a unit's state as human-readable JSON so hackers can
+//! inspect and hand-edit a unit's brain. Zero dependencies -- hand-written
+//! JSON serializer/parser.
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mesh::NodeId;
@@ -12,6 +12,7 @@ use crate::types::{Cell, Entry, Instruction};
 // UnitSnapshot — the JSON-serializable state of a unit
 // ---------------------------------------------------------------------------
 
+/// The JSON-serializable state of a unit, capturing stack, dictionary, energy, and more.
 #[derive(Clone, Debug)]
 pub struct UnitSnapshot {
     pub node_id: String,
@@ -34,6 +35,7 @@ pub struct UnitSnapshot {
     pub landscape_generated: u64,
 }
 
+/// Mutation outcome statistics: counts of neutral, beneficial, harmful, and lethal mutations.
 #[derive(Clone, Debug, Default)]
 pub struct MutStats {
     pub total: u32,
@@ -65,6 +67,7 @@ fn escape_json_string(s: &str) -> String {
     out
 }
 
+/// Serializes a `UnitSnapshot` to a human-readable JSON string.
 pub fn to_json(snap: &UnitSnapshot) -> String {
     let mut j = String::with_capacity(4096);
     j.push_str("{\n");
@@ -158,6 +161,7 @@ pub fn to_json(snap: &UnitSnapshot) -> String {
 // JSON parser (minimal, for known UnitSnapshot structure)
 // ---------------------------------------------------------------------------
 
+/// Parses a JSON string into a `UnitSnapshot`, returning `None` on invalid input.
 pub fn from_json(input: &str) -> Option<UnitSnapshot> {
     let mut snap = UnitSnapshot {
         node_id: String::new(),
@@ -338,6 +342,7 @@ fn unescape_json_string(s: &str) -> String {
 // Decompile a word to Forth source
 // ---------------------------------------------------------------------------
 
+/// Decompiles a dictionary entry back into readable Forth source code.
 pub fn decompile_word(
     entry: &Entry,
     dictionary: &[Entry],
@@ -383,18 +388,21 @@ pub fn decompile_word(
 // File I/O helpers
 // ---------------------------------------------------------------------------
 
+/// Returns the directory path for storing snapshot files.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn snapshot_dir(_node_id: &NodeId) -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     format!("{}/.unit/snapshots", home)
 }
 
+/// Returns the full file path for a node's snapshot JSON file.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn snapshot_path(node_id: &NodeId) -> String {
     let id_hex: String = node_id.iter().map(|b| format!("{:02x}", b)).collect();
     format!("{}/{}.json", snapshot_dir(node_id), id_hex)
 }
 
+/// Writes a JSON snapshot to disk, creating directories as needed.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_json_snapshot(node_id: &NodeId, json: &str) -> Result<String, String> {
     let dir = snapshot_dir(node_id);
@@ -404,12 +412,14 @@ pub fn save_json_snapshot(node_id: &NodeId, json: &str) -> Result<String, String
     Ok(path)
 }
 
+/// Loads a JSON snapshot from disk, returning `None` if missing.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_json_snapshot(node_id: &NodeId) -> Option<String> {
     let path = snapshot_path(node_id);
     std::fs::read_to_string(&path).ok()
 }
 
+/// Lists all snapshot node IDs found in the snapshot directory.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn list_json_snapshots() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());

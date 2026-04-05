@@ -1,8 +1,8 @@
-// challenges.rs — Challenge registry for emergent problem-solving
-//
-// Generalizes FitnessChallenge beyond the hardcoded fib10. Challenges can
-// be built-in, discovered from failures, or received from mesh peers.
-// The GP engine evolves solutions; solutions become dictionary words.
+//! Challenge registry for emergent problem-solving.
+//!
+//! Generalizes `FitnessChallenge` beyond the hardcoded fib10. Challenges can
+//! be built-in, discovered from failures, or received from mesh peers.
+//! The GP engine evolves solutions; solutions become dictionary words.
 
 use crate::evolve::FitnessChallenge;
 use crate::mesh::NodeId;
@@ -12,8 +12,10 @@ use std::collections::HashMap;
 // Types
 // ---------------------------------------------------------------------------
 
+/// Unique identifier for a challenge within the registry.
 pub type ChallengeId = u64;
 
+/// Where a challenge came from: built-in or discovered at runtime.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChallengeOrigin {
     BuiltIn,
@@ -23,6 +25,7 @@ pub enum ChallengeOrigin {
     },
 }
 
+/// A problem to be solved by the GP engine, with metadata for tracking solutions.
 #[derive(Clone, Debug)]
 pub struct Challenge {
     pub id: ChallengeId,
@@ -45,6 +48,7 @@ pub struct Challenge {
 // ChallengeRegistry
 // ---------------------------------------------------------------------------
 
+/// Manages the set of known challenges and tracks which is currently active.
 #[derive(Clone, Debug)]
 pub struct ChallengeRegistry {
     pub challenges: HashMap<ChallengeId, Challenge>,
@@ -53,6 +57,7 @@ pub struct ChallengeRegistry {
 }
 
 impl ChallengeRegistry {
+    /// Creates an empty registry, seeding the ID counter from the node ID to avoid collisions.
     pub fn new(node_id: &NodeId) -> Self {
         // Seed counter from node ID to avoid collisions (same pattern as GoalRegistry).
         let base = ((node_id[4] as u64) << 4 | (node_id[5] as u64 >> 4)) * 10 + 1;
@@ -69,6 +74,7 @@ impl ChallengeRegistry {
         id
     }
 
+    /// Registers a built-in challenge and returns its assigned ID.
     pub fn register_builtin(
         &mut self,
         name: &str,
@@ -98,6 +104,7 @@ impl ChallengeRegistry {
         id
     }
 
+    /// Registers a challenge discovered from a failure or received from a peer.
     #[allow(clippy::too_many_arguments)]
     pub fn register_discovered(
         &mut self,
@@ -135,6 +142,7 @@ impl ChallengeRegistry {
         id
     }
 
+    /// Marks a challenge as solved. Returns true if this is the first solution.
     pub fn mark_solved(&mut self, id: ChallengeId, solution: &str, solver: NodeId) -> bool {
         if let Some(ch) = self.challenges.get_mut(&id) {
             let is_first = !ch.solved;
@@ -152,10 +160,12 @@ impl ChallengeRegistry {
         false
     }
 
+    /// Returns the number of distinct solutions recorded for a challenge.
     pub fn solution_count(&self, id: ChallengeId) -> usize {
         self.challenges.get(&id).map_or(0, |c| c.solutions.len())
     }
 
+    /// Formats all solutions for a challenge as a human-readable string.
     pub fn format_solutions(&self, id: ChallengeId) -> String {
         match self.challenges.get(&id) {
             Some(ch) if !ch.solutions.is_empty() => {
@@ -176,6 +186,7 @@ impl ChallengeRegistry {
         }
     }
 
+    /// Summarizes solution diversity across all solved challenges.
     pub fn colony_diversity(&self) -> String {
         let solved: Vec<&Challenge> = self.challenges.values().filter(|c| c.solved).collect();
         if solved.is_empty() {
@@ -198,6 +209,7 @@ impl ChallengeRegistry {
         out
     }
 
+    /// Returns all unsolved challenges, sorted by reward descending.
     pub fn get_unsolved(&self) -> Vec<&Challenge> {
         let mut unsolved: Vec<&Challenge> =
             self.challenges.values().filter(|c| !c.solved).collect();
@@ -205,6 +217,7 @@ impl ChallengeRegistry {
         unsolved
     }
 
+    /// Looks up a challenge by ID.
     pub fn get_challenge(&self, id: ChallengeId) -> Option<&Challenge> {
         self.challenges.get(&id)
     }
@@ -236,6 +249,7 @@ impl ChallengeRegistry {
         }
     }
 
+    /// Formats all challenges as a human-readable summary.
     pub fn format_challenges(&self) -> String {
         if self.challenges.is_empty() {
             return "no challenges\n".to_string();
@@ -259,11 +273,13 @@ impl ChallengeRegistry {
         out
     }
 
+    /// Returns the currently active challenge, if any.
     pub fn active(&self) -> Option<&Challenge> {
         self.active_challenge
             .and_then(|id| self.challenges.get(&id))
     }
 
+    /// Sets the active challenge by ID. Returns false if the ID is unknown.
     pub fn set_active(&mut self, id: ChallengeId) -> bool {
         if self.challenges.contains_key(&id) {
             self.active_challenge = Some(id);
@@ -287,6 +303,7 @@ impl ChallengeRegistry {
 // S-expression constructors
 // ---------------------------------------------------------------------------
 
+/// Builds an S-expression for broadcasting a challenge to mesh peers.
 pub fn sexp_challenge_broadcast(ch: &Challenge) -> String {
     let seeds: Vec<String> = ch
         .seed_programs
@@ -304,6 +321,7 @@ pub fn sexp_challenge_broadcast(ch: &Challenge) -> String {
     )
 }
 
+/// Builds an S-expression for broadcasting a solution to mesh peers.
 pub fn sexp_solution_broadcast(
     challenge_id: ChallengeId,
     solution: &str,
@@ -321,6 +339,7 @@ pub fn sexp_solution_broadcast(
 // Conversion from existing fib10
 // ---------------------------------------------------------------------------
 
+/// Converts the default fib10 fitness challenge into a full `Challenge` struct.
 pub fn fib10_as_challenge() -> Challenge {
     let fc = crate::evolve::fib10_challenge();
     Challenge {

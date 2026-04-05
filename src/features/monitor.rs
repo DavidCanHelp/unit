@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // Watch types
 // ---------------------------------------------------------------------------
 
+/// The type of resource being monitored.
 #[derive(Clone, Debug)]
 pub enum WatchKind {
     Url(String),
@@ -21,6 +22,7 @@ pub enum WatchKind {
     Process(String),
 }
 
+/// A monitored resource with check interval and alert configuration.
 #[derive(Clone, Debug)]
 pub struct WatchEntry {
     pub id: u32,
@@ -34,6 +36,7 @@ pub struct WatchEntry {
     pub created_at: u64,
 }
 
+/// Result of a single watch check.
 #[derive(Clone, Debug)]
 pub struct WatchStatus {
     pub ok: bool,
@@ -44,6 +47,7 @@ pub struct WatchStatus {
 }
 
 impl WatchStatus {
+    /// Creates a successful check status.
     pub fn up(code: i32, ms: u64, msg: String) -> Self {
         WatchStatus {
             ok: true,
@@ -53,6 +57,7 @@ impl WatchStatus {
             timestamp: now_secs(),
         }
     }
+    /// Creates a failed check status.
     pub fn down(code: i32, msg: String) -> Self {
         WatchStatus {
             ok: false,
@@ -68,6 +73,7 @@ impl WatchStatus {
 // Alerts
 // ---------------------------------------------------------------------------
 
+/// Severity level for an alert.
 #[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub enum AlertLevel {
     Info,
@@ -76,6 +82,7 @@ pub enum AlertLevel {
 }
 
 impl AlertLevel {
+    /// Returns a human-readable label for this alert level.
     pub fn label(&self) -> &str {
         match self {
             AlertLevel::Info => "INFO",
@@ -83,6 +90,7 @@ impl AlertLevel {
             AlertLevel::Crit => "CRIT",
         }
     }
+    /// Converts a numeric value to an alert level.
     pub fn from_val(v: i64) -> Self {
         match v {
             0 => AlertLevel::Info,
@@ -92,6 +100,7 @@ impl AlertLevel {
     }
 }
 
+/// An alert fired when a watch detects a problem.
 #[derive(Clone, Debug)]
 pub struct Alert {
     pub id: u32,
@@ -106,6 +115,7 @@ pub struct Alert {
 // Scheduler
 // ---------------------------------------------------------------------------
 
+/// A scheduled Forth command that runs at recurring intervals.
 #[derive(Clone, Debug)]
 pub struct SchedEntry {
     pub id: u32,
@@ -120,6 +130,7 @@ pub struct SchedEntry {
 // Monitor state — all monitoring data for one unit
 // ---------------------------------------------------------------------------
 
+/// Central monitoring state holding watches, alerts, and schedules.
 #[derive(Clone, Debug)]
 pub struct MonitorState {
     pub watches: HashMap<u32, WatchEntry>,
@@ -137,6 +148,7 @@ impl Default for MonitorState {
 }
 
 impl MonitorState {
+    /// Creates a new empty monitor state.
     pub fn new() -> Self {
         MonitorState {
             watches: HashMap::new(),
@@ -158,6 +170,7 @@ impl MonitorState {
     // Watch management
     // -------------------------------------------------------------------
 
+    /// Adds a new watch and returns its ID.
     pub fn add_watch(&mut self, kind: WatchKind, interval_secs: u64) -> u32 {
         let id = self.next_id();
         let entry = WatchEntry {
@@ -181,16 +194,19 @@ impl MonitorState {
         id
     }
 
+    /// Removes a watch by ID, returning true if it existed.
     pub fn remove_watch(&mut self, id: u32) -> bool {
         self.watches.remove(&id).is_some()
     }
 
+    /// Sets the Forth code to execute when a watch triggers an alert.
     pub fn set_alert_handler(&mut self, watch_id: u32, code: String) {
         if let Some(w) = self.watches.get_mut(&watch_id) {
             w.alert_handler = Some(code);
         }
     }
 
+    /// Sets the alert severity level for a watch.
     pub fn set_alert_level(&mut self, watch_id: u32, level: AlertLevel) {
         if let Some(w) = self.watches.get_mut(&watch_id) {
             w.alert_level = level;
@@ -236,6 +252,7 @@ impl MonitorState {
         None
     }
 
+    /// Acknowledges an alert, moving it to history.
     pub fn ack_alert(&mut self, alert_id: u32) -> bool {
         for a in &mut self.alerts {
             if a.id == alert_id {
@@ -267,6 +284,7 @@ impl MonitorState {
     // Scheduler
     // -------------------------------------------------------------------
 
+    /// Adds a recurring scheduled command and returns its ID.
     pub fn add_schedule(&mut self, code: String, interval_secs: u64) -> u32 {
         let id = self.next_id();
         self.schedules.insert(
@@ -283,6 +301,7 @@ impl MonitorState {
         id
     }
 
+    /// Removes a scheduled command by ID, returning true if it existed.
     pub fn remove_schedule(&mut self, id: u32) -> bool {
         self.schedules.remove(&id).is_some()
     }
@@ -331,6 +350,7 @@ impl MonitorState {
     // Formatting
     // -------------------------------------------------------------------
 
+    /// Formats all watches for display.
     pub fn format_watches(&self) -> String {
         if self.watches.is_empty() {
             return "  (no watches)\n".to_string();
@@ -357,6 +377,7 @@ impl MonitorState {
         out
     }
 
+    /// Formats the check history for a specific watch.
     pub fn format_watch_log(&self, watch_id: u32) -> String {
         if let Some(w) = self.watches.get(&watch_id) {
             if w.history.is_empty() {
@@ -382,6 +403,7 @@ impl MonitorState {
         }
     }
 
+    /// Formats all active alerts for display.
     pub fn format_alerts(&self) -> String {
         if self.alerts.is_empty() {
             return "  (no active alerts)\n".to_string();
@@ -401,6 +423,7 @@ impl MonitorState {
         out
     }
 
+    /// Formats the acknowledged alert history for display.
     pub fn format_alert_history(&self) -> String {
         if self.alert_history.is_empty() {
             return "  (no alert history)\n".to_string();
@@ -418,6 +441,7 @@ impl MonitorState {
         out
     }
 
+    /// Formats all scheduled commands for display.
     pub fn format_schedules(&self) -> String {
         if self.schedules.is_empty() {
             return "  (no scheduled tasks)\n".to_string();
@@ -444,6 +468,7 @@ impl MonitorState {
         out
     }
 
+    /// Renders the ops dashboard with watches, alerts, and mesh status.
     pub fn format_dashboard(&self, peer_count: usize, fitness: i64, goal_summary: &str) -> String {
         let mut out = String::from("╔══════════════════════════════════════╗\n");
         out.push_str("║         UNIT OPS DASHBOARD           ║\n");

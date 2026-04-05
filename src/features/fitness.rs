@@ -11,6 +11,7 @@ use crate::mesh::{id_to_hex, NodeId};
 // Fitness tracker
 // ---------------------------------------------------------------------------
 
+/// Tracks a unit's fitness score based on task performance.
 #[derive(Clone, Debug)]
 pub struct FitnessTracker {
     pub score: i64,
@@ -32,6 +33,7 @@ impl Default for FitnessTracker {
 }
 
 impl FitnessTracker {
+    /// Creates a new fitness tracker with zero scores.
     pub fn new() -> Self {
         FitnessTracker {
             score: 0,
@@ -112,6 +114,7 @@ impl FitnessTracker {
 // Leaderboard entry (for peers)
 // ---------------------------------------------------------------------------
 
+/// Fitness score entry for a remote peer.
 #[derive(Clone, Debug)]
 pub struct PeerFitness {
     pub id: NodeId,

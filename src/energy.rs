@@ -1,23 +1,33 @@
-// energy.rs — Metabolic energy system for unit
-//
-// Every unit has an energy budget that fuels computation. Energy is
-// earned from successful tasks, challenge solutions, and passive regen.
-// Energy is spent on GP generations, spawning, mesh messages, and VM steps.
-// Units that run out of energy are throttled until they recover.
+//! Metabolic energy system for unit.
+//!
+//! Every unit has an energy budget that fuels computation. Energy is
+//! earned from successful tasks, challenge solutions, and passive regen.
+//! Energy is spent on GP generations, spawning, mesh messages, and VM steps.
+//! Units that run out of energy are throttled until they recover.
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
+/// Starting energy for a newly created unit.
 pub const INITIAL_ENERGY: i64 = 1000;
+/// Maximum energy a unit can accumulate.
 pub const MAX_ENERGY: i64 = 5000;
+/// Energy gained each tick from passive regeneration.
 pub const PASSIVE_REGEN: i64 = 1;
+/// Energy earned for completing a task.
 pub const TASK_REWARD: i64 = 50;
+/// Energy earned for solving a challenge.
 pub const CHALLENGE_SOLVE_REWARD: i64 = 100;
+/// Energy cost to spawn a new unit.
 pub const SPAWN_COST: i64 = 200;
+/// Energy cost per GP generation step.
 pub const GP_GENERATION_COST: i64 = 5;
+/// Energy cost per 1000 VM evaluation steps.
 pub const EVAL_STEP_COST_PER_1000: i64 = 1;
+/// Energy cost to send a mesh message.
 pub const MESH_SEND_COST: i64 = 1;
+/// Energy level at or below which the unit becomes throttled.
 pub const STARVATION_THRESHOLD: i64 = 0;
 
 const HARD_FLOOR: i64 = -500;
@@ -26,6 +36,7 @@ const HARD_FLOOR: i64 = -500;
 // EnergyState
 // ---------------------------------------------------------------------------
 
+/// Tracks a unit's current energy level, lifetime totals, and throttle state.
 #[derive(Clone, Debug)]
 pub struct EnergyState {
     pub energy: i64,
@@ -44,6 +55,7 @@ impl Default for EnergyState {
 }
 
 impl EnergyState {
+    /// Creates a new energy state at the initial energy level.
     pub fn new() -> Self {
         EnergyState {
             energy: INITIAL_ENERGY,
@@ -89,10 +101,12 @@ impl EnergyState {
         }
     }
 
+    /// Returns true if spending `amount` would stay above the hard floor.
     pub fn can_afford(&self, amount: i64) -> bool {
         self.energy - amount >= HARD_FLOOR
     }
 
+    /// Returns true if the unit is currently energy-throttled.
     pub fn is_throttled(&self) -> bool {
         self.throttled
     }
@@ -102,6 +116,7 @@ impl EnergyState {
         self.total_earned as f64 / self.total_spent.max(1) as f64
     }
 
+    /// Formats the energy state as a human-readable summary string.
     pub fn format(&self) -> String {
         format!(
             "energy: {}/{} (earned: {}, spent: {}, efficiency: {:.2})",
@@ -113,6 +128,7 @@ impl EnergyState {
         )
     }
 
+    /// Formats a compact one-line energy status including node hex ID.
     pub fn format_line(&self, id: &[u8; 8]) -> String {
         format!(
             "  {} energy={}/{} eff={:.2}{}",
@@ -129,6 +145,7 @@ impl EnergyState {
 // EnergyEvent (for optional logging)
 // ---------------------------------------------------------------------------
 
+/// A loggable energy event for auditing energy changes.
 #[derive(Clone, Debug)]
 pub enum EnergyEvent {
     Earned { amount: i64, reason: String },
@@ -141,6 +158,7 @@ pub enum EnergyEvent {
 // S-expression constructors
 // ---------------------------------------------------------------------------
 
+/// Builds an S-expression representing the energy status for mesh broadcast.
 pub fn sexp_energy_status(node_hex: &str, state: &EnergyState) -> String {
     format!(
         "(energy-status :id \"{}\" :energy {} :max {} :efficiency {:.2})",

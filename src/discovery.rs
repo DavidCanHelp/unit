@@ -1,8 +1,8 @@
-// discovery.rs — Problem detection for emergent problem-solving
-//
-// Detects problems when Forth evaluation fails: goal task failures,
-// distributed sub-goal timeouts/errors, and manual reports. Detected
-// problems are queued for registration as challenges.
+//! Problem detection for emergent problem-solving.
+//!
+//! Detects problems when Forth evaluation fails: goal task failures,
+//! distributed sub-goal timeouts/errors, and manual reports. Detected
+//! problems are queued for registration as challenges.
 
 use crate::evolve;
 use crate::features::mutation::SimpleRng;
@@ -12,6 +12,7 @@ use std::collections::HashSet;
 // Types
 // ---------------------------------------------------------------------------
 
+/// Identifies where a problem was detected.
 #[derive(Clone, Debug)]
 pub enum ProblemSource {
     GoalFailure { goal_id: u64, task_id: u64 },
@@ -20,6 +21,7 @@ pub enum ProblemSource {
     Manual { description: String },
 }
 
+/// A detected problem with its failed code, expected output, and error details.
 #[derive(Clone, Debug)]
 pub struct DiscoveredProblem {
     pub source: ProblemSource,
@@ -46,6 +48,7 @@ fn hash_code(s: &str) -> u64 {
 // ProblemDetector
 // ---------------------------------------------------------------------------
 
+/// Detects and deduplicates problems from failures, queuing them for challenge creation.
 #[derive(Clone, Debug)]
 pub struct ProblemDetector {
     pending: Vec<DiscoveredProblem>,
@@ -61,6 +64,7 @@ impl Default for ProblemDetector {
 }
 
 impl ProblemDetector {
+    /// Creates a new detector with default capacity limits.
     pub fn new() -> Self {
         ProblemDetector {
             pending: Vec::new(),
@@ -89,6 +93,7 @@ impl ProblemDetector {
         }
     }
 
+    /// Records a problem from a failed goal task evaluation.
     pub fn detect_goal_failure(
         &mut self,
         goal_id: u64,
@@ -112,6 +117,7 @@ impl ProblemDetector {
         });
     }
 
+    /// Records a problem from a timed-out distributed sub-goal.
     pub fn detect_dist_timeout(&mut self, goal_id: u64, seq: usize, expr: &str) {
         if self.is_duplicate(expr) {
             return;
@@ -125,6 +131,7 @@ impl ProblemDetector {
         });
     }
 
+    /// Records a problem from a failed distributed sub-goal.
     pub fn detect_dist_error(&mut self, goal_id: u64, seq: usize, expr: &str, error: &str) {
         if self.is_duplicate(expr) {
             return;
@@ -138,6 +145,7 @@ impl ProblemDetector {
         });
     }
 
+    /// Records a manually reported problem.
     pub fn detect_manual(&mut self, code: &str, description: &str) {
         if self.is_duplicate(code) {
             return;
@@ -153,6 +161,7 @@ impl ProblemDetector {
         });
     }
 
+    /// Drains and returns all pending problems, leaving the queue empty.
     pub fn drain_pending(&mut self) -> Vec<DiscoveredProblem> {
         std::mem::take(&mut self.pending)
     }

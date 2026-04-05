@@ -21,9 +21,12 @@ use crate::types::Cell;
 // Types
 // ---------------------------------------------------------------------------
 
+/// Unique identifier for a goal.
 pub type GoalId = u64;
+/// Unique identifier for a task.
 pub type TaskId = u64;
 
+/// Lifecycle state of a goal.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GoalStatus {
     Pending,   // submitted, no tasks claimed yet
@@ -33,6 +36,7 @@ pub enum GoalStatus {
 }
 
 impl GoalStatus {
+    /// Returns the numeric encoding of this status.
     pub fn as_u8(&self) -> u8 {
         match self {
             GoalStatus::Pending => 0,
@@ -42,6 +46,7 @@ impl GoalStatus {
         }
     }
 
+    /// Decodes a status from its numeric representation.
     pub fn from_u8(v: u8) -> Self {
         match v {
             1 => GoalStatus::Active,
@@ -51,6 +56,7 @@ impl GoalStatus {
         }
     }
 
+    /// Returns a human-readable label for this status.
     pub fn label(&self) -> &str {
         match self {
             GoalStatus::Pending => "pending",
@@ -61,6 +67,7 @@ impl GoalStatus {
     }
 }
 
+/// Lifecycle state of a task.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TaskStatus {
     Waiting, // unclaimed, in queue
@@ -70,6 +77,7 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
+    /// Returns the numeric encoding of this status.
     pub fn as_u8(&self) -> u8 {
         match self {
             TaskStatus::Waiting => 0,
@@ -79,6 +87,7 @@ impl TaskStatus {
         }
     }
 
+    /// Decodes a status from its numeric representation.
     pub fn from_u8(v: u8) -> Self {
         match v {
             1 => TaskStatus::Running,
@@ -88,6 +97,7 @@ impl TaskStatus {
         }
     }
 
+    /// Returns a human-readable label for this status.
     pub fn label(&self) -> &str {
         match self {
             TaskStatus::Waiting => "waiting",
@@ -102,6 +112,7 @@ impl TaskStatus {
 // TaskResult — captured output from executing a Forth code payload
 // ---------------------------------------------------------------------------
 
+/// Captured output from executing a Forth code payload.
 #[derive(Clone, Debug)]
 pub struct TaskResult {
     /// Stack contents after execution.
@@ -115,6 +126,7 @@ pub struct TaskResult {
 }
 
 impl TaskResult {
+    /// Formats the task result for display.
     pub fn format(&self) -> String {
         let mut out = String::new();
         if self.success {
@@ -143,6 +155,7 @@ impl TaskResult {
 // Goal
 // ---------------------------------------------------------------------------
 
+/// A high-level objective submitted by a human or the mesh.
 #[derive(Clone, Debug)]
 pub struct Goal {
     pub id: GoalId,
@@ -160,6 +173,7 @@ pub struct Goal {
 // Task
 // ---------------------------------------------------------------------------
 
+/// A unit-level work item derived from a goal.
 #[derive(Clone, Debug)]
 pub struct Task {
     pub id: TaskId,
@@ -177,6 +191,7 @@ pub struct Task {
 // GoalRegistry — manages all goals and tasks for a unit
 // ---------------------------------------------------------------------------
 
+/// Registry of all goals and tasks for a unit, shared via gossip.
 #[derive(Clone, Debug)]
 pub struct GoalRegistry {
     pub goals: HashMap<GoalId, Goal>,
@@ -427,6 +442,7 @@ impl GoalRegistry {
     // Gossip convergence
     // -------------------------------------------------------------------
 
+    /// Merges a remotely received goal into the local registry.
     pub fn merge_goal(&mut self, goal: Goal) {
         if let Some(existing) = self.goals.get(&goal.id) {
             if goal.status.as_u8() > existing.status.as_u8() || goal.priority != existing.priority {
@@ -448,6 +464,7 @@ impl GoalRegistry {
         }
     }
 
+    /// Merges a remotely received task into the local registry.
     pub fn merge_task(&mut self, task: Task) {
         if let Some(existing) = self.tasks.get(&task.id) {
             if task.status.as_u8() > existing.status.as_u8() {
@@ -465,6 +482,7 @@ impl GoalRegistry {
     // Queries
     // -------------------------------------------------------------------
 
+    /// Returns the number of unclaimed waiting tasks.
     pub fn pending_task_count(&self) -> usize {
         self.tasks
             .values()
@@ -472,6 +490,7 @@ impl GoalRegistry {
             .count()
     }
 
+    /// Returns the number of pending or active goals.
     pub fn active_goal_count(&self) -> usize {
         self.goals
             .values()
@@ -694,6 +713,7 @@ impl GoalRegistry {
     // Formatting
     // -------------------------------------------------------------------
 
+    /// Formats all goals sorted by priority for display.
     pub fn format_goals(&self) -> String {
         if self.goals.is_empty() {
             return "  (no goals)\n".to_string();
@@ -729,6 +749,7 @@ impl GoalRegistry {
         out
     }
 
+    /// Formats tasks assigned to the given node for display.
     pub fn format_my_tasks(&self, node_id: &NodeId) -> String {
         let mut my_tasks: Vec<&Task> = self
             .tasks
@@ -758,6 +779,7 @@ impl GoalRegistry {
         out
     }
 
+    /// Formats a goal and all its tasks for detailed display.
     pub fn format_goal_tasks(&self, goal_id: GoalId) -> String {
         if let Some(goal) = self.goals.get(&goal_id) {
             let mut out = format!(
@@ -840,6 +862,7 @@ impl GoalRegistry {
         }
     }
 
+    /// Formats a summary report of all goals and tasks across the mesh.
     pub fn format_report(&self) -> String {
         let total_goals = self.goals.len();
         let g_pending = self
