@@ -181,7 +181,7 @@ fn composition_generate(
     rng_seed: u64,
 ) -> Vec<Challenge> {
     // Only generate occasionally (use rng_seed as cheap randomness).
-    if rng_seed % 3 != 0 { return Vec::new(); }
+    if !rng_seed.is_multiple_of(3) { return Vec::new(); }
 
     // Need at least 2 solved challenges with numeric outputs.
     let numeric_solved: Vec<&&Challenge> = all_solved.iter()
@@ -243,6 +243,12 @@ pub struct EnvironmentCycle {
     pub cycle_length: u64,
     pub tick_counter: u64,
     pub conditions: Vec<String>,
+}
+
+impl Default for EnvironmentCycle {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EnvironmentCycle {
@@ -448,7 +454,7 @@ pub struct GeneratorPopulation {
 
 impl GeneratorPopulation {
     pub fn new(rng: &mut SimpleRng) -> Self {
-        let seeds = vec!["5 +", "DUP *", "2 *", "1+", "3 *", "DUP 2 * +", "10 +", "DUP 3 * 2 +"];
+        let seeds = ["5 +", "DUP *", "2 *", "1+", "3 *", "DUP 2 * +", "10 +", "DUP 3 * 2 +"];
         let mut genomes: Vec<GeneratorGenome> = seeds.iter()
             .map(|s| GeneratorGenome::new(s))
             .collect();
@@ -575,13 +581,11 @@ pub struct ScoringPopulation {
 
 impl ScoringPopulation {
     pub fn new(rng: &mut SimpleRng) -> Self {
-        let seeds = vec![
-            "- ABS 100 SWAP - 0 MAX",
+        let seeds = ["- ABS 100 SWAP - 0 MAX",
             "DROP 50",
             "- ABS",
             "- ABS 1+ 1000 SWAP -",
-            "SWAP DROP DUP * 100 SWAP -",
-        ];
+            "SWAP DROP DUP * 100 SWAP -"];
         let mut scorers: Vec<ScoringGenome> = seeds.iter()
             .map(|s| ScoringGenome::new(s))
             .collect();
@@ -674,6 +678,12 @@ pub struct LandscapeEngine {
     pub scoring: ScoringPopulation,
 }
 
+impl Default for LandscapeEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LandscapeEngine {
     pub fn new() -> Self {
         let mut rng = SimpleRng::new(0xCAFE);
@@ -705,8 +715,8 @@ impl LandscapeEngine {
             );
             for ch in generated {
                 let child_difficulty = gen.difficulty_level(&ch);
-                if child_difficulty > parent_difficulty && child_difficulty as u32 > self.depth {
-                    self.depth = child_difficulty as u32;
+                if child_difficulty > parent_difficulty && child_difficulty > self.depth {
+                    self.depth = child_difficulty;
                 }
                 new_challenges.push(ch);
             }

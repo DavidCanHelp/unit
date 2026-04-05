@@ -25,6 +25,12 @@ pub struct FitnessTracker {
     pub evolve_interval: u32,
 }
 
+impl Default for FitnessTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FitnessTracker {
     pub fn new() -> Self {
         FitnessTracker {

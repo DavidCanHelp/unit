@@ -54,6 +54,12 @@ pub struct ProblemDetector {
     max_hashes: usize,
 }
 
+impl Default for ProblemDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProblemDetector {
     pub fn new() -> Self {
         ProblemDetector {

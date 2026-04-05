@@ -535,7 +535,7 @@ impl MeshNode {
         out.push_str(&format!("port:     {}\n", st.port));
         out.push_str(&format!("load:     {}/{}\n", st.load, st.capacity));
         out.push_str(&format!("peers:    {}\n", st.peers.len()));
-        for (_, peer) in &st.peers {
+        for peer in st.peers.values() {
             let age = peer.last_seen.elapsed().as_secs();
             out.push_str(&format!(
                 "  {} @ {} load={}/{} seen={}s ago\n",
@@ -606,11 +606,10 @@ impl MeshNode {
 
         // Anti-spam: only one active proposal per node.
         for prop in st.proposals.values() {
-            if prop.proposer == self.id && !prop.committed {
-                if prop.started.elapsed() < PROPOSAL_TIMEOUT {
+            if prop.proposer == self.id && !prop.committed
+                && prop.started.elapsed() < PROPOSAL_TIMEOUT {
                     return Err("already have an active proposal".into());
                 }
-            }
         }
 
         if st.peers.is_empty() {
@@ -973,8 +972,8 @@ impl MeshNode {
     pub fn connect_peer(&self, addr: SocketAddr) {
         let pseudo = addr_to_pseudo_id(&addr);
         let mut st = self.state.lock().unwrap();
-        if !st.peers.contains_key(&pseudo) {
-            st.peers.insert(pseudo, PeerInfo {
+        if let std::collections::hash_map::Entry::Vacant(e) = st.peers.entry(pseudo) {
+            e.insert(PeerInfo {
                 addr,
                 id: pseudo,
                 load: 0,
@@ -1073,8 +1072,8 @@ impl MeshNode {
                         format!("{}:{}", src.ip(), sender_port).parse().unwrap();
 
                     let mut st = state.lock().unwrap();
-                    if !st.peers.contains_key(&sender_id) {
-                        st.peers.insert(sender_id, PeerInfo {
+                    if let std::collections::hash_map::Entry::Vacant(e) = st.peers.entry(sender_id) {
+                        e.insert(PeerInfo {
                             addr: peer_addr,
                             id: sender_id,
                             load: 0,
@@ -2551,8 +2550,8 @@ pub fn serialize_state(
     let mem_cells = here.min(memory.len());
     write_u32(&mut buf, here as u32);
     write_u32(&mut buf, mem_cells as u32);
-    for i in 0..mem_cells {
-        write_i64(&mut buf, memory[i]);
+    for cell in memory.iter().take(mem_cells) {
+        write_i64(&mut buf, *cell);
     }
 
     // Goals (appended after memory — backward compatible).

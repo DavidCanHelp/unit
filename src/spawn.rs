@@ -55,6 +55,7 @@ pub fn package_size_estimate(state_size: usize) -> Result<usize, String> {
 }
 
 /// Unpack a replication package. Returns (binary, state, prelude).
+#[allow(clippy::type_complexity)]
 pub fn unpack_package(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
     if data.len() < HEADER_SIZE {
         return Err("package too small".into());
@@ -113,6 +114,12 @@ pub struct SpawnState {
     pub quarantine: bool,
     pub last_spawn: Option<Instant>,
     pub spawn_cooldown_secs: u64,
+}
+
+impl Default for SpawnState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SpawnState {
@@ -261,33 +268,31 @@ pub fn start_replication_listener(
     let (tx, rx) = std::sync::mpsc::channel();
 
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            if let Ok(mut stream) = stream {
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_secs(30)))
-                    .ok();
+        for mut stream in listener.incoming().flatten() {
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+                .ok();
 
-                // Read length prefix.
-                let mut len_buf = [0u8; 8];
-                if stream.read_exact(&mut len_buf).is_err() {
-                    continue;
-                }
-                let pkg_len = u64::from_be_bytes(len_buf) as usize;
-                if pkg_len > 100_000_000 {
-                    // Sanity: reject > 100MB.
-                    continue;
-                }
+            // Read length prefix.
+            let mut len_buf = [0u8; 8];
+            if stream.read_exact(&mut len_buf).is_err() {
+                continue;
+            }
+            let pkg_len = u64::from_be_bytes(len_buf) as usize;
+            if pkg_len > 100_000_000 {
+                // Sanity: reject > 100MB.
+                continue;
+            }
 
-                // Read package.
-                let mut pkg = vec![0u8; pkg_len];
-                if stream.read_exact(&mut pkg).is_err() {
-                    continue;
-                }
+            // Read package.
+            let mut pkg = vec![0u8; pkg_len];
+            if stream.read_exact(&mut pkg).is_err() {
+                continue;
+            }
 
-                // Validate header.
-                if pkg.len() >= 4 && &pkg[0..4] == PACKAGE_MAGIC {
-                    let _ = tx.send(pkg);
-                }
+            // Validate header.
+            if pkg.len() >= 4 && &pkg[0..4] == PACKAGE_MAGIC {
+                let _ = tx.send(pkg);
             }
         }
     });

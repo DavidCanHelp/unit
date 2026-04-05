@@ -130,6 +130,12 @@ pub struct MonitorState {
     pub max_history: usize,
 }
 
+impl Default for MonitorState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MonitorState {
     pub fn new() -> Self {
         MonitorState {
@@ -502,8 +508,8 @@ impl MonitorState {
         let active_alerts = self.alerts.iter().filter(|a| !a.acknowledged).count() as i64;
         let alert_penalty = (active_alerts * 20).min(50);
         let peer_bonus = (peer_count as i64 * 5).min(20);
-        let fitness_bonus = (fitness / 10).min(10).max(0);
-        (watch_score - alert_penalty + peer_bonus + fitness_bonus).max(0).min(100)
+        let fitness_bonus = (fitness / 10).clamp(0, 10);
+        (watch_score - alert_penalty + peer_bonus + fitness_bonus).clamp(0, 100)
     }
 
     /// Compute uptime percentage for a watch.

@@ -37,6 +37,12 @@ pub struct EnergyState {
     pub throttled: bool,
 }
 
+impl Default for EnergyState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EnergyState {
     pub fn new() -> Self {
         EnergyState {

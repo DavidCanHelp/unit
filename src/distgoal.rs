@@ -178,7 +178,7 @@ impl DistEngine {
     /// Is the goal complete?
     pub fn is_complete(&self, goal_id: GoalId) -> bool {
         self.goals.get(&goal_id)
-            .map_or(false, |g| g.status == DistStatus::Complete)
+            .is_some_and(|g| g.status == DistStatus::Complete)
     }
 
     /// Combine results into final output.

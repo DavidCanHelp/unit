@@ -234,7 +234,7 @@ pub fn to_forth(sexp: &Sexp) -> String {
         Sexp::List(items) => {
             // (op arg1 arg2 ...) → arg1 arg2 ... op
             let op = &items[0];
-            let args: Vec<String> = items[1..].iter().map(|a| to_forth(a)).collect();
+            let args: Vec<String> = items[1..].iter().map(to_forth).collect();
             let op_str = match op {
                 Sexp::Atom(a) => translate_op(a),
                 other => to_forth(other),

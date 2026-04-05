@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 // SHA-1 (minimal, for WebSocket handshake only — not for security)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::needless_range_loop)]
 fn sha1(data: &[u8]) -> [u8; 20] {
     let mut h0: u32 = 0x67452301;
     let mut h1: u32 = 0xEFCDAB89;
@@ -280,15 +281,13 @@ pub fn start_ws_bridge(
     std::thread::spawn(move || {
         // Accept connections sequentially (simple for the seed).
         // Each connection is handled in its own thread.
-        for stream in listener.incoming() {
-            if let Ok(stream) = stream {
-                let tx = tx.clone();
-                let state = state_clone.clone();
-                let mesh_json = mesh_json.clone();
-                std::thread::spawn(move || {
-                    handle_ws_client(stream, tx, state, mesh_json);
-                });
-            }
+        for stream in listener.incoming().flatten() {
+            let tx = tx.clone();
+            let state = state_clone.clone();
+            let mesh_json = mesh_json.clone();
+            std::thread::spawn(move || {
+                handle_ws_client(stream, tx, state, mesh_json);
+            });
         }
     });
 
@@ -385,7 +384,7 @@ fn handle_ws_upgrade(
     let _origin = request
         .lines()
         .find(|l| l.to_lowercase().starts_with("origin:"))
-        .and_then(|l| l.splitn(2, ':').nth(1))
+        .and_then(|l| l.split_once(':').map(|x| x.1))
         .map(|o| o.trim().to_string())
         .unwrap_or_else(|| "*".to_string());
 
@@ -555,6 +554,7 @@ fn extract_json_number(json: &str, key: &str) -> Option<i64> {
 
 /// Build a JSON mesh state string for pushing to browsers.
 /// Build a rich JSON mesh state for the visualizer.
+#[allow(clippy::too_many_arguments)]
 pub fn build_mesh_json(
     self_id: &str,
     self_fitness: i64,

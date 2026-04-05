@@ -68,7 +68,7 @@ fn escape_json_string(s: &str) -> String {
 pub fn to_json(snap: &UnitSnapshot) -> String {
     let mut j = String::with_capacity(4096);
     j.push_str("{\n");
-    j.push_str(&format!("  \"version\": 1,\n"));
+    j.push_str("  \"version\": 1,\n");
     j.push_str(&format!("  \"node_id\": \"{}\",\n", escape_json_string(&snap.node_id)));
     j.push_str(&format!("  \"timestamp\": {},\n", snap.timestamp));
     j.push_str(&format!("  \"fitness\": {},\n", snap.fitness));
@@ -233,10 +233,7 @@ pub fn from_json(input: &str) -> Option<UnitSnapshot> {
                 _ => {}
             }
         } else if let Some((key, val)) = parse_kv_string(line) {
-            match key.as_str() {
-                "node_id" => snap.node_id = val,
-                _ => {}
-            }
+            if key.as_str() == "node_id" { snap.node_id = val }
         }
     }
 

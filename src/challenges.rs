@@ -95,6 +95,7 @@ impl ChallengeRegistry {
         id
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn register_discovered(
         &mut self,
         name: &str,

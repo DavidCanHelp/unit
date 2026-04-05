@@ -360,6 +360,12 @@ pub struct VM {
     pub landscape: crate::landscape::LandscapeEngine,
 }
 
+impl Default for VM {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VM {
     pub fn new() -> Self {
         let mut vm = VM {
@@ -773,10 +779,8 @@ impl VM {
         if let Some(idx) = self.find_word(word) {
             if self.dictionary[idx].immediate {
                 self.execute_word(idx);
-            } else {
-                if let Some(ref mut def) = self.current_def {
-                    def.body.push(Instruction::Call(idx));
-                }
+            } else if let Some(ref mut def) = self.current_def {
+                def.body.push(Instruction::Call(idx));
             }
             return;
         }
@@ -1148,7 +1152,7 @@ impl VM {
             }
             P_METABOLISM => self.prim_metabolism(),
             P_FEED => {
-                let amount = self.pop().min(500).max(0);
+                let amount = self.pop().clamp(0, 500);
                 self.energy.earn(amount, "manual-feed");
                 self.emit_str(&format!("fed {} energy\n", amount));
             }

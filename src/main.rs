@@ -618,7 +618,7 @@ impl VM {
             evo.population[i].fitness = score;
         }
         for c in &evo.population {
-            if evo.best.as_ref().map_or(true, |b| c.fitness > b.fitness) {
+            if evo.best.as_ref().is_none_or(|b| c.fitness > b.fitness) {
                 evo.best = Some(c.clone());
             }
         }
@@ -675,7 +675,7 @@ impl VM {
             let challenge_name = evo.challenge.name.clone();
 
             // Report every 100 generations.
-            if gen % 100 == 0 {
+            if gen.is_multiple_of(100) {
                 messages.push(format!(
                     "[gen {}] best: {:.0} | pop: {} | \"{}\" ({} tokens)\n",
                     gen, best_fitness, pop_size, best_prog, best_tokens
@@ -723,8 +723,8 @@ impl VM {
 
         // Emit collected messages and install solutions.
         for msg in &messages {
-            if msg.starts_with("__INSTALL_SOL__") {
-                let rest = &msg[15..].trim_end();
+            if let Some(stripped) = msg.strip_prefix("__INSTALL_SOL__") {
+                let rest = stripped.trim_end();
                 if let Some(idx) = rest.find('|') {
                     let name = &rest[..idx];
                     let prog = &rest[idx+1..];
@@ -2017,7 +2017,7 @@ impl VM {
         let should = self
             .mesh
             .as_ref()
-            .map_or(false, |m| m.should_auto_replicate());
+            .is_some_and(|m| m.should_auto_replicate());
         if should {
             if let Some(ref m) = self.mesh {
                 m.clear_auto_replicate();
@@ -2738,12 +2738,10 @@ impl VM {
                 def.body.push(Instruction::Literal(idx as Cell));
                 def.body.push(Instruction::Primitive(P_ALERT_THRESHOLD_RT));
             }
-        } else {
-            if let Ok(watch_id) = target.trim().parse::<u32>() {
-                let level = self.pop();
-                self.monitor.set_alert_level(watch_id, monitor::AlertLevel::from_val(level));
-                self.emit_str(&format!("alert threshold set for watch #{}\n", watch_id));
-            }
+        } else if let Ok(watch_id) = target.trim().parse::<u32>() {
+            let level = self.pop();
+            self.monitor.set_alert_level(watch_id, monitor::AlertLevel::from_val(level));
+            self.emit_str(&format!("alert threshold set for watch #{}\n", watch_id));
         }
     }
 
@@ -2836,7 +2834,7 @@ impl VM {
                 match io_words::http_get(url) {
                     Ok((_, code)) => {
                         let ms = start.elapsed().as_millis() as u64;
-                        if code >= 200 && code < 400 {
+                        if (200..400).contains(&code) {
                             monitor::WatchStatus::up(code as i32, ms, format!("{}", code))
                         } else {
                             monitor::WatchStatus::down(code as i32, format!("HTTP {}", code))
@@ -3324,7 +3322,7 @@ impl VM {
     fn prim_fork(&mut self) {
         let n = self.pop() as usize;
         let goal_id = self.pop() as u64;
-        let ok = self.mesh.as_ref().map_or(false, |m| {
+        let ok = self.mesh.as_ref().is_some_and(|m| {
             let mut st = m.state_lock();
             st.goals.fork_goal(goal_id, n)
         });
@@ -3718,8 +3716,8 @@ fn main() {
     vm.silent = false;
 
     // Try JSON resurrection (only if not already restored from binary state).
-    if !restored {
-        if vm.try_resurrect() {
+    if !restored
+        && vm.try_resurrect() {
             if !cli.quiet {
                 eprintln!("resurrected from snapshot");
             }
@@ -3737,7 +3735,6 @@ fn main() {
                 }
             }
         }
-    }
 
     // Apply --trust.
     if let Some(ref level) = cli.trust {

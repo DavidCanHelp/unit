@@ -146,7 +146,6 @@ impl super::VM {
                 self.compiling = false;
                 self.anon_depth = 0;
                 self.execute_body(&body);
-                return;
             }
         }
     }
@@ -187,7 +186,6 @@ impl super::VM {
                 self.compiling = false;
                 self.anon_depth = 0;
                 self.execute_body(&body);
-                return;
             }
         }
     }
