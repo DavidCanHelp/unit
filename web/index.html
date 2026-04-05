@@ -428,6 +428,10 @@ function autoTick() {
   unit.energy = Math.min(unit.energy + 1, unit.energyMax);
   unit.energyEarned += 1;
 
+  // Passive energy regen for self unit (not in the auto rotation).
+  mesh.units[0].energy = Math.min(mesh.units[0].energy + 1, mesh.units[0].energyMax);
+  mesh.units[0].energyEarned += 1;
+
   // Update personality label on the viz node.
   if (unit.personality) {
     const n = vizNodes.find(nd => nd.id === unit.id);
@@ -482,6 +486,7 @@ async function doSpawn() {
   if (!mesh || mesh.units.length >= mesh.maxUnits) return;
   const u = await mesh.spawn(mesh.units[0]);
   if (u) {
+    mesh.units[0].fitness += 10; // Self unit earns fitness for successful reproduction.
     spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
     appendOutput(`[mesh] unit #${u.id} spawned (${mesh.units.length} units online)\n`, 'mesh-event');
     const peers = mesh.units.length - 1;
@@ -795,6 +800,9 @@ input.addEventListener('keydown', (e) => {
         appendOutput(`(distributed ${results.length} sub-goals, ${localCount} local, ${remoteCount} remote)\n`, 'mesh-event');
       }
 
+      // Self unit earns fitness as coordinator.
+      selfUnit.fitness += 5;
+
       // Completion effects.
       setBubble(selfUnit.id, `done: ${combined.substring(0, 30)}`, '#00ff88');
       addChatter(selfUnit.id,
@@ -845,9 +853,14 @@ input.addEventListener('keydown', (e) => {
   }
   const result = vm.eval(line);
   if (result) appendOutput(result);
+  // Self unit earns fitness from successful REPL activity.
+  if (mesh && result && !result.toLowerCase().includes('error')) {
+    mesh.units[0].fitness += 1;
+  }
   // Update JS-side state when GP-EVOLVE solves a challenge.
   if (mesh && line.trim().toUpperCase().startsWith('GP-EVOLVE') && result && result.includes('[immune] learned word:')) {
     const u = mesh.units[0];
+    u.fitness += 20;
     u.energySpent += 5; u.energyEarned += 100; u.energy = u.energy - 5 + 100;
     const solMatch = result.match(/learned word: (SOL-\S+)/);
     if (solMatch && !mesh._solWords.includes(solMatch[1])) mesh._solWords.push(solMatch[1]);
