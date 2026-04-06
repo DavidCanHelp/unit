@@ -270,6 +270,11 @@ pub(crate) const P_SCORERS: usize = 490;
 pub(crate) const P_META_DEPTH: usize = 491;
 pub(crate) const P_GENERATE_CHALLENGE: usize = 492;
 pub(crate) const P_EVOLUTION_STATS: usize = 493;
+pub(crate) const P_MATE: usize = 494;
+pub(crate) const P_MATE_STATUS: usize = 495;
+pub(crate) const P_ACCEPT_MATE: usize = 496;
+pub(crate) const P_DENY_MATE: usize = 497;
+pub(crate) const P_OFFSPRING: usize = 498;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -363,6 +368,10 @@ pub struct VM {
     pub landscape: crate::landscape::LandscapeEngine,
     /// Last solved challenge target value (for meta-evolution and challenge generation).
     pub last_solved_target: Option<i64>,
+    // --- Sexual reproduction ---
+    pub mate_auto_accept: bool,
+    pub mating_offspring: Vec<(String, String)>, // (child_hex, mate_hex) history
+    pub pending_mate_request: Option<crate::reproduction::MatingRequest>,
 }
 
 impl Default for VM {
@@ -422,6 +431,9 @@ impl VM {
             energy: crate::energy::EnergyState::new(),
             landscape: crate::landscape::LandscapeEngine::new(),
             last_solved_target: None,
+            mate_auto_accept: true,
+            mating_offspring: Vec::new(),
+            pending_mate_request: None,
         };
         vm.register_primitives();
         vm
@@ -679,6 +691,12 @@ impl VM {
             ("META-DEPTH", P_META_DEPTH, false),
             ("GENERATE-CHALLENGE", P_GENERATE_CHALLENGE, false),
             ("EVOLUTION-STATS", P_EVOLUTION_STATS, false),
+            // Sexual reproduction
+            ("MATE", P_MATE, false),
+            ("MATE-STATUS", P_MATE_STATUS, false),
+            ("ACCEPT-MATE", P_ACCEPT_MATE, false),
+            ("DENY-MATE", P_DENY_MATE, false),
+            ("OFFSPRING", P_OFFSPRING, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1370,6 +1388,94 @@ impl VM {
                      scoring history: {} entries\n",
                     depth, authored + evolved, authored, evolved, env, top_gen, top_scorer, history_size
                 ));
+            }
+            // Sexual reproduction
+            P_MATE => {
+                if !self.energy.can_afford(crate::energy::SPAWN_COST) {
+                    self.emit_str(&format!(
+                        "insufficient energy to mate (need {}, have {})\n",
+                        crate::energy::SPAWN_COST, self.energy.energy
+                    ));
+                } else if let Some(ref m) = self.mesh {
+                    let peers: Vec<(crate::mesh::NodeId, i64)> = m
+                        .peer_fitness_list()
+                        .iter()
+                        .map(|p| (p.id, p.score))
+                        .collect();
+                    if peers.is_empty() {
+                        self.emit_str("no peers available for mating\n");
+                    } else {
+                        let selected =
+                            crate::reproduction::select_mate(&peers, &mut self.rng);
+                        if let Some(mate_id) = selected {
+                            let my_id = self.node_id_cache.unwrap_or([0; 8]);
+                            let my_fitness = self.fitness.score;
+                            let words: Vec<(String, String)> = self
+                                .dictionary
+                                .iter()
+                                .filter(|e| !e.hidden && e.body.len() > 1)
+                                .take(50)
+                                .map(|e| (e.name.clone(), format!("{:?}", e.body)))
+                                .collect();
+                            let req = crate::reproduction::MatingRequest {
+                                requester_id: my_id,
+                                requester_fitness: my_fitness,
+                                dictionary_words: words,
+                            };
+                            let sexp = crate::reproduction::sexp_mating_request(&req);
+                            let hex = crate::mesh::id_to_hex(&mate_id);
+                            // Send to all peers (target will filter by ID).
+                            let m_ref = self.mesh.as_ref().unwrap();
+                            m_ref.send_sexp(&sexp);
+                            self.emit_str(&format!(
+                                "mating request sent to {}, awaiting response...\n",
+                                hex
+                            ));
+                        } else {
+                            self.emit_str("no suitable mate found\n");
+                        }
+                    }
+                } else {
+                    self.emit_str("mesh offline\n");
+                }
+            }
+            P_MATE_STATUS => {
+                let pending = if self.pending_mate_request.is_some() {
+                    "pending request"
+                } else {
+                    "none"
+                };
+                let offspring_count = self.mating_offspring.len();
+                self.emit_str(&format!(
+                    "--- mating status ---\nauto-accept: {}\npending: {}\noffspring: {}\n",
+                    self.mate_auto_accept, pending, offspring_count
+                ));
+                let lines: Vec<String> = self.mating_offspring.iter()
+                    .map(|(child, mate)| format!("  child {} x mate {}\n", child, mate))
+                    .collect();
+                for line in &lines { self.emit_str(line); }
+            }
+            P_ACCEPT_MATE => {
+                self.mate_auto_accept = true;
+                self.emit_str("mating requests will be auto-accepted\n");
+            }
+            P_DENY_MATE => {
+                self.mate_auto_accept = false;
+                self.emit_str("mating requests will be denied\n");
+            }
+            P_OFFSPRING => {
+                if self.mating_offspring.is_empty() {
+                    self.emit_str("no offspring from mating\n");
+                } else {
+                    self.emit_str(&format!(
+                        "--- {} offspring ---\n",
+                        self.mating_offspring.len()
+                    ));
+                    let lines: Vec<String> = self.mating_offspring.iter()
+                        .map(|(child, mate)| format!("  child {} (mate: {})\n", child, mate))
+                        .collect();
+                    for line in &lines { self.emit_str(line); }
+                }
             }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),

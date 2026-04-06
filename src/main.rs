@@ -41,6 +41,10 @@ pub mod goals;
 #[allow(dead_code)]
 pub mod mesh;
 
+// --- Sexual reproduction ---
+#[allow(dead_code)]
+pub mod reproduction;
+
 // --- Replication & persistence ---
 #[allow(dead_code)]
 pub mod persist;
@@ -1267,6 +1271,74 @@ impl VM {
                                         goal_id, combined
                                     ));
                                 }
+                            }
+                        }
+                        Some("mating-request") => {
+                            let from_hex = sexp
+                                .get_key(":from")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let fitness = sexp
+                                .get_key(":fitness")
+                                .and_then(|s| s.as_number())
+                                .unwrap_or(0);
+                            let my_fitness = self.fitness.score;
+                            // Auto-accept if requester fitness >= half of ours.
+                            let accept =
+                                self.mate_auto_accept && fitness >= my_fitness / 2;
+                            if accept {
+                                let my_id = self.node_id_cache.unwrap_or([0; 8]);
+                                let words: Vec<(String, String)> = self
+                                    .dictionary
+                                    .iter()
+                                    .filter(|e| !e.hidden && e.body.len() > 1)
+                                    .take(50)
+                                    .map(|e| (e.name.clone(), format!("{:?}", e.body)))
+                                    .collect();
+                                let resp = reproduction::MatingResponse {
+                                    accepted: true,
+                                    responder_id: my_id,
+                                    responder_fitness: my_fitness,
+                                    dictionary_words: words,
+                                };
+                                let reply = reproduction::sexp_mating_response(&resp);
+                                if let Some(ref m2) = self.mesh {
+                                    m2.send_sexp(&reply);
+                                }
+                                self.emit_str(&format!(
+                                    "[mate] accepted mating request from {}\n",
+                                    from_hex
+                                ));
+                            } else {
+                                self.emit_str(&format!(
+                                    "[mate] denied mating request from {}\n",
+                                    from_hex
+                                ));
+                            }
+                        }
+                        Some("mating-response") => {
+                            let accepted_str = sexp
+                                .get_key(":accepted")
+                                .and_then(|s| s.as_atom())
+                                .unwrap_or("false");
+                            let from_hex = sexp
+                                .get_key(":from")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            if accepted_str == "true" {
+                                self.emit_str(&format!(
+                                    "[mate] {} accepted! crossover offspring created\n",
+                                    from_hex
+                                ));
+                                self.mating_offspring
+                                    .push(("child".to_string(), from_hex));
+                            } else {
+                                self.emit_str(&format!(
+                                    "[mate] {} denied mating request\n",
+                                    from_hex
+                                ));
                             }
                         }
                         _ => {} // other sexp types handled elsewhere
