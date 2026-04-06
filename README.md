@@ -18,7 +18,7 @@ cargo install unit
 
 ```
 $ unit
-unit v0.25.0 -- seed online
+unit v0.26.0 -- seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
 > 2 3 + .
 5  ok
@@ -360,6 +360,34 @@ Trust levels control who can replicate to you:
 | `TRUST-FAMILY` | Auto-accept parent/children only |
 | `TRUST-NONE` | Manual approval for all |
 
+## Sexual Reproduction
+
+Units can mate via the mesh. `MATE` selects a partner through tournament
+selection (pick 3 peers, choose the fittest), sends a mating request,
+and on acceptance both parents contribute dictionary words to the child.
+Shared words come from the fitter parent, unique words are inherited
+with 50% probability, and SOL-* antibodies are always preserved. The
+child genome is capped at 50 words to prevent bloat.
+
+## Niche Construction
+
+Units that excel at certain challenge types modify their own selection
+pressures. After solving challenges, the niche system categorizes
+outcomes (fibonacci, polynomial, composition, evolved, parsimony) and
+calculates specialization scores. Categories where the unit solves >60%
+get a 2x frequency modifier — the unit sees more of what it's good at.
+This creates ecological specialization across the colony. Use `NICHE`
+to inspect your specialization profile and `ECOLOGY` for colony-wide
+diversity.
+
+## Visual Dashboard
+
+The browser demo at [davidcanhelp.github.io/unit](https://davidcanhelp.github.io/unit)
+now includes a live SVG dashboard with four panels: fitness graph
+(line chart over generations), energy bar (color-coded), challenge
+tree (solved/unsolved lineage), and population heatmap (50 individuals).
+Toggle with the dashboard button.
+
 ## Monitoring & Ops
 
 ```
@@ -428,7 +456,7 @@ docs/
 └── formal-analysis.md
 ```
 
-205+ Rust tests, 22 Python tests, Go tests. Zero dependencies. ~35,000 lines.
+223+ Rust tests, 22 Python tests, Go tests. Zero dependencies. ~36,000 lines.
 
 ## All the Words
 
@@ -577,6 +605,23 @@ docs/
 | `REPLICATE-TO"` | remote replication |
 | `CHILDREN` `FAMILY` `GENERATION` `KILL-CHILD` | lineage |
 | `ACCEPT-REPLICATE` `DENY-REPLICATE` `QUARANTINE` `MAX-CHILDREN` | safety |
+
+### Reproduction
+
+| Word | Description |
+|------|-------------|
+| `MATE` | initiate sexual reproduction with a mesh peer |
+| `MATE-STATUS` | show pending mating requests and offspring count |
+| `ACCEPT-MATE` `DENY-MATE` | control auto-accept for mating |
+| `OFFSPRING` | list children produced by mating |
+
+### Ecology
+
+| Word | Description |
+|------|-------------|
+| `NICHE` | show niche profile: specializations and modifiers |
+| `NICHE-HISTORY` | last 20 challenge outcomes with categories |
+| `ECOLOGY` | colony-wide ecological diversity |
 
 ### Trust & Consent
 
