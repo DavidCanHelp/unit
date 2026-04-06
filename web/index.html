@@ -49,24 +49,49 @@
   #genome-panel .gp-close { position:absolute; top:4px; right:8px; cursor:pointer; color:#666; font-size:14px; }
   #genome-panel .gp-close:hover { color:#ff4444; }
   #genome-cmd { width:100%; background:#111; border:1px solid #333; color:#00ff88; font-family:monospace; font-size:11px; padding:2px 4px; margin-top:6px; outline:none; }
+  #dashboard { display:none; border-bottom:1px solid #111; padding:8px 14px; background:#0a0a14; }
+  #dashboard.visible { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  @media (max-width:768px) { #dashboard.visible { grid-template-columns:1fr; } }
+  .dash-panel { background:#0d0d14; border:1px solid #1a1a2a; border-radius:3px; padding:6px 8px; }
+  .dash-title { font-size:9px; color:#555; margin-bottom:4px; text-transform:uppercase; letter-spacing:1px; }
+  .dash-panel svg { width:100%; display:block; }
 </style>
 </head>
 <body>
 <div id="info">
   <div id="info-left">
-    <span class="title">unit v0.25.0</span>
+    <span class="title">unit v0.26.0</span>
     <span class="desc">A self-replicating software nanobot.</span>
   </div>
   <div id="info-right">
     <button class="mode-btn" id="spawn-btn" onclick="doSpawn()">spawn (1/5)</button>
     <button class="mode-btn" id="viz-toggle" onclick="cycleVizMode()">mesh</button>
     <button class="mode-btn" id="mute-btn" onclick="toggleMute()">chatter</button>
+    <button class="mode-btn" id="dash-btn" onclick="toggleDashboard()">dashboard</button>
     <a href="https://github.com/DavidCanHelp/unit">GitHub</a>
     <a href="https://crates.io/crates/unit">crates.io</a>
   </div>
 </div>
 <div id="viz" style="position:relative"><canvas id="viz-canvas"></canvas><span id="viz-label"></span><div id="genome-panel"><span class="gp-close" onclick="closeGenome()">x</span><div id="genome-content"></div><input id="genome-cmd" placeholder="run command on this unit..." /></div></div>
 <div id="chatter"></div>
+<div id="dashboard">
+  <div class="dash-panel">
+    <div class="dash-title">fitness over generations</div>
+    <svg id="dash-fitness" viewBox="0 0 200 60" preserveAspectRatio="none"><polyline id="fitness-line" fill="none" stroke="#4EC9B0" stroke-width="1.5" points=""/><text x="2" y="10" font-size="7" fill="#555" id="fitness-label"></text></svg>
+  </div>
+  <div class="dash-panel">
+    <div class="dash-title">energy</div>
+    <svg id="dash-energy" viewBox="0 0 200 16"><rect x="0" y="2" width="200" height="12" fill="#111" rx="2"/><rect id="energy-fill" x="0" y="2" width="100" height="12" fill="#4EC9B0" rx="2"/><text id="energy-text" x="100" y="11" font-size="8" fill="#ccc" text-anchor="middle"></text></svg>
+  </div>
+  <div class="dash-panel">
+    <div class="dash-title">challenge tree</div>
+    <svg id="dash-tree" viewBox="0 0 200 80"></svg>
+  </div>
+  <div class="dash-panel">
+    <div class="dash-title">population heatmap</div>
+    <svg id="dash-heatmap" viewBox="0 0 200 16"></svg>
+  </div>
+</div>
 <div id="terminal" onclick="document.getElementById('input').focus()"></div>
 <div id="tutorial-bar"></div>
 <div id="hints"></div>
@@ -866,6 +891,39 @@ input.addEventListener('keydown', (e) => {
         appendOutput(`first-order: ${solCount} solutions evolved\nsecond-order: 20 generators evolved (gen ${mesh._metaGen || 0})\nthird-order: 10 scoring functions evolved (gen 0)\n`, 'output');
         break;
       }
+      case 'MATE':
+        appendOutput('mating requires a mesh peer — spawn more units first\n', 'output');
+        break;
+      case 'MATE-STATUS':
+        appendOutput('--- mating status ---\nauto-accept: true\npending: none\noffspring: 0\n', 'output');
+        break;
+      case 'ACCEPT-MATE':
+        appendOutput('mating requests will be auto-accepted\n', 'output');
+        break;
+      case 'DENY-MATE':
+        appendOutput('mating requests will be denied\n', 'output');
+        break;
+      case 'OFFSPRING':
+        appendOutput('no offspring from mating\n', 'output');
+        break;
+      case 'NICHE': {
+        const ch = mesh._challenges || [];
+        const solved = ch.filter(c => c.solved);
+        if (solved.length === 0) { appendOutput('--- niche profile ---\nno specializations yet\n', 'output'); break; }
+        appendOutput('--- niche profile ---\n  fibonacci: 100% (modifier: 2.0x)\ndominant niche: fibonacci (100%)\n', 'output');
+        break;
+      }
+      case 'NICHE-HISTORY': {
+        const ch = mesh._challenges || [];
+        if (ch.length === 0) { appendOutput('no challenge history\n', 'output'); break; }
+        appendOutput('--- challenge history ---\n', 'output');
+        ch.slice(-20).forEach(c => appendOutput(`  ${c.name} ${c.solved ? 'solved' : 'unsolved'}\n`, 'output'));
+        break;
+      }
+      case 'ECOLOGY': {
+        appendOutput(`--- ecology ---\nself niche: generalist\ncolony size: ${mesh.units.length}\n`, 'output');
+        break;
+      }
       default:
         handled = false;
     }
@@ -1005,6 +1063,135 @@ input.addEventListener('keydown', (e) => {
   advanceTutorial(line);
   if (!vm.isRunning()) { appendOutput('\n[unit exited]\n', 'info'); input.disabled = true; }
 });
+
+// =========================================================================
+// Visual Evolution Dashboard
+// =========================================================================
+const dashDiv = document.getElementById('dashboard');
+const dashBtn = document.getElementById('dash-btn');
+let dashVisible = window.innerWidth > 768;
+
+function toggleDashboard() {
+  dashVisible = !dashVisible;
+  dashDiv.className = dashVisible ? 'visible' : '';
+  dashBtn.className = dashVisible ? 'mode-btn active' : 'mode-btn';
+}
+// Auto-show on desktop.
+if (dashVisible) { dashDiv.className = 'visible'; dashBtn.className = 'mode-btn active'; }
+
+// --- Fitness Graph ---
+const fitnessData = []; // { gen, fitness }
+const fitnessLine = document.getElementById('fitness-line');
+const fitnessLabel = document.getElementById('fitness-label');
+
+function updateFitnessGraph(gen, fitness) {
+  fitnessData.push({ gen, fitness });
+  if (fitnessData.length > 100) fitnessData.shift();
+  const maxF = Math.max(1, ...fitnessData.map(d => d.fitness));
+  const pts = fitnessData.map((d, i) => {
+    const x = (i / Math.max(1, fitnessData.length - 1)) * 200;
+    const y = 58 - (d.fitness / maxF) * 54;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  fitnessLine.setAttribute('points', pts);
+  fitnessLabel.textContent = `best: ${fitnessData[fitnessData.length - 1].fitness.toFixed(0)}`;
+}
+
+// --- Energy Bar ---
+const energyFill = document.getElementById('energy-fill');
+const energyText = document.getElementById('energy-text');
+
+function updateEnergyBar(current, max) {
+  const pct = max > 0 ? Math.min(1, current / max) : 0;
+  const w = pct * 200;
+  energyFill.setAttribute('width', w.toFixed(0));
+  const color = pct > 0.5 ? '#4EC9B0' : pct > 0.2 ? '#DCDCAA' : '#ff4444';
+  energyFill.setAttribute('fill', color);
+  energyText.textContent = `${current}/${max}`;
+}
+
+// --- Challenge Tree ---
+const dashTree = document.getElementById('dash-tree');
+const challengeTree = []; // { name, solved, parentIdx }
+
+function updateChallengeTree(challenges) {
+  // challenges: [{ name, solved }]
+  challengeTree.length = 0;
+  for (const c of challenges.slice(-10)) {
+    challengeTree.push({ name: c.name, solved: c.solved, parentIdx: challengeTree.length > 0 ? 0 : -1 });
+  }
+  renderChallengeTree();
+}
+
+function renderChallengeTree() {
+  let svg = '';
+  const n = challengeTree.length;
+  if (n === 0) { dashTree.innerHTML = '<text x="100" y="40" font-size="8" fill="#333" text-anchor="middle">no challenges</text>'; return; }
+  for (let i = 0; i < n; i++) {
+    const c = challengeTree[i];
+    const x = 20 + (i % 5) * 36;
+    const y = 15 + Math.floor(i / 5) * 30;
+    const r = 6;
+    // Draw edge to parent.
+    if (c.parentIdx >= 0) {
+      const px = 20 + (c.parentIdx % 5) * 36;
+      const py = 15 + Math.floor(c.parentIdx / 5) * 30;
+      svg += `<line x1="${px}" y1="${py}" x2="${x}" y2="${y}" stroke="#1a3a2a" stroke-width="0.5"/>`;
+    }
+    // Draw node.
+    const fill = c.solved ? '#4EC9B0' : 'none';
+    const stroke = c.solved ? '#4EC9B0' : '#9CDCFE';
+    svg += `<circle cx="${x}" cy="${y}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="1"/>`;
+    svg += `<text x="${x}" y="${y + r + 8}" font-size="5" fill="#555" text-anchor="middle">${c.name.substring(0, 8)}</text>`;
+  }
+  dashTree.innerHTML = svg;
+}
+
+// --- Population Heatmap ---
+const dashHeatmap = document.getElementById('dash-heatmap');
+const popFitness = new Array(50).fill(0); // 50 individuals
+
+function updateHeatmap(fitnesses) {
+  for (let i = 0; i < 50 && i < fitnesses.length; i++) popFitness[i] = fitnesses[i];
+  const maxF = Math.max(1, ...popFitness);
+  let svg = '';
+  for (let i = 0; i < 50; i++) {
+    const x = i * 4;
+    const intensity = popFitness[i] / maxF;
+    const g = Math.floor(intensity * 180 + 20);
+    svg += `<rect x="${x}" y="2" width="3" height="12" fill="rgb(0,${g},${Math.floor(g * 0.6)})" rx="0.5"/>`;
+  }
+  dashHeatmap.innerHTML = svg;
+}
+
+// --- Parse REPL output for dashboard updates ---
+function parseDashboardOutput(text) {
+  if (!dashVisible) return;
+
+  // Fitness: [gen N] best: "..." (fitness=F, T tokens)
+  const fitMatch = text.match(/\[gen (\d+)\].*fitness=(\d+)/);
+  if (fitMatch) updateFitnessGraph(parseInt(fitMatch[1]), parseInt(fitMatch[2]));
+
+  // Energy: energy: N/M
+  const enMatch = text.match(/energy:\s*(-?\d+)\/(\d+)/);
+  if (enMatch) updateEnergyBar(parseInt(enMatch[1]), parseInt(enMatch[2]));
+
+  // Challenges from mesh state.
+  if (mesh && (text.includes('CHALLENGES') || text.includes('challenge'))) {
+    const ch = mesh._challenges || [];
+    updateChallengeTree(ch.map(c => ({ name: c.name, solved: c.solved })));
+  }
+}
+
+// Hook into appendOutput to capture all REPL output.
+const _origAppendOutput = appendOutput;
+appendOutput = function(text, className) {
+  _origAppendOutput(text, className);
+  if (text) parseDashboardOutput(text);
+};
+
+// Initialize heatmap with empty population.
+updateHeatmap(popFitness);
 
 init();
 </script>
