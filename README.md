@@ -18,7 +18,7 @@ cargo install unit
 
 ```
 $ unit
-unit v0.24.0 -- seed online
+unit v0.25.0 -- seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
 > 2 3 + .
 5  ok
@@ -191,6 +191,14 @@ generators — three levels of evolution operating simultaneously.
 GP evolves solutions (first-order), MetaEvolver evolves the problems
 (second-order), ScoringPopulation evolves how problems are judged
 (third-order). Use `META-DEPTH` to see all three levels.
+
+### Emergent Challenge Generation
+
+Units can evolve their own challenges from the REPL. After solving at
+least one challenge, `GENERATE-CHALLENGE` runs the best evolved generator
+to produce and register a new challenge. `EVOLUTION-STATS` shows the full
+picture: landscape depth, authored vs evolved challenges, environment
+state, and top generator/scorer programs.
 
 ## Distributed Computation
 
@@ -420,7 +428,7 @@ docs/
 └── formal-analysis.md
 ```
 
-199+ Rust tests, 22 Python tests, Go tests. Zero dependencies. ~35,000 lines.
+205+ Rust tests, 22 Python tests, Go tests. Zero dependencies. ~35,000 lines.
 
 ## All the Words
 
@@ -525,6 +533,8 @@ docs/
 | `META-EVOLVE` | run one generation of generator evolution |
 | `SCORERS` | list top scoring functions (third-order) |
 | `META-DEPTH` | evolution depth at all three levels |
+| `GENERATE-CHALLENGE` | evolve and register a new challenge from best generator |
+| `EVOLUTION-STATS` | combined summary: depth, generators, scorers, environment |
 | `SOLUTIONS` | `( id -- )` list all solutions for a challenge |
 | `DIVERSITY` | colony-wide solution diversity stats |
 | `PERSONALITY` | current behavioral profile |
