@@ -441,4 +441,94 @@ mod tests {
         // Verify a new unit can afford many GP generations.
         assert!(INITIAL_ENERGY / GP_GENERATION_COST > 100);
     }
+
+    // -----------------------------------------------------------------------
+    // 11. GENERATORS word output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_generators_word_output() {
+        let mut rng = crate::features::mutation::SimpleRng::new(99);
+        let pop = GeneratorPopulation::new(&mut rng);
+        let output = pop.format_top(5);
+        assert!(output.contains("1."), "should contain numbered entries");
+        assert!(output.lines().count() >= 5, "should have at least 5 lines");
+    }
+
+    // -----------------------------------------------------------------------
+    // 12. META-EVOLVE advances generation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_meta_evolve_advances_generation() {
+        let mut rng = crate::features::mutation::SimpleRng::new(77);
+        let mut pop = GeneratorPopulation::new(&mut rng);
+        let gen_before = pop.generation;
+        pop.evolve_generators(&mut rng);
+        assert_eq!(pop.generation, gen_before + 1);
+        pop.evolve_generators(&mut rng);
+        assert_eq!(pop.generation, gen_before + 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // 13. GENERATE-CHALLENGE registers a new challenge
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_generate_challenge_registers() {
+        let mut engine = LandscapeEngine::new();
+        // Evaluate generators against a target so best is populated.
+        engine.meta.evaluate_all(55);
+
+        // Generate a target from the best generator.
+        let result = engine.meta.generate_target(55);
+        assert!(result.is_some(), "should generate a target from seed generators");
+        let (new_target, _gen_program) = result.unwrap();
+        assert!(new_target != 0, "generated target should be non-zero");
+
+        // Verify it can be registered.
+        let mut reg = ChallengeRegistry::new(&test_node());
+        let id = reg.register_discovered(
+            "test-evolved",
+            "test generated challenge",
+            &format!("{} ", new_target),
+            None,
+            vec![format!("{} .", new_target)],
+            test_node(),
+            80,
+        );
+        assert!(reg.get_challenge(id).is_some());
+        assert!(!reg.get_challenge(id).unwrap().solved);
+    }
+
+    // -----------------------------------------------------------------------
+    // 14. EVOLUTION-STATS format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_evolution_stats_format() {
+        let engine = LandscapeEngine::new();
+
+        // Simulate what EVOLUTION-STATS does.
+        let depth = engine.depth();
+        let authored = engine.challenges_generated - engine.evolved_count;
+        let evolved = engine.evolved_count;
+        let env = engine.environment.current_condition();
+        let output = format!(
+            "--- evolution stats ---\n\
+             landscape depth: {}\n\
+             challenges generated: {} (authored: {}, evolved: {})\n\
+             environment: {}\n",
+            depth,
+            authored + evolved,
+            authored,
+            evolved,
+            env
+        );
+        assert!(output.contains("evolution stats"));
+        assert!(output.contains("landscape depth:"));
+        assert!(output.contains("challenges generated:"));
+        assert!(output.contains("environment:"));
+        assert!(output.contains("normal")); // default environment
+    }
 }

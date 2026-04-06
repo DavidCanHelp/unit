@@ -268,6 +268,8 @@ pub(crate) const P_GENERATORS: usize = 488;
 pub(crate) const P_META_EVOLVE: usize = 489;
 pub(crate) const P_SCORERS: usize = 490;
 pub(crate) const P_META_DEPTH: usize = 491;
+pub(crate) const P_GENERATE_CHALLENGE: usize = 492;
+pub(crate) const P_EVOLUTION_STATS: usize = 493;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -359,6 +361,8 @@ pub struct VM {
     pub energy: crate::energy::EnergyState,
     // --- Fitness landscape ---
     pub landscape: crate::landscape::LandscapeEngine,
+    /// Last solved challenge target value (for meta-evolution and challenge generation).
+    pub last_solved_target: Option<i64>,
 }
 
 impl Default for VM {
@@ -417,6 +421,7 @@ impl VM {
             problem_detector: crate::discovery::ProblemDetector::new(),
             energy: crate::energy::EnergyState::new(),
             landscape: crate::landscape::LandscapeEngine::new(),
+            last_solved_target: None,
         };
         vm.register_primitives();
         vm
@@ -672,6 +677,8 @@ impl VM {
             ("META-EVOLVE", P_META_EVOLVE, false),
             ("SCORERS", P_SCORERS, false),
             ("META-DEPTH", P_META_DEPTH, false),
+            ("GENERATE-CHALLENGE", P_GENERATE_CHALLENGE, false),
+            ("EVOLUTION-STATS", P_EVOLUTION_STATS, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1299,6 +1306,70 @@ impl VM {
                     self.landscape.scoring.generation,
                 );
                 self.emit_str(&out);
+            }
+            P_GENERATE_CHALLENGE => {
+                if let Some(target) = self.last_solved_target {
+                    if let Some((new_target, gen_program)) =
+                        self.landscape.meta.generate_target(target)
+                    {
+                        let my_id = self.node_id_cache.unwrap_or([0; 8]);
+                        let reward =
+                            80 + (self.landscape.meta.best.as_ref().map_or(0.0, |b| b.fitness)
+                                * 0.5) as i64;
+                        let name = format!("evolved-gen{}", self.landscape.meta.generation);
+                        let id = self.challenge_registry.register_discovered(
+                            &name,
+                            &format!("evolved from generator: {}", gen_program),
+                            &format!("{} ", new_target),
+                            None,
+                            vec![format!("{} .", new_target)],
+                            my_id,
+                            reward,
+                        );
+                        self.landscape.evolved_count += 1;
+                        self.landscape.challenges_generated += 1;
+                        self.emit_str(&format!(
+                            "generated challenge #{}: {} (target: {}, reward: {})\n\
+                             generator: {}\n",
+                            id, name, new_target, reward, gen_program
+                        ));
+                    } else {
+                        self.emit_str("no generator produced a valid challenge\n");
+                    }
+                } else {
+                    self.emit_str("solve a challenge first\n");
+                }
+            }
+            P_EVOLUTION_STATS => {
+                let depth = self.landscape.depth();
+                let authored = self.landscape.challenges_generated - self.landscape.evolved_count;
+                let evolved = self.landscape.evolved_count;
+                let env = self.landscape.environment.current_condition();
+                let top_gen = self
+                    .landscape
+                    .meta
+                    .best
+                    .as_ref()
+                    .map(|g| format!("\"{}\" fitness={:.1}", g.program, g.fitness))
+                    .unwrap_or_else(|| "none".to_string());
+                let top_scorer = self
+                    .landscape
+                    .scoring
+                    .best
+                    .as_ref()
+                    .map(|s| format!("\"{}\" fitness={:.1}", s.program, s.fitness))
+                    .unwrap_or_else(|| "none".to_string());
+                let history_size = self.landscape.scoring.history.len();
+                self.emit_str(&format!(
+                    "--- evolution stats ---\n\
+                     landscape depth: {}\n\
+                     challenges generated: {} (authored: {}, evolved: {})\n\
+                     environment: {}\n\
+                     top generator: {}\n\
+                     top scorer: {}\n\
+                     scoring history: {} entries\n",
+                    depth, authored + evolved, authored, evolved, env, top_gen, top_scorer, history_size
+                ));
             }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),

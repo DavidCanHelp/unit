@@ -818,6 +818,9 @@ impl VM {
                     self.challenge_registry
                         .mark_solved(active_id, &best_prog, solver);
                     if let Some(ch) = self.challenge_registry.get_challenge(active_id) {
+                        if let Ok(t) = ch.target_output.trim().parse::<i64>() {
+                            self.last_solved_target = Some(t);
+                        }
                         let ch_name = ch.name.clone();
                         // Broadcast solution to mesh.
                         if let Some(ref m) = self.mesh {
