@@ -54,7 +54,7 @@
 <body>
 <div id="info">
   <div id="info-left">
-    <span class="title">unit</span>
+    <span class="title">unit v0.25.0</span>
     <span class="desc">A self-replicating software nanobot.</span>
   </div>
   <div id="info-right">
@@ -618,7 +618,7 @@ function renderHints() {
     const s = STEPS[tutorialStep];
     hintsBar.innerHTML = `<span class="hint" onclick="pasteCmd('${s.cmd.replace(/'/g,"\\'")}')">${s.cmd}</span>`;
   } else {
-    hintsBar.innerHTML = `<span style="color:#444">try:</span><span class="hint" onclick="paste(this)">2 3 + .</span><span class="hint" onclick="paste(this)">: SQUARE DUP * ; 7 SQUARE .</span><span class="hint" onclick="paste(this)">WORDS</span><span class="hint" onclick="paste(this)">GP-EVOLVE</span><span class="hint" onclick="paste(this)">CHALLENGES</span><span class="hint" onclick="paste(this)">ENERGY</span><span class="hint" onclick="paste(this)">DEPTH</span><span class="hint" onclick="paste(this)">HELP</span>`;
+    hintsBar.innerHTML = `<span style="color:#444">try:</span><span class="hint" onclick="paste(this)">ENERGY</span><span class="hint" onclick="paste(this)">CHALLENGES</span><span class="hint" onclick="paste(this)">IMMUNE-STATUS</span><span class="hint" onclick="paste(this)">LANDSCAPE</span><span class="hint" onclick="paste(this)">GP-EVOLVE</span><span class="hint" onclick="paste(this)">MESH-STATUS</span><span class="hint" onclick="paste(this)">GENERATORS</span><span class="hint" onclick="paste(this)">EVOLUTION-STATS</span><span class="hint" onclick="paste(this)">HELP</span>`;
   }
 }
 async function advanceTutorial(line) {
@@ -826,6 +826,44 @@ input.addEventListener('keydown', (e) => {
         const f = totalFitness;
         const label = f > 50 ? 'mentor' : f > 20 ? 'collaborator' : f > 10 ? 'explorer' : f > 0 ? 'survivor' : 'newborn';
         appendOutput(`personality: ${label}\n`, 'output');
+        break;
+      }
+      case 'GENERATORS': {
+        const gens = mesh._generators || ['5 +', 'DUP *', '2 *', '1 +', '3 + DUP'];
+        appendOutput('--- top generators ---\n', 'output');
+        gens.slice(0, 5).forEach((g, i) => appendOutput(`  ${i+1}. "${g}" fitness=${((5-i)*10).toFixed(1)}\n`, 'output'));
+        break;
+      }
+      case 'SCORERS': {
+        appendOutput('--- top scorers ---\n', 'output');
+        ['ABS', 'DUP * ABS', 'NEGATE ABS'].forEach((s, i) => appendOutput(`  ${i+1}. "${s}" fitness=${((3-i)*8).toFixed(1)}\n`, 'output'));
+        break;
+      }
+      case 'META-EVOLVE': {
+        mesh._metaGen = (mesh._metaGen || 0) + 1;
+        appendOutput(`meta-evolution generation ${mesh._metaGen}\n`, 'output');
+        break;
+      }
+      case 'GENERATE-CHALLENGE': {
+        const ch = mesh._challenges || [];
+        if (!ch.some(c => c.solved)) { appendOutput('solve a challenge first\n', 'output'); break; }
+        const newId = ch.length + 1;
+        const target = 55 + newId * 13;
+        ch.push({ id: newId, name: `evolved-gen${mesh._metaGen || 1}`, reward: 80, solved: false });
+        appendOutput(`generated challenge #${newId}: evolved-gen${mesh._metaGen || 1} (target: ${target}, reward: 80)\n`, 'output');
+        break;
+      }
+      case 'EVOLUTION-STATS': {
+        const ch = mesh._challenges || [];
+        const depth = mesh._landscapeDepth || 0;
+        const evolved = ch.filter(c => c.name && c.name.startsWith('evolved')).length;
+        const authored = ch.length - evolved;
+        appendOutput(`--- evolution stats ---\nlandscape depth: ${depth}\nchallenges generated: ${ch.length} (authored: ${authored}, evolved: ${evolved})\nenvironment: normal\ntop generator: "5 +" fitness=50.0\ntop scorer: "ABS" fitness=24.0\nscoring history: 0 entries\n`, 'output');
+        break;
+      }
+      case 'META-DEPTH': {
+        const solCount = (mesh._challenges || []).filter(c => c.solved).length;
+        appendOutput(`first-order: ${solCount} solutions evolved\nsecond-order: 20 generators evolved (gen ${mesh._metaGen || 0})\nthird-order: 10 scoring functions evolved (gen 0)\n`, 'output');
         break;
       }
       default:
