@@ -324,6 +324,55 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // 8b. Spawn energy deducted from parent
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_spawn_energy_deducted() {
+        let mut parent = EnergyState::new();
+        parent.energy = 1000;
+
+        // Parent pays SPAWN_COST.
+        assert!(parent.spend(SPAWN_COST, "spawn"));
+        let remaining = parent.energy; // 800
+
+        // Child gets remaining/3.
+        let child_energy = (remaining / 3).min(INITIAL_ENERGY);
+        assert_eq!(child_energy, 266); // 800/3 = 266
+
+        // Total deducted from parent is SPAWN_COST only (child energy comes
+        // from serialized state, not from further parent deduction).
+        assert_eq!(parent.energy, 800);
+        assert_eq!(parent.total_spent, SPAWN_COST as u64);
+    }
+
+    // -----------------------------------------------------------------------
+    // 8c. Child energy from UNIT_CHILD_ENERGY env var
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_child_energy_from_env() {
+        // Simulate what startup does: parse UNIT_CHILD_ENERGY and set energy.
+        let mut child = EnergyState::new();
+        assert_eq!(child.energy, INITIAL_ENERGY);
+
+        // Simulate env var parsing.
+        let env_val = "350";
+        if let Ok(energy) = env_val.parse::<i64>() {
+            child.energy = energy;
+        }
+        assert_eq!(child.energy, 350);
+
+        // Invalid values should not change energy.
+        let mut child2 = EnergyState::new();
+        let bad_val = "not_a_number";
+        if let Ok(energy) = bad_val.parse::<i64>() {
+            child2.energy = energy;
+        }
+        assert_eq!(child2.energy, INITIAL_ENERGY);
+    }
+
+    // -----------------------------------------------------------------------
     // 9. Environment variation
     // -----------------------------------------------------------------------
 

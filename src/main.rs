@@ -3248,7 +3248,7 @@ impl VM {
         let parent_port = self.mesh.as_ref().map(|m| m.local_port()).unwrap_or(0);
         let child_gen = self.spawn_state.generation + 1;
 
-        match spawn::spawn_local(&package, parent_port, child_gen) {
+        match spawn::spawn_local_with_energy(&package, parent_port, child_gen, Some(child_energy)) {
             Ok((pid, port, child_id)) => {
                 self.spawn_state.children.push(spawn::ChildInfo {
                     pid,
@@ -4045,6 +4045,11 @@ fn main() {
                         if ok {
                             vm.spawn_state.parent_id = Some(pid);
                         }
+                    }
+                }
+                if let Ok(energy_str) = std::env::var("UNIT_CHILD_ENERGY") {
+                    if let Ok(energy) = energy_str.parse::<i64>() {
+                        vm.energy.energy = energy;
                     }
                 }
             }

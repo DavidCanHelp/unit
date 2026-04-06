@@ -171,6 +171,17 @@ pub fn spawn_local(
     parent_port: u16,
     child_generation: u32,
 ) -> Result<(u32, u16, [u8; 8]), String> {
+    spawn_local_with_energy(package, parent_port, child_generation, None)
+}
+
+/// Spawn a new unit process, optionally passing inherited energy via
+/// the `UNIT_CHILD_ENERGY` environment variable.
+pub fn spawn_local_with_energy(
+    package: &[u8],
+    parent_port: u16,
+    child_generation: u32,
+    child_energy: Option<i64>,
+) -> Result<(u32, u16, [u8; 8]), String> {
     let (binary, state, _prelude) = unpack_package(package)?;
 
     // Generate a child ID.
@@ -215,12 +226,16 @@ pub fn spawn_local(
     let child_port = 0u16;
 
     // Launch the child process.
-    let child = std::process::Command::new(&bin_path)
-        .env("UNIT_PORT", child_port.to_string())
+    let mut cmd = std::process::Command::new(&bin_path);
+    cmd.env("UNIT_PORT", child_port.to_string())
         .env("UNIT_PEERS", format!("127.0.0.1:{}", parent_port))
         .env("UNIT_GENERATION", child_generation.to_string())
         .env("UNIT_PARENT_ID", child_hex.clone())
-        .env("UNIT_NODE_ID", child_hex.clone())
+        .env("UNIT_NODE_ID", child_hex.clone());
+    if let Some(energy) = child_energy {
+        cmd.env("UNIT_CHILD_ENERGY", energy.to_string());
+    }
+    let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
