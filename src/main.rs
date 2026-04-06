@@ -45,6 +45,10 @@ pub mod mesh;
 #[allow(dead_code)]
 pub mod reproduction;
 
+// --- Niche construction ---
+#[allow(dead_code)]
+pub mod niche;
+
 // --- Replication & persistence ---
 #[allow(dead_code)]
 pub mod persist;
@@ -856,6 +860,12 @@ impl VM {
                     let name = &rest[..idx];
                     let prog = &rest[idx + 1..];
                     self.install_solution(name, prog);
+                    // Track niche: record solved challenge category.
+                    let category = niche::categorize_challenge(name);
+                    self.niche_profile
+                        .challenge_history
+                        .push((category, true));
+                    niche::update_niche(&mut self.niche_profile);
                     // Generate harder challenges from the solution.
                     self.generate_landscape_challenges(name, prog);
                 }

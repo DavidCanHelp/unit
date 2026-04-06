@@ -275,6 +275,9 @@ pub(crate) const P_MATE_STATUS: usize = 495;
 pub(crate) const P_ACCEPT_MATE: usize = 496;
 pub(crate) const P_DENY_MATE: usize = 497;
 pub(crate) const P_OFFSPRING: usize = 498;
+pub(crate) const P_NICHE: usize = 499;
+pub(crate) const P_NICHE_HISTORY: usize = 500;
+pub(crate) const P_ECOLOGY: usize = 501;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -372,6 +375,8 @@ pub struct VM {
     pub mate_auto_accept: bool,
     pub mating_offspring: Vec<(String, String)>, // (child_hex, mate_hex) history
     pub pending_mate_request: Option<crate::reproduction::MatingRequest>,
+    // --- Niche construction ---
+    pub niche_profile: crate::niche::NicheProfile,
 }
 
 impl Default for VM {
@@ -434,6 +439,7 @@ impl VM {
             mate_auto_accept: true,
             mating_offspring: Vec::new(),
             pending_mate_request: None,
+            niche_profile: crate::niche::NicheProfile::new(),
         };
         vm.register_primitives();
         vm
@@ -697,6 +703,10 @@ impl VM {
             ("ACCEPT-MATE", P_ACCEPT_MATE, false),
             ("DENY-MATE", P_DENY_MATE, false),
             ("OFFSPRING", P_OFFSPRING, false),
+            // Niche construction
+            ("NICHE", P_NICHE, false),
+            ("NICHE-HISTORY", P_NICHE_HISTORY, false),
+            ("ECOLOGY", P_ECOLOGY, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1475,6 +1485,40 @@ impl VM {
                         .map(|(child, mate)| format!("  child {} (mate: {})\n", child, mate))
                         .collect();
                     for line in &lines { self.emit_str(line); }
+                }
+            }
+            // Niche construction
+            P_NICHE => {
+                let out = crate::niche::format_niche(&self.niche_profile);
+                self.emit_str(&out);
+            }
+            P_NICHE_HISTORY => {
+                if self.niche_profile.challenge_history.is_empty() {
+                    self.emit_str("no challenge history\n");
+                } else {
+                    let hist_len = self.niche_profile.challenge_history.len();
+                    let start = if hist_len > 20 { hist_len - 20 } else { 0 };
+                    let lines: Vec<String> = self.niche_profile.challenge_history[start..].iter()
+                        .map(|(cat, solved)| {
+                            format!("  {} {}\n", cat, if *solved { "solved" } else { "failed" })
+                        })
+                        .collect();
+                    self.emit_str("--- challenge history ---\n");
+                    for line in &lines { self.emit_str(line); }
+                }
+            }
+            P_ECOLOGY => {
+                // Show colony-wide niche diversity based on local profile.
+                let dom = crate::niche::dominant_niche(&self.niche_profile);
+                let dom_str = dom
+                    .map(|(name, s)| format!("{} ({:.0}%)", name, s * 100.0))
+                    .unwrap_or_else(|| "generalist".to_string());
+                self.emit_str(&format!("--- ecology ---\nself niche: {}\n", dom_str));
+                if let Some(ref m) = self.mesh {
+                    let peers = m.peer_table();
+                    self.emit_str(&format!("colony size: {}\n", peers.len() + 1));
+                } else {
+                    self.emit_str("colony size: 1 (solo)\n");
                 }
             }
             // Task decomposition
