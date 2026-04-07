@@ -890,6 +890,7 @@ impl VM {
             ));
         } else if !evo.running || evo.generation >= evo.max_generations {
             if messages.is_empty() {
+                let gen = evo.generation;
                 let best = evo.best.as_ref().map_or("(none)".to_string(), |b| {
                     format!(
                         "\"{}\" (fitness={:.0}, {} tokens)",
@@ -898,7 +899,10 @@ impl VM {
                         b.token_count()
                     )
                 });
-                self.emit_str(&format!("evolution complete: {}\n", best));
+                self.emit_str(&format!(
+                    "[gen {}] evolution complete: {}\n",
+                    gen, best
+                ));
             }
             self.evolution.as_mut().unwrap().running = false;
         }

@@ -46,7 +46,7 @@ class BrowserUnit {
     this.tasksCompleted = 0;
     this.busy = false;
     this.learned = [];     // words received from other units
-    this.personality = 'self'; // specialist/balanced/solo
+    this.personality = 'newborn'; // overridden to 'self' for unit[0], then specialist/balanced/solo by teachFrom
     this.userWords = [];   // user-defined word definitions (Forth source)
     // Energy state
     this.energy = 1000;
@@ -99,6 +99,12 @@ class BrowserMesh {
     vm.eval(': ACCEPT-MATE ;');
     vm.eval(': DENY-MATE ;');
     vm.eval(': OFFSPRING ." no offspring from mating" CR ;');
+    // Redefine DREAM dependencies that may produce empty output in WASM.
+    // SHARE-ALL is a mesh primitive that silently no-ops when mesh is None;
+    // redefine to give visible feedback. Also redefine DREAM itself to ensure
+    // all nested ." output is captured in the WASM output buffer.
+    vm.eval(': SHARE-ALL ." (no mesh peers to share with)" CR ;');
+    vm.eval(': DREAM ." dreaming..." CR REFLECT INVENT-STRATEGY COMPOSE-ROUTINE SMART-MUTATE IF ." evolved." CR ELSE ." held steady." CR THEN MUTATION-REPORT PEER-COUNT 0 > IF TEACH THEN ." waking. I am changed." CR ;');
     this.units.push(unit);
     this._updatePeerCounts();
     this._emit('spawn', { id, count: this.units.length });

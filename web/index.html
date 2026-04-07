@@ -728,6 +728,7 @@ async function init() {
     };
     const firstUnit = await mesh.init('unit.wasm');
     vm = firstUnit.vm;
+    mesh.units[0].personality = 'self'; // Only the first unit is "self"
     spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
     muteBtn.className = 'mode-btn active';
     applyVizMode();
