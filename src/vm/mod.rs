@@ -278,6 +278,8 @@ pub(crate) const P_OFFSPRING: usize = 498;
 pub(crate) const P_NICHE: usize = 499;
 pub(crate) const P_NICHE_HISTORY: usize = 500;
 pub(crate) const P_ECOLOGY: usize = 501;
+pub(crate) const P_DIVERSITY: usize = 502;
+pub(crate) const P_SOLUTIONS: usize = 503;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -707,6 +709,8 @@ impl VM {
             ("NICHE", P_NICHE, false),
             ("NICHE-HISTORY", P_NICHE_HISTORY, false),
             ("ECOLOGY", P_ECOLOGY, false),
+            ("DIVERSITY", P_DIVERSITY, false),
+            ("SOLUTIONS", P_SOLUTIONS, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1519,6 +1523,52 @@ impl VM {
                     self.emit_str(&format!("colony size: {}\n", peers.len() + 1));
                 } else {
                     self.emit_str("colony size: 1 (solo)\n");
+                }
+            }
+            P_DIVERSITY => {
+                let solved_count = self.challenge_registry.challenges.values()
+                    .filter(|c| c.solved).count();
+                if solved_count == 0 {
+                    self.emit_str("no solutions yet\n");
+                } else {
+                    let mut programs: Vec<String> = self.challenge_registry.challenges.values()
+                        .filter(|c| c.solved)
+                        .filter_map(|c| c.solution.clone())
+                        .collect();
+                    programs.sort();
+                    programs.dedup();
+                    let avg_tokens = if programs.is_empty() { 0.0 } else {
+                        programs.iter().map(|p| p.split_whitespace().count() as f64).sum::<f64>()
+                            / programs.len() as f64
+                    };
+                    let out = format!(
+                        "--- diversity: {} solutions ---\nunique programs: {}\navg tokens: {:.1}\n",
+                        solved_count, programs.len(), avg_tokens
+                    );
+                    self.emit_str(&out);
+                }
+            }
+            P_SOLUTIONS => {
+                let id = self.pop() as u64;
+                let info: Option<(String, Option<String>, Vec<String>)> =
+                    self.challenge_registry.get_challenge(id).map(|ch| {
+                        let extras: Vec<String> = ch.solutions.iter()
+                            .map(|(prog, solver)| format!("  {} (by {})\n", prog, crate::mesh::id_to_hex(solver)))
+                            .collect();
+                        (ch.name.clone(), ch.solution.clone(), extras)
+                    });
+                if let Some((name, winner, extras)) = info {
+                    self.emit_str(&format!("--- solutions for #{} {} ---\n", id, name));
+                    if let Some(sol) = winner {
+                        self.emit_str(&format!("  winner: {}\n", sol));
+                    }
+                    if !extras.is_empty() {
+                        for line in &extras { self.emit_str(line); }
+                    } else if extras.is_empty() {
+                        // winner already printed above if present
+                    }
+                } else {
+                    self.emit_str(&format!("no challenge #{}\n", id));
                 }
             }
             // Task decomposition

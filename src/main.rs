@@ -2605,6 +2605,12 @@ impl VM {
 
     fn prim_sleep(&mut self) {
         let ms = self.pop();
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = ms;
+            self.emit_str("sleep not available in browser\n");
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         if ms > 0 {
             std::thread::sleep(Duration::from_millis(ms as u64));
         }

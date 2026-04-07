@@ -105,6 +105,27 @@ class BrowserMesh {
     // all nested ." output is captured in the WASM output buffer.
     vm.eval(': SHARE-ALL ." (no mesh peers to share with)" CR ;');
     vm.eval(': DREAM ." dreaming..." CR REFLECT INVENT-STRATEGY COMPOSE-ROUTINE SMART-MUTATE IF ." evolved." CR ELSE ." held steady." CR THEN MUTATION-REPORT PEER-COUNT 0 > IF TEACH THEN ." waking. I am changed." CR ;');
+    // Sync native mesh primitives with browser mesh state.
+    vm.eval(`: ID-STR S" ${id}" ;`);
+    vm.eval(': ID ID-STR ;');
+    vm.eval('VARIABLE BROWSER-FITNESS 0 BROWSER-FITNESS !');
+    vm.eval(': FITNESS BROWSER-FITNESS @ ;');
+    vm.eval(': PEERS PEER-COUNT ;');
+    // Re-eval prelude words that use ID and FITNESS so they pick up the new definitions.
+    vm.eval(': FAMILY ." id: " ID TYPE ."  gen: " GENERATION . ."  children: " CHILD-COUNT . CR ;');
+    vm.eval(': HELLO ." Hi! I\'m unit " ID TYPE ." , generation " GENERATION . ." with " PEER-COUNT . ." peers and fitness " FITNESS . CR ;');
+    vm.eval(': MESH-HELLO ." Mesh node " ID TYPE ."  gen=" GENERATION . ." peers=" PEER-COUNT . ." fitness=" FITNESS . CR ;');
+    vm.eval(': PROUD ." fitness: " FITNESS . ." | generation: " GENERATION . ." | children: " CHILD-COUNT . CR ;');
+    vm.eval(': ROLL-CALL ." === roll call ===" CR ." self: " ID TYPE ."  fitness=" FITNESS . CR LEADERBOARD ;');
+    // Platform-limited words: give informative messages instead of silent failure.
+    vm.eval(': SLEEP DROP ." sleep not available in browser" CR ;');
+    vm.eval(': SPAWN ." spawn handled by browser mesh -- use the spawn button" CR ;');
+    vm.eval(': CONNECT" DROP ." mesh connections handled by browser" CR ;');
+    vm.eval(': DISCONNECT" DROP ." mesh connections handled by browser" CR ;');
+    vm.eval(': DISCOVER ." discovery handled by browser mesh automatically" CR ;');
+    vm.eval(': AUTO-DISCOVER ." auto-discovery is always on in the browser" CR ;');
+    vm.eval(': SEXP-SEND" DROP ." use the browser mesh for messaging" CR ;');
+    vm.eval(': SEXP-RECV ." use the browser mesh for messaging" CR ;');
     this.units.push(unit);
     this._updatePeerCounts();
     this._emit('spawn', { id, count: this.units.length });
@@ -134,6 +155,7 @@ class BrowserMesh {
     const peers = this.units.length - 1;
     for (const u of this.units) {
       u.vm.eval(`${peers} BROWSER-PEERS !`);
+      u.vm.eval(`${u.fitness} BROWSER-FITNESS !`);
     }
   }
 
