@@ -266,6 +266,8 @@ impl VM {
     fn snapshot_word(&mut self, idx: usize) -> u64 {
         let body = self.dictionary[idx].body.clone();
         let mut combined = String::new();
+        // Save the outer output buffer so callers don't lose accumulated output.
+        let saved_outer_buffer = self.output_buffer.take();
         for test_stack in &[vec![], vec![1i64], vec![1, 2, 3]] {
             let saved = std::mem::take(&mut self.stack);
             self.stack = test_stack.clone();
@@ -282,6 +284,8 @@ impl VM {
             self.deadline = None;
             self.timed_out = false;
         }
+        // Restore the outer output buffer.
+        self.output_buffer = saved_outer_buffer;
         mutation::hash_output(&combined)
     }
 
