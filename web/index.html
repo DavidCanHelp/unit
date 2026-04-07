@@ -450,6 +450,7 @@ const BEHAVIORS = [
   { weight: 4,  cmd: 'DREAM', dream: true },
   { weight: 4,  cmd: 'CHALLENGES' },
   { weight: 3,  cmd: 'ENERGY' },
+  { weight: 2,  cmd: 'MATE', mate: true },
   { weight: 12, cmd: null }, // idle
 ];
 const totalWeight = BEHAVIORS.reduce((s,b) => s+b.weight, 0);
@@ -488,6 +489,28 @@ function autoTick() {
     } else if (output) {
       setBubble(unit.id, output);
       addChatter(unit.id, output);
+    }
+    return;
+  }
+
+  // MATE: autonomous sexual reproduction.
+  if (behavior.mate && mesh.units.length >= 3 && mesh.units.length < mesh.maxUnits) {
+    const partner = mesh.selectMate(unit);
+    if (partner) {
+      setBubble(unit.id, `mating with #${partner.id}...`, '#ff88cc');
+      setBubble(partner.id, `mating with #${unit.id}...`, '#ff88cc');
+      addChatter(unit.id, `(mating-request :from "#${unit.id}" :to "#${partner.id}")`);
+      mesh.mate(unit, partner).then(child => {
+        if (child) {
+          spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
+          emitParticle(unit.id, child.id, '#ff88cc');
+          emitParticle(partner.id, child.id, '#ff88cc');
+          const childNode = vizNodes.find(nd => nd.id === child.id);
+          if (childNode) vizSpawnRings.push({ x: childNode.x, y: childNode.y, time: Date.now(), color: '#ff88cc' });
+          setBubble(child.id, 'hybrid offspring!', '#ff88cc');
+          addChatter(child.id, `(born :parents ["#${unit.id}" "#${partner.id}"] :words ${child.userWords.length})`);
+        }
+      });
     }
     return;
   }
@@ -740,7 +763,7 @@ async function init() {
   }
 }
 
-input.addEventListener('keydown', (e) => {
+input.addEventListener('keydown', async (e) => {
   if (e.key === 'ArrowUp') { if (histIdx < history.length-1) { histIdx++; input.value = history[history.length-1-histIdx]; } e.preventDefault(); return; }
   if (e.key === 'ArrowDown') { if (histIdx > 0) { histIdx--; input.value = history[history.length-1-histIdx]; } else { histIdx=-1; input.value=''; } e.preventDefault(); return; }
   if (e.key !== 'Enter' || !vm) return;
@@ -895,9 +918,38 @@ input.addEventListener('keydown', (e) => {
         appendOutput(`first-order: ${solCount} solutions evolved\nsecond-order: 20 generators evolved (gen ${mesh._metaGen || 0})\nthird-order: 10 scoring functions evolved (gen 0)\n`, 'output');
         break;
       }
-      case 'MATE':
-        appendOutput('mating requires a mesh peer — spawn more units first\n', 'output');
+      case 'MATE': {
+        if (mesh.units.length < 3) {
+          appendOutput('mating requires at least 2 other units\n', 'output');
+          break;
+        }
+        if (mesh.units.length >= mesh.maxUnits) {
+          appendOutput('mesh full — cannot spawn offspring\n', 'output');
+          break;
+        }
+        const matePartner = mesh.selectMate(mesh.units[0]);
+        if (!matePartner) {
+          appendOutput('no eligible mates\n', 'output');
+          break;
+        }
+        appendOutput(`mating with #${matePartner.id} (fitness=${matePartner.fitness})...\n`, 'mesh-event');
+        setBubble(mesh.units[0].id, `mating with #${matePartner.id}...`, '#ff88cc');
+        setBubble(matePartner.id, `mating with #${mesh.units[0].id}...`, '#ff88cc');
+        const mateChild = await mesh.mate(mesh.units[0], matePartner);
+        if (mateChild) {
+          mesh.units[0].fitness += 10;
+          spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
+          appendOutput(`child #${mateChild.id} born from #${mesh.units[0].id} x #${matePartner.id} (${mateChild.userWords.length} words)\n`, 'mesh-event');
+          // Visualization: particles from both parents, pink spawn ring.
+          emitParticle(mesh.units[0].id, mateChild.id, '#ff88cc');
+          emitParticle(matePartner.id, mateChild.id, '#ff88cc');
+          const childNode = vizNodes.find(nd => nd.id === mateChild.id);
+          if (childNode) vizSpawnRings.push({ x: childNode.x, y: childNode.y, time: Date.now(), color: '#ff88cc' });
+          setBubble(mateChild.id, 'I have two parents!', '#ff88cc');
+          addChatter(mateChild.id, `(born :parents ["#${mesh.units[0].id}" "#${matePartner.id}"] :words ${mateChild.userWords.length})`);
+        }
         break;
+      }
       case 'MATE-STATUS':
         appendOutput('--- mating status ---\nauto-accept: true\npending: none\noffspring: 0\n', 'output');
         break;

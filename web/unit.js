@@ -94,7 +94,7 @@ class BrowserMesh {
     // Set unique personality seed per unit.
     vm.eval(`${this.units.length * 37 + 7} PERSONALITY-SEED !`);
     // Define MATE and related words as no-ops in WASM to prevent console errors.
-    vm.eval(': MATE ." mating requires native mesh" CR ;');
+    vm.eval(': MATE ." use MATE from the REPL" CR ;');
     vm.eval(': MATE-STATUS ." no mating in browser" CR ;');
     vm.eval(': ACCEPT-MATE ;');
     vm.eval(': DENY-MATE ;');
@@ -203,6 +203,114 @@ class BrowserMesh {
       this._emit('teach', { from: sourceUnit.id, words: taught });
     }
     return taught;
+  }
+
+  // Extract user-defined genome (word definitions) from a unit.
+  _extractGenome(unit) {
+    const words = [];
+    const seen = new Set();
+    // Gather from userWords and learned arrays.
+    for (const def of unit.userWords) {
+      const m = def.match(/^:\s+(\S+)/);
+      if (m && !seen.has(m[1])) { seen.add(m[1]); words.push({ name: m[1], definition: def }); }
+    }
+    for (const name of unit.learned) {
+      if (seen.has(name)) continue;
+      const seeDef = unit.vm.eval('SEE ' + name).trim();
+      if (seeDef.startsWith(':') && seeDef.includes(';')) {
+        seen.add(name); words.push({ name, definition: seeDef });
+      }
+    }
+    // SOL-* words from WORDS output.
+    const allWords = (unit.vm.eval('WORDS') || '').split(/\s+/).filter(w => w.startsWith('SOL-'));
+    for (const name of allWords) {
+      if (seen.has(name)) continue;
+      const seeDef = unit.vm.eval('SEE ' + name).trim();
+      if (seeDef.startsWith(':') && seeDef.includes(';')) {
+        seen.add(name); words.push({ name, definition: seeDef });
+      }
+    }
+    return words;
+  }
+
+  // Tournament selection: pick 3 random eligible units, return the fittest.
+  selectMate(excludeUnit) {
+    const eligible = this.units.filter(u => u !== excludeUnit && u !== this.units[0]);
+    if (eligible.length < 1) return null;
+    const count = Math.min(3, eligible.length);
+    let best = eligible[Math.floor(Math.random() * eligible.length)];
+    for (let i = 1; i < count; i++) {
+      const candidate = eligible[Math.floor(Math.random() * eligible.length)];
+      if (candidate.fitness > best.fitness) best = candidate;
+    }
+    return best;
+  }
+
+  // Sexual reproduction: combine dictionaries from two parents into a child.
+  async mate(parentA, parentB) {
+    if (this.units.length >= this.maxUnits) return null;
+
+    const genomeA = this._extractGenome(parentA);
+    const genomeB = this._extractGenome(parentB);
+    const fitnessA = parentA.fitness;
+    const fitnessB = parentB.fitness;
+
+    // Build lookup maps.
+    const mapA = new Map(genomeA.map(w => [w.name, w.definition]));
+    const mapB = new Map(genomeB.map(w => [w.name, w.definition]));
+
+    const childWords = [];
+    const added = new Set();
+
+    // Shared words: pick from fitter parent.
+    for (const [name, defA] of mapA) {
+      if (mapB.has(name)) {
+        const def = fitnessA >= fitnessB ? defA : mapB.get(name);
+        childWords.push({ name, definition: def });
+        added.add(name);
+      }
+    }
+
+    // Unique to A: SOL-* always, others 50%.
+    for (const [name, def] of mapA) {
+      if (added.has(name)) continue;
+      if (name.startsWith('SOL-') || Math.random() < 0.5) {
+        childWords.push({ name, definition: def });
+        added.add(name);
+      }
+    }
+
+    // Unique to B: SOL-* always, others 50%.
+    for (const [name, def] of mapB) {
+      if (added.has(name)) continue;
+      if (name.startsWith('SOL-') || Math.random() < 0.5) {
+        childWords.push({ name, definition: def });
+        added.add(name);
+      }
+    }
+
+    // Cap at 50 words.
+    childWords.length = Math.min(childWords.length, 50);
+
+    // Spawn a new unit.
+    const child = await this._spawn();
+    if (!child) return null;
+
+    // Eval the combined dictionary into the child VM.
+    for (const w of childWords) {
+      child.vm.eval(w.definition);
+      if (!child.userWords.includes(w.definition)) child.userWords.push(w.definition);
+    }
+
+    child.fitness = 0;
+    child.personality = 'hybrid';
+
+    this._emit('mate', {
+      parentA: parentA.id, parentB: parentB.id,
+      childId: child.id, words: childWords.length
+    });
+
+    return child;
   }
 
   // Get mesh status.
