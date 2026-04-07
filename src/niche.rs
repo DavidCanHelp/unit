@@ -20,6 +20,12 @@ pub struct NicheProfile {
     pub constructed_at: u64,
 }
 
+impl Default for NicheProfile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NicheProfile {
     pub fn new() -> Self {
         NicheProfile {

@@ -1497,7 +1497,7 @@ impl VM {
                     self.emit_str("no challenge history\n");
                 } else {
                     let hist_len = self.niche_profile.challenge_history.len();
-                    let start = if hist_len > 20 { hist_len - 20 } else { 0 };
+                    let start = hist_len.saturating_sub(20);
                     let lines: Vec<String> = self.niche_profile.challenge_history[start..].iter()
                         .map(|(cat, solved)| {
                             format!("  {} {}\n", cat, if *solved { "solved" } else { "failed" })

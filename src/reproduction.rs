@@ -57,7 +57,7 @@ pub fn crossover_dictionaries(
         if map_b.contains_key(name) {
             continue; // already handled
         }
-        if name.starts_with("SOL-") || rng.next_u64() % 2 == 0 {
+        if name.starts_with("SOL-") || rng.next_u64().is_multiple_of(2) {
             result.push((name.to_string(), def.to_string()));
         }
     }
@@ -67,7 +67,7 @@ pub fn crossover_dictionaries(
         if map_a.contains_key(name) {
             continue; // already handled
         }
-        if name.starts_with("SOL-") || rng.next_u64() % 2 == 0 {
+        if name.starts_with("SOL-") || rng.next_u64().is_multiple_of(2) {
             result.push((name.to_string(), def.to_string()));
         }
     }
