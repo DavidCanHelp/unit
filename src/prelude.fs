@@ -604,6 +604,6 @@ VARIABLE OBS-COUNT
 ;
 
 \ --- Boot ---
-." unit v0.26.0 -- seed online" CR
+." unit v0.26.2 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM
