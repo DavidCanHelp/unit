@@ -46,7 +46,7 @@ class BrowserUnit {
     this.tasksCompleted = 0;
     this.busy = false;
     this.learned = [];     // words received from other units
-    this.personality = ''; // specialist/balanced/solo
+    this.personality = 'self'; // specialist/balanced/solo
     this.userWords = [];   // user-defined word definitions (Forth source)
     // Energy state
     this.energy = 1000;
@@ -93,6 +93,12 @@ class BrowserMesh {
     vm.eval(': INTROSPECT HOW-ARE-YOU OBS-COUNT @ DUP 0 > IF ." adapted " . ." times." CR ELSE DROP THEN ;');
     // Set unique personality seed per unit.
     vm.eval(`${this.units.length * 37 + 7} PERSONALITY-SEED !`);
+    // Define MATE and related words as no-ops in WASM to prevent console errors.
+    vm.eval(': MATE ." mating requires native mesh" CR ;');
+    vm.eval(': MATE-STATUS ." no mating in browser" CR ;');
+    vm.eval(': ACCEPT-MATE ;');
+    vm.eval(': DENY-MATE ;');
+    vm.eval(': OFFSPRING ." no offspring from mating" CR ;');
     this.units.push(unit);
     this._updatePeerCounts();
     this._emit('spawn', { id, count: this.units.length });

@@ -172,7 +172,7 @@ function syncVizFromMesh() {
       n = {
         id: u.id, x: W/2+(Math.random()-0.5)*100, y: H/2+(Math.random()-0.5)*80,
         vx: 0, vy: 0, fitness: u.fitness, color: isFirst ? '#00ff88' : '#00ccff',
-        alpha: 0, pulse: 1.5, label: isFirst ? u.id + ' self' : u.id, glowColor: moodColor(u.fitness)
+        alpha: 0, pulse: 1.5, label: isFirst ? u.id + ' ' + (mesh.units[0].personality || 'self') : u.id, glowColor: moodColor(u.fitness)
       };
       vizNodes.push(n);
       if (!isFirst) vizEdges.push({ from: vizNodes[0].id, to: u.id });
@@ -462,7 +462,11 @@ function pickBehavior() {
 }
 
 function autoTick() {
-  if (!mesh || !chatterOn || mesh.units.length < 2) return;
+  if (!mesh) return;
+  // Self unit always gets passive energy regen regardless of chatter or unit count.
+  mesh.units[0].energy = Math.min(mesh.units[0].energy + 1, mesh.units[0].energyMax);
+  mesh.units[0].energyEarned += 1;
+  if (!chatterOn || mesh.units.length < 2) return;
   mesh._updatePeerCounts();
   autoIdx = ((autoIdx) % (mesh.units.length - 1)) + 1;
   if (autoIdx >= mesh.units.length) autoIdx = 1;
@@ -537,15 +541,14 @@ function autoTick() {
   unit.energy = Math.min(unit.energy + 1, unit.energyMax);
   unit.energyEarned += 1;
 
-  // Passive energy regen for self unit (not in the auto rotation).
-  mesh.units[0].energy = Math.min(mesh.units[0].energy + 1, mesh.units[0].energyMax);
-  mesh.units[0].energyEarned += 1;
-
   // Update personality label on the viz node.
   if (unit.personality) {
     const n = vizNodes.find(nd => nd.id === unit.id);
     if (n) n.label = unit.id + ' ' + unit.personality;
   }
+  // Also keep self unit label current.
+  const selfNode = vizNodes.find(nd => nd.id === mesh.units[0].id);
+  if (selfNode) selfNode.label = mesh.units[0].id + ' ' + (mesh.units[0].personality || 'self');
 }
 setInterval(autoTick, 5000);
 
