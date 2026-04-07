@@ -467,6 +467,10 @@ function autoTick() {
   // Self unit always gets passive energy regen regardless of chatter or unit count.
   mesh.units[0].energy = Math.min(mesh.units[0].energy + 1, mesh.units[0].energyMax);
   mesh.units[0].energyEarned += 1;
+  // Sync JS-side fitness into each unit's Forth VM.
+  for (const u of mesh.units) {
+    u.vm.eval(u.fitness + ' BROWSER-FITNESS !');
+  }
   if (!chatterOn || mesh.units.length < 2) return;
   mesh._updatePeerCounts();
   autoIdx = ((autoIdx) % (mesh.units.length - 1)) + 1;

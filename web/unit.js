@@ -106,17 +106,17 @@ class BrowserMesh {
     vm.eval(': SHARE-ALL ." (no mesh peers to share with)" CR ;');
     vm.eval(': DREAM ." dreaming..." CR REFLECT INVENT-STRATEGY COMPOSE-ROUTINE SMART-MUTATE IF ." evolved." CR ELSE ." held steady." CR THEN MUTATION-REPORT PEER-COUNT 0 > IF TEACH THEN ." waking. I am changed." CR ;');
     // Sync native mesh primitives with browser mesh state.
-    vm.eval(`: ID-STR S" ${id}" ;`);
-    vm.eval(': ID ID-STR ;');
+    vm.eval(': ID ." ' + id + '" ;');
     vm.eval('VARIABLE BROWSER-FITNESS 0 BROWSER-FITNESS !');
     vm.eval(': FITNESS BROWSER-FITNESS @ ;');
     vm.eval(': PEERS PEER-COUNT ;');
-    // Re-eval prelude words that use ID and FITNESS so they pick up the new definitions.
-    vm.eval(': FAMILY ." id: " ID TYPE ."  gen: " GENERATION . ."  children: " CHILD-COUNT . CR ;');
-    vm.eval(': HELLO ." Hi! I\'m unit " ID TYPE ." , generation " GENERATION . ." with " PEER-COUNT . ." peers and fitness " FITNESS . CR ;');
-    vm.eval(': MESH-HELLO ." Mesh node " ID TYPE ."  gen=" GENERATION . ." peers=" PEER-COUNT . ." fitness=" FITNESS . CR ;');
+    // Re-eval prelude words that use ID so they pick up the new definition.
+    // ID now uses ." so it prints directly — no TYPE needed.
+    vm.eval(': FAMILY ." id: " ID ."  gen: " GENERATION . ."  children: " CHILD-COUNT . CR ;');
+    vm.eval(': HELLO ." Hi! I\'m unit " ID ." , generation " GENERATION . ." with " PEER-COUNT . ." peers and fitness " FITNESS . CR ;');
+    vm.eval(': MESH-HELLO ." Mesh node " ID ."  gen=" GENERATION . ." peers=" PEER-COUNT . ." fitness=" FITNESS . CR ;');
     vm.eval(': PROUD ." fitness: " FITNESS . ." | generation: " GENERATION . ." | children: " CHILD-COUNT . CR ;');
-    vm.eval(': ROLL-CALL ." === roll call ===" CR ." self: " ID TYPE ."  fitness=" FITNESS . CR LEADERBOARD ;');
+    vm.eval(': ROLL-CALL ." === roll call ===" CR ." self: " ID ."  fitness=" FITNESS . CR LEADERBOARD ;');
     // Platform-limited words: give informative messages instead of silent failure.
     vm.eval(': SLEEP DROP ." sleep not available in browser" CR ;');
     vm.eval(': SPAWN ." spawn handled by browser mesh -- use the spawn button" CR ;');
