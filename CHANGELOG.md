@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.27.0] - 2026-04-17
+
+### Added
+- HTTP bridge (src/http.rs): hand-rolled HTTP/1.1 server exposing the VM and mesh over localhost. Still zero dependencies — the bridge uses std::net::TcpListener and the in-tree JSON encoder.
+- New CLI flag `--serve [PORT]` (default 9898). Binds 127.0.0.1 only. Replaces the REPL when set; prelude, --file, --trust, --swarm, and mesh startup all still apply first.
+- New Cargo feature `http` (pure module gate — no new crates in Cargo.lock). Default build is unchanged.
+- Endpoints: POST /eval, POST /sexp, GET /status, GET /words, GET /word/<name>, GET /mesh/peers, POST /mesh/broadcast. All JSON. Errors as `{"error":"..."}` with appropriate 4xx/5xx status.
+- Transport: single-threaded accept, one std::thread per connection. Connection: close after every response. 64 KiB request cap, 5-second read timeout. No keep-alive, no chunked transfer, no query parsing beyond path.
+- tests/http_test.rs: end-to-end integration test that spawns the real binary with `--serve`, hits every endpoint over TcpStream, and asserts JSON shape. No test dependencies.
+- Non-goals for 0.27.0 — deferred: auth (0.27.1), non-localhost binding (0.27.1), SSE/streaming (0.28.0), snapshot write-through (0.28.0).
+
+### Changed
+- snapshot::escape_json_string is now `pub(crate)` so the HTTP bridge can reuse it.
+- VERSION constant updated to v0.27.0.
+
 ## [0.24.0] - 2026-04-04
 
 ### Added

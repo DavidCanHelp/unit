@@ -139,6 +139,35 @@ mating with #cafe (fitness=45)...
 
 See [docs/words.md](docs/words.md) for the complete word reference (309 words).
 
+## Interfaces
+
+### HTTP Bridge
+
+Still zero dependencies. A hand-rolled HTTP/1.1 server exposes the VM
+and mesh over localhost so menu bar apps, web UIs, MCP servers,
+AppleScript, and Shortcuts can talk to a unit without speaking Forth.
+
+```
+$ unit --serve 9898 &
+http: listening on http://127.0.0.1:9898
+
+$ curl -s -X POST http://127.0.0.1:9898/eval \
+       -d '{"source": "2 3 + ."}'
+{"output":"5 "}
+
+$ curl -s -X POST http://127.0.0.1:9898/sexp \
+       -d '{"expr": "(* 6 7)"}'
+{"result":"42"}
+
+$ curl -s http://127.0.0.1:9898/status
+{"id":"cafe0123deadbeef","fitness":0,"energy":1000,"peers":3,"words":314,"generation":0}
+```
+
+Build with `cargo build --features http`. Bind is 127.0.0.1 only; no
+auth, no keep-alive. Endpoints: `POST /eval`, `POST /sexp`,
+`GET /status`, `GET /words`, `GET /word/<name>`, `GET /mesh/peers`,
+`POST /mesh/broadcast`. Errors come back as `{"error":"..."}`.
+
 ## Architecture
 
 ```
@@ -154,6 +183,7 @@ src/
 ├── niche.rs          # Niche construction, ecological specialization
 ├── spawn.rs          # Self-replication, UREP package format
 ├── snapshot.rs       # JSON persistence and resurrection
+├── http.rs           # HTTP bridge (opt-in via --features http)
 ├── prelude.fs        # Forth prelude (~600 lines)
 └── main.rs           # REPL, CLI, feature wiring
 

@@ -1,6 +1,6 @@
 [package]
 name = "unit"
-version = "0.26.2"
+version = "0.27.0"
 edition = "2021"
 description = "A self-replicating software nanobot — minimal Forth interpreter that is also a networked mesh agent"
 license = "MIT"
@@ -18,6 +18,13 @@ exclude = [
 ]
 
 [dependencies]
+
+# Feature flags are pure module gates — they do NOT introduce dependencies.
+# The zero-dependency invariant is enforced by reviewing Cargo.lock on every
+# release: the only entry should be the `unit` crate itself.
+[features]
+default = []
+http = []
 
 [profile.release]
 opt-level = "z"

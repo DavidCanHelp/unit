@@ -49,7 +49,7 @@ pub struct MutStats {
 // JSON serializer (no serde)
 // ---------------------------------------------------------------------------
 
-fn escape_json_string(s: &str) -> String {
+pub(crate) fn escape_json_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
         match c {

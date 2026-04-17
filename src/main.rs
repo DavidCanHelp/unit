@@ -72,6 +72,10 @@ pub mod features {
 #[allow(dead_code)]
 mod platform;
 
+// --- HTTP bridge (localhost only, opt-in via --features http) ---
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub mod http;
+
 #[cfg(target_arch = "wasm32")]
 mod wasm_entry;
 
@@ -3898,7 +3902,7 @@ impl VM {
 // CLI argument parsing
 // ===========================================================================
 
-const VERSION: &str = "unit v0.26.2";
+const VERSION: &str = "unit v0.27.0";
 
 fn print_help() {
     println!("{}", VERSION);
@@ -3921,6 +3925,8 @@ fn print_help() {
     println!("  --no-prelude               Start without loading prelude.fs");
     println!("  --swarm                    Start with SWARM-ON");
     println!("  --trust LEVEL              Set trust: all, mesh, family, none");
+    println!("  --serve [PORT]             Start HTTP bridge on 127.0.0.1 (default :9898)");
+    println!("                             (requires: cargo build --features http)");
 }
 
 struct CliArgs {
@@ -3934,6 +3940,8 @@ struct CliArgs {
     swarm: bool,
     trust: Option<String>,
     quiet: bool,
+    /// None = not serving, Some(p) = serve on 127.0.0.1:p.
+    serve_port: Option<u16>,
 }
 
 fn parse_args() -> Option<CliArgs> {
@@ -3949,6 +3957,7 @@ fn parse_args() -> Option<CliArgs> {
         swarm: false,
         trust: None,
         quiet: false,
+        serve_port: None,
     };
     let mut i = 0;
     while i < args.len() {
@@ -3988,6 +3997,17 @@ fn parse_args() -> Option<CliArgs> {
             "--trust" => {
                 i += 1;
                 cli.trust = args.get(i).cloned();
+            }
+            "--serve" => {
+                // Optional PORT: consume next arg only if it parses as u16.
+                let port = match args.get(i + 1).and_then(|s| s.parse::<u16>().ok()) {
+                    Some(p) => {
+                        i += 1;
+                        p
+                    }
+                    None => 9898,
+                };
+                cli.serve_port = Some(port);
             }
             other => {
                 eprintln!("unknown option: {}", other);
@@ -4258,6 +4278,20 @@ fn main() {
             print!("{}", output);
         }
         return;
+    }
+
+    // --serve: run as HTTP bridge instead of starting the REPL.
+    if let Some(port) = cli.serve_port {
+        #[cfg(feature = "http")]
+        {
+            http::serve(vm, port);
+        }
+        #[cfg(not(feature = "http"))]
+        {
+            let _ = port;
+            eprintln!("--serve requires building with --features http");
+            std::process::exit(1);
+        }
     }
 
     vm.repl();
