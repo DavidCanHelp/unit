@@ -3,6 +3,10 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.27.1] - 2026-04-25
+
+Reduced WASM demo colony cap from 10 to 7 to mitigate browser-tab freeze under sustained run.
+
 ## [0.27.0] - 2026-04-17
 
 ### Added

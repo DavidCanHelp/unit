@@ -60,7 +60,7 @@ class BrowserMesh {
   constructor() {
     this.units = [];
     this.wasmBytes = null;
-    this.maxUnits = 10;
+    this.maxUnits = 7;
     this.onEvent = null;
     this.goalQueue = [];
   }
