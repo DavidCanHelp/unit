@@ -53,6 +53,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.22'
+          cache-dependency-path: polyglot/go/go.mod
       - run: go build ./...
         working-directory: polyglot/go
       - run: go test ./...
