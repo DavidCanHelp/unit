@@ -165,7 +165,7 @@ $ curl -s http://127.0.0.1:9898/status
 
 Build with `cargo build --features http`. Bind is 127.0.0.1 only; no
 auth, no keep-alive. Endpoints: `POST /eval`, `POST /sexp`,
-`GET /status`, `GET /words`, `GET /word/<name>`, `GET /mesh/peers`,
+`GET /status`, `GET /words`, `GET /word/<n>`, `GET /mesh/peers`,
 `POST /mesh/broadcast`. Errors come back as `{"error":"..."}`.
 
 ## Deployment Modes
@@ -187,11 +187,12 @@ $ unit --port 9001
 Many cheap in-process VMs in a `MultiUnitHost`; the process is the
 mesh peer. Per-unit memory drops from the ~5–10 MB of a forked
 process to ~165 kB; spawning is a `Vec<VM>` push instead of
-`fork + exec`. Bounded-k random gossip (default `k=8`) caps
-per-process heartbeat and chatter bandwidth at O(k) instead of O(M).
-Crash semantics are fate-shared at the host level — if a process
-dies, its units die with it. Reach for this when scale matters more
-than fork-level isolation.
+`fork + exec`. Bounded-k random gossip (enabled with `--gossip-k 8`)
+caps per-process heartbeat and chatter bandwidth at O(k) instead of
+O(M); without the flag, the legacy all-to-all path is used. Crash
+semantics are fate-shared at the host level — if a process dies, its
+units die with it. Reach for this when scale matters more than
+fork-level isolation.
 
 Two processes, each running 5 in-process units, peered on loopback:
 
@@ -223,6 +224,11 @@ unit #0 via least-busy worker selection, and evaluated to `42`. B
 then sends back to A in the same way. Each unit can query its host
 identity, sibling count, and remote-process count from Forth via
 `HOST-ID`, `SIBLING-COUNT`, and `MESH-PROCESS-COUNT`.
+
+Discovery is timing-dependent. The `[recv]` line only appears if A's
+5-second discovery window is still open when B announces itself. The
+`&` in the commands above starts A first so this usually wins; if
+you see no recv line, re-run with B started immediately after A.
 
 Today's bench tops out at 10 000 aggregate units on single-host
 loopback. The architecture supports the path further; the next walls
