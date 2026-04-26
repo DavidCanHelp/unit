@@ -31,6 +31,9 @@ pub mod energy;
 // --- Dynamic fitness landscape ---
 pub mod landscape;
 
+// --- Timing instrumentation ---
+pub mod metrics;
+
 // --- Integration tests ---
 #[cfg(test)]
 mod integration_tests;
@@ -1230,14 +1233,45 @@ impl VM {
 
     /// Called during REPL tick to check for incoming sub-goal results and timeouts.
     fn tick_dist_goals(&mut self) {
+        let _t_tick = metrics::Timer::new("mesh.tick");
         self.dist_engine.advance_tick();
 
         // Process incoming S-expression messages for sub-results.
         if let Some(ref m) = self.mesh {
             let msgs = m.recv_sexp_messages();
             for msg in &msgs {
-                if let Some(sexp) = crate::sexp::try_parse_mesh_msg(msg) {
-                    match crate::sexp::msg_type(&sexp) {
+                self.process_chatter_msg(msg);
+            }
+        }
+
+        // Check for timed-out sub-goals and fall back to local.
+        let goal_ids: Vec<u64> = self.dist_engine.goals.keys().copied().collect();
+        for gid in goal_ids {
+            let timed_out = self.dist_engine.timed_out_subgoals(gid);
+            for (seq, expr) in timed_out {
+                self.dist_engine.fallback_to_local(gid, seq);
+                let result = self.execute_sandbox(&expr);
+                let output = result.output.trim().to_string();
+                self.dist_engine.record_result(gid, seq, &output);
+                self.emit_str(&format!(
+                    "(fallback: computed sub-goal {} locally — peer timeout)\n",
+                    seq
+                ));
+                if self.dist_engine.is_complete(gid) {
+                    if let Some(combined) = self.dist_engine.combine_results(gid) {
+                        self.emit_str(&format!("dist-goal #{} complete: {}\n", gid, combined));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dispatch a single inbound chatter (S-expression) message. Extracted so
+    /// the bench harness can call it directly with synthesized messages.
+    pub fn process_chatter_msg(&mut self, msg: &str) {
+        let _t_msg = metrics::Timer::new("chatter.process");
+        if let Some(sexp) = crate::sexp::try_parse_mesh_msg(msg) {
+            match crate::sexp::msg_type(&sexp) {
                         Some("sub-goal") => {
                             // A peer asked us to compute something.
                             let goal_id =
@@ -1363,30 +1397,7 @@ impl VM {
                                 ));
                             }
                         }
-                        _ => {} // other sexp types handled elsewhere
-                    }
-                }
-            }
-        }
-
-        // Check for timed-out sub-goals and fall back to local.
-        let goal_ids: Vec<u64> = self.dist_engine.goals.keys().copied().collect();
-        for gid in goal_ids {
-            let timed_out = self.dist_engine.timed_out_subgoals(gid);
-            for (seq, expr) in timed_out {
-                self.dist_engine.fallback_to_local(gid, seq);
-                let result = self.execute_sandbox(&expr);
-                let output = result.output.trim().to_string();
-                self.dist_engine.record_result(gid, seq, &output);
-                self.emit_str(&format!(
-                    "(fallback: computed sub-goal {} locally — peer timeout)\n",
-                    seq
-                ));
-                if self.dist_engine.is_complete(gid) {
-                    if let Some(combined) = self.dist_engine.combine_results(gid) {
-                        self.emit_str(&format!("dist-goal #{} complete: {}\n", gid, combined));
-                    }
-                }
+                _ => {} // other sexp types handled elsewhere
             }
         }
     }
@@ -3120,6 +3131,7 @@ impl VM {
     }
 
     fn prim_dashboard(&mut self) {
+        let _t = metrics::Timer::new("dashboard.render");
         let peer_count = self.mesh.as_ref().map(|m| m.peer_count()).unwrap_or(0);
         let goal_summary = self
             .mesh
@@ -3299,6 +3311,7 @@ impl VM {
     }
 
     fn prim_spawn(&mut self) {
+        let _t = metrics::Timer::new("spawn.total");
         // Energy check.
         if !self.energy.can_afford(energy::SPAWN_COST) {
             self.emit_str(&format!(
@@ -3341,16 +3354,20 @@ impl VM {
         self.energy.peak_energy = saved_peak;
         self.energy.starving_ticks = saved_starving;
 
-        let package = match spawn::build_package(&state) {
-            Ok(p) => p,
-            Err(e) => {
-                self.emit_str(&format!("SPAWN: {}\n", e));
-                return;
+        let package = {
+            let _t = metrics::Timer::new("spawn.build_package");
+            match spawn::build_package(&state) {
+                Ok(p) => p,
+                Err(e) => {
+                    self.emit_str(&format!("SPAWN: {}\n", e));
+                    return;
+                }
             }
         };
         let parent_port = self.mesh.as_ref().map(|m| m.local_port()).unwrap_or(0);
         let child_gen = self.spawn_state.generation + 1;
 
+        let _t_fork = metrics::Timer::new("spawn.fork");
         match spawn::spawn_local_with_energy(&package, parent_port, child_gen, Some(child_energy)) {
             Ok((pid, port, child_id)) => {
                 self.spawn_state.children.push(spawn::ChildInfo {
@@ -3847,8 +3864,545 @@ impl VM {
     // (load_prelude is defined in vm/compiler.rs)
 
     // -----------------------------------------------------------------------
+    // Headless benchmark
+    // -----------------------------------------------------------------------
+
+    // (fmt_human_count is defined as a free fn below)
+
+    /// Run a headless benchmark across the given populations. For each pop:
+    ///   - model an all-to-all chatter graph: each of N units broadcasts once
+    ///     per tick, recording fan-out (= peers seen) and total dispatches
+    ///   - sample-time per-dispatch latency (capped to keep wall time bounded
+    ///     — N² delivery at large N would take minutes)
+    ///   - render the dashboard once per tick
+    ///   - run a fixed number of `spawn.build_package` calls
+    ///   - run `tick_dist_goals` (mesh.tick) once per tick
+    /// The shape metrics are recorded as the *full theoretical* counts so the
+    /// O(n²) growth is visible even though the bench doesn't actually invoke
+    /// every receiver. Prints both a duration report and a values report per
+    /// population, then a projected per-tick dispatch cost.
+    /// Does not start the mesh, fork children, or touch persistent state.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn run_bench(&mut self, populations: &[usize]) {
+        println!("=== unit benchmark ===");
+        println!("sizeof(VM) = {} bytes", std::mem::size_of::<VM>());
+        println!(
+            "sizeof(PeerInfo) = {} bytes (one entry in the per-unit peer table)",
+            mesh::peer_info_size_bytes()
+        );
+        println!("self RSS at start: {} kB", read_rss_kb());
+        println!();
+
+        // Measure the cost of one real fork once, up-front. Capture as locals
+        // because metrics::reset() between populations would otherwise erase it.
+        let (fork_ns, pkg_ns) = bench_measure_one_fork(self);
+
+        // Largest population for which we will *measurably* build a peer table
+        // and run the chatter dispatch loop. Above this we project linearly.
+        const SCALE_CAP: usize = 200_000;
+
+        for &pop in populations {
+            println!("###########################################################");
+            println!("# population {}", pop);
+            println!("###########################################################");
+
+            if pop <= 10_000 {
+                // Small enough for the original A/B model — run it straight.
+                self.run_bench_one(pop, None, "all-to-all");
+                self.run_bench_one(pop, Some(8), "gossip k=8");
+            } else {
+                // Very large: skip all-to-all (projected cost already prohibitive)
+                // and run a measurable subset of gossip k=8, then project.
+                let measure_pop = pop.min(SCALE_CAP);
+                self.run_bench_one(measure_pop, Some(8), "gossip k=8 (capped)");
+                if pop > SCALE_CAP {
+                    project_gossip_to(pop, measure_pop);
+                }
+            }
+
+            // Memory + peer-table operations at scale.
+            run_scale_bench(pop, SCALE_CAP);
+            // Spawn projection at this population.
+            project_spawn_to(pop, fork_ns, pkg_ns);
+            println!();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn run_bench_one(&mut self, pop: usize, gossip_k: Option<usize>, label: &str) {
+        metrics::reset();
+        let ticks: usize = match pop {
+            0..=99 => 200,
+            100..=999 => 50,
+            1000..=9999 => 10,
+            _ => 3,
+        };
+        let spawn_iters: usize = 3;
+
+        // Per-unit fan-out: under all-to-all every unit sends to N-1; under
+        // bounded gossip every unit sends to min(k, N-1).
+        let fanout_per_unit: u64 = match gossip_k {
+            Some(k) => (k.min(pop.saturating_sub(1))) as u64,
+            None => pop.saturating_sub(1) as u64,
+        };
+
+        // Sample of inbound messages we *actually* dispatch, to time per-call
+        // handler latency. Per-call cost is independent of N, so a fixed
+        // sample is sufficient. We don't actually run N² invocations.
+        let sample_msgs: usize = 1000.min(
+            (fanout_per_unit as usize).saturating_mul(pop),
+        );
+        let sample_template = format!(
+            "(peer-hello :id \"sim0\" :gen 0 :peers {} :fitness 0)",
+            pop.saturating_sub(1)
+        );
+
+        let total_start = std::time::Instant::now();
+        for _ in 0..ticks {
+            self.tick_dist_goals();
+
+            // Record chatter shape under the chosen model.
+            let mut tick_total: u64 = 0;
+            for _ in 0..pop {
+                metrics::record_value("chatter.fanout", fanout_per_unit);
+                tick_total = tick_total.saturating_add(fanout_per_unit);
+            }
+            metrics::record_value("chatter.dispatch_per_tick", tick_total);
+
+            for _ in 0..sample_msgs {
+                self.process_chatter_msg(&sample_template);
+            }
+
+            // Discard dashboard output to avoid flooding stdout.
+            let saved = self.output_buffer.take();
+            self.output_buffer = Some(String::new());
+            self.prim_dashboard();
+            self.output_buffer = saved;
+        }
+        for _ in 0..spawn_iters {
+            let _t = metrics::Timer::new("spawn.build_package");
+            let state = self.build_state_for_spawn();
+            let _ = spawn::build_package(&state);
+        }
+        let total = total_start.elapsed();
+
+        println!(
+            "--- population {} [{}] (ticks {}, sampled-dispatched {}/tick) — wall {:?} ---",
+            pop, label, ticks, sample_msgs, total
+        );
+        println!("durations:");
+        print!("{}", metrics::report());
+        println!("counts:");
+        print!("{}", metrics::report_values());
+
+        let mean_dispatch = metrics::value_mean("chatter.dispatch_per_tick");
+        let mean_proc_ns = metrics::duration_mean_ns("chatter.process");
+        let projected_ns = (mean_dispatch as u128).saturating_mul(mean_proc_ns as u128);
+        let projected_ms = projected_ns as f64 / 1e6;
+        println!(
+            "projected per-tick chatter dispatch [{}]: {} dispatches × {}ns ≈ {:.2}ms",
+            label,
+            fmt_human_count(mean_dispatch),
+            mean_proc_ns,
+            projected_ms
+        );
+
+        let ratio = if pop > 0 {
+            mean_dispatch as f64 / pop as f64
+        } else {
+            0.0
+        };
+        println!(
+            "shape: dispatches/N = {:.1} (≈N → all-to-all O(N²); ≈k → bounded O(N·k))\n",
+            ratio
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // REPL
     // -----------------------------------------------------------------------
+}
+
+// ---------------------------------------------------------------------------
+// Bench scale-up support
+// ---------------------------------------------------------------------------
+
+/// Read this process's RSS in kilobytes via `ps`. macOS + Linux compatible.
+/// Returns 0 if the call fails.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_rss_kb() -> u64 {
+    let pid = std::process::id().to_string();
+    match std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
+/// Format a kB value as kB/MB/GB.
+#[cfg(not(target_arch = "wasm32"))]
+fn fmt_kb(kb: u64) -> String {
+    if kb >= 1_000_000 {
+        format!("{:.2} GB", kb as f64 / 1_000_000.0)
+    } else if kb >= 1_000 {
+        format!("{:.2} MB", kb as f64 / 1_000.0)
+    } else {
+        format!("{} kB", kb)
+    }
+}
+
+/// Format a wall-time duration as ms/s/min/h.
+#[cfg(not(target_arch = "wasm32"))]
+fn fmt_wall(ns: u128) -> String {
+    let s = ns as f64 / 1e9;
+    if s >= 3600.0 {
+        format!("{:.2} h", s / 3600.0)
+    } else if s >= 60.0 {
+        format!("{:.2} min", s / 60.0)
+    } else if s >= 1.0 {
+        format!("{:.2} s", s)
+    } else {
+        format!("{:.2} ms", s * 1e3)
+    }
+}
+
+/// Build a synthetic peer-table HashMap of size `n` and time the operations
+/// `send_sexp` performs on it (collect-addrs, gossip-sample). Also synthesize
+/// an inbox of size `n` and time the drain. Reads RSS before/after.
+///
+/// If `pop > cap`, only `cap` entries are actually built — caller is
+/// responsible for projecting from the measured cost.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_scale_bench(pop: usize, cap: usize) {
+    use std::collections::{HashMap, VecDeque};
+    use std::net::SocketAddr;
+
+    let actual = pop.min(cap);
+    let projected = pop > cap;
+    let label = if projected {
+        format!("scale (measured at {}, projected to {})", actual, pop)
+    } else {
+        format!("scale (measured at {})", actual)
+    };
+
+    let rss_before = read_rss_kb();
+
+    // PeerInfo is private to mesh; build a same-shape stub for memory accounting.
+    // Real PeerInfo size is reported via mesh::peer_info_size_bytes().
+    #[allow(dead_code)]
+    struct PeerStub {
+        addr: SocketAddr,
+        id: [u8; 8],
+        load: u32,
+        capacity: u32,
+        peer_count: u16,
+        fitness: i64,
+        last_seen: std::time::Instant,
+    }
+
+    let populate_start = std::time::Instant::now();
+    let mut peer_table: HashMap<[u8; 8], PeerStub> = HashMap::with_capacity(actual);
+    for i in 0..actual {
+        let mut id = [0u8; 8];
+        id.copy_from_slice(&(i as u64).to_le_bytes());
+        peer_table.insert(
+            id,
+            PeerStub {
+                addr: SocketAddr::from(([127, 0, 0, 1], 1024 + (i % 60000) as u16)),
+                id,
+                load: 0,
+                capacity: 100,
+                peer_count: 0,
+                fitness: 0,
+                last_seen: std::time::Instant::now(),
+            },
+        );
+    }
+    let populate_elapsed = populate_start.elapsed();
+
+    // The legacy collect-addrs step (full O(N) Vec materialization).
+    let collect_iters = if actual >= 100_000 { 10 } else { 100 };
+    let collect_start = std::time::Instant::now();
+    for _ in 0..collect_iters {
+        let _v: Vec<SocketAddr> = peer_table.values().map(|p| p.addr).collect();
+    }
+    let collect_per_call = collect_start.elapsed() / collect_iters as u32;
+
+    // Reservoir sampling (Vitter R) on the HashMap iterator. O(N) iteration
+    // with O(k) allocation. This is what send_sexp used to do.
+    let reservoir_iters = collect_iters;
+    let reservoir_start = std::time::Instant::now();
+    let mut rng_state: u64 = 0xdeadbeefcafebabe;
+    for _ in 0..reservoir_iters {
+        let mut reservoir: Vec<SocketAddr> = Vec::with_capacity(8);
+        for (i, p) in peer_table.values().enumerate() {
+            if i < 8 {
+                reservoir.push(p.addr);
+            } else {
+                rng_state ^= rng_state << 13;
+                rng_state ^= rng_state >> 7;
+                rng_state ^= rng_state << 17;
+                if rng_state == 0 {
+                    rng_state = 0xdeadbeefcafebabe;
+                }
+                let j = (rng_state as usize) % (i + 1);
+                if j < 8 {
+                    reservoir[j] = p.addr;
+                }
+            }
+        }
+        std::hint::black_box(reservoir);
+    }
+    let reservoir_per_call = reservoir_start.elapsed() / reservoir_iters as u32;
+
+    // Indexable Vec sampling: rejection-sample k random indices in 0..len and
+    // read those slots directly. True O(k) — no iteration over N. This is
+    // what send_sexp does now on the gossip path.
+    let indexed_addrs: Vec<SocketAddr> = peer_table.values().map(|p| p.addr).collect();
+    let indexed_iters = 100_000usize;
+    let indexed_start = std::time::Instant::now();
+    let mut idx_rng: u64 = 0xfeedface12345678;
+    for _ in 0..indexed_iters {
+        let n = indexed_addrs.len();
+        let mut out: Vec<SocketAddr> = Vec::with_capacity(8);
+        let mut chosen: Vec<usize> = Vec::with_capacity(8);
+        while out.len() < 8 {
+            idx_rng ^= idx_rng << 13;
+            idx_rng ^= idx_rng >> 7;
+            idx_rng ^= idx_rng << 17;
+            if idx_rng == 0 {
+                idx_rng = 0xdeadbeefcafebabe;
+            }
+            let i = (idx_rng as usize) % n;
+            if !chosen.contains(&i) {
+                chosen.push(i);
+                out.push(indexed_addrs[i]);
+            }
+        }
+        std::hint::black_box(out);
+    }
+    let indexed_per_call = indexed_start.elapsed() / indexed_iters as u32;
+
+    // Inbox drain: with gossip k=8, expected inbox per tick is ~k = 8 (constant
+    // independent of N). But model the worst case: a flood of N messages.
+    let inbox_n = actual.min(50_000);
+    let mut inbox: VecDeque<String> = (0..inbox_n)
+        .map(|i| format!("(peer-hello :id \"peer{}\" :gen 0)", i))
+        .collect();
+    let drain_start = std::time::Instant::now();
+    let _drained: Vec<String> = inbox.drain(..).collect();
+    let drain_elapsed = drain_start.elapsed();
+
+    let rss_after = read_rss_kb();
+
+    println!("--- {} ---", label);
+    println!(
+        "  peer-table populate ({} inserts):       {}",
+        actual,
+        fmt_wall(populate_elapsed.as_nanos())
+    );
+    println!(
+        "  legacy collect_peers (per call):        {}  [O(N) iter + O(N) alloc]",
+        fmt_wall(collect_per_call.as_nanos())
+    );
+    println!(
+        "  reservoir k=8 (per call):               {}  [O(N) iter + O(k) alloc]",
+        fmt_wall(reservoir_per_call.as_nanos())
+    );
+    println!(
+        "  indexed Vec sample k=8 (per call):      {}  [O(k) — current send_sexp]",
+        fmt_wall(indexed_per_call.as_nanos())
+    );
+    let res_speedup = if reservoir_per_call.as_nanos() > 0 {
+        collect_per_call.as_nanos() as f64 / reservoir_per_call.as_nanos() as f64
+    } else {
+        0.0
+    };
+    let idx_speedup = if indexed_per_call.as_nanos() > 0 {
+        collect_per_call.as_nanos() as f64 / indexed_per_call.as_nanos() as f64
+    } else {
+        0.0
+    };
+    println!(
+        "  reservoir vs legacy: {:.2}x   indexed vs legacy: {:.2}x   indexed vs reservoir: {:.2}x",
+        res_speedup,
+        idx_speedup,
+        if indexed_per_call.as_nanos() > 0 {
+            reservoir_per_call.as_nanos() as f64 / indexed_per_call.as_nanos() as f64
+        } else {
+            0.0
+        }
+    );
+    println!(
+        "  inbox drain ({} msgs):                   {}",
+        inbox_n,
+        fmt_wall(drain_elapsed.as_nanos())
+    );
+    println!(
+        "  RSS delta (peer table only):            {} → {} (Δ {})",
+        fmt_kb(rss_before),
+        fmt_kb(rss_after),
+        fmt_kb(rss_after.saturating_sub(rss_before))
+    );
+
+    // Per-unit projection: at full N, each unit holds an N-entry peer table
+    // (assuming epidemic discovery converges to full mesh).
+    let per_entry_bytes = mesh::peer_info_size_bytes() + 24; // + ~24B HashMap overhead
+    let per_unit_peer_mem = (pop as u128) * (per_entry_bytes as u128);
+    let total_peer_mem = (pop as u128) * per_unit_peer_mem;
+    println!(
+        "  projected per-unit peer table at N={}: {}",
+        pop,
+        fmt_kb((per_unit_peer_mem / 1024) as u64)
+    );
+    println!(
+        "  projected aggregate peer-table memory:  {}  [O(N²) WALL]",
+        fmt_kb((total_peer_mem / 1024) as u64)
+    );
+
+    // Projections at full N. Legacy/reservoir scale linearly in N (both
+    // iterate the table). Indexed sampling is O(k) — N-independent per call.
+    let scale = if actual > 0 {
+        pop as f64 / actual as f64
+    } else {
+        1.0
+    };
+    let legacy_at_full_ns = (collect_per_call.as_nanos() as f64) * scale;
+    let reservoir_at_full_ns = (reservoir_per_call.as_nanos() as f64) * scale;
+    // Indexed sampling per-call is independent of N — same measurement holds.
+    let indexed_at_full_ns = indexed_per_call.as_nanos() as f64;
+    let legacy_per_tick_ns = legacy_at_full_ns * pop as f64;
+    let reservoir_per_tick_ns = reservoir_at_full_ns * pop as f64;
+    let indexed_per_tick_ns = indexed_at_full_ns * pop as f64;
+    println!(
+        "  projected legacy collect at full N:     {}  per call",
+        fmt_wall(legacy_at_full_ns as u128)
+    );
+    println!(
+        "  projected reservoir at full N:          {}  per call",
+        fmt_wall(reservoir_at_full_ns as u128)
+    );
+    println!(
+        "  projected indexed at full N:            {}  per call  [N-independent]",
+        fmt_wall(indexed_at_full_ns as u128)
+    );
+    println!(
+        "  projected per-tick (legacy):     {}",
+        fmt_wall(legacy_per_tick_ns as u128)
+    );
+    println!(
+        "  projected per-tick (reservoir):  {}",
+        fmt_wall(reservoir_per_tick_ns as u128)
+    );
+    println!(
+        "  projected per-tick (indexed):    {}",
+        fmt_wall(indexed_per_tick_ns as u128)
+    );
+}
+
+/// Project chatter dispatch cost from the measured population to the requested
+/// one. Both grow as N (gossip is O(N·k) per tick). Per-call latency is constant.
+#[cfg(not(target_arch = "wasm32"))]
+fn project_gossip_to(target_pop: usize, measured_pop: usize) {
+    let mean_proc_ns = metrics::duration_mean_ns("chatter.process");
+    let dispatches_per_tick = (target_pop as u128).saturating_mul(8);
+    let projected_ns = dispatches_per_tick.saturating_mul(mean_proc_ns as u128);
+    println!(
+        "projected per-tick chatter dispatch (gossip k=8) at N={} (from N={}):",
+        target_pop, measured_pop
+    );
+    println!(
+        "  {} dispatches × {}ns ≈ {}",
+        fmt_human_count(dispatches_per_tick.min(u64::MAX as u128) as u64),
+        mean_proc_ns,
+        fmt_wall(projected_ns)
+    );
+}
+
+/// Measure one real fork via spawn_local_with_energy and clean up the child
+/// and its on-disk artifacts. Returns (fork_ns, pkg_build_ns).
+#[cfg(not(target_arch = "wasm32"))]
+fn bench_measure_one_fork(vm: &mut VM) -> (u64, u64) {
+    let pkg_start = std::time::Instant::now();
+    let state = vm.build_state_for_spawn();
+    let package = match spawn::build_package(&state) {
+        Ok(p) => p,
+        Err(_) => return (0, 0),
+    };
+    let pkg_ns = pkg_start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+
+    let fork_start = std::time::Instant::now();
+    let res = spawn::spawn_local_with_energy(&package, 0, 1, Some(1000));
+    let fork_ns = fork_start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+
+    match res {
+        Ok((pid, _port, child_id)) => {
+            // Kill child immediately.
+            #[cfg(unix)]
+            unsafe {
+                libc_kill(pid as i32, 9);
+            }
+            #[cfg(not(unix))]
+            let _ = pid;
+            // Clean up the spawn artifacts so repeated benches don't bloat ~/.unit.
+            let hex: String = child_id.iter().map(|b| format!("{:02x}", b)).collect();
+            if let Ok(home) = std::env::var("HOME") {
+                let _ = std::fs::remove_dir_all(format!("{}/.unit/spawn/{}", home, hex));
+                let _ = std::fs::remove_dir_all(format!("{}/.unit/{}", home, hex));
+            }
+            println!(
+                "single fork measurement: pkg-build {} + fork+exec {} = {} per unit (cleaned up)",
+                fmt_wall(pkg_ns as u128),
+                fmt_wall(fork_ns as u128),
+                fmt_wall((pkg_ns + fork_ns) as u128)
+            );
+        }
+        Err(e) => {
+            println!("single fork measurement: SKIPPED ({})", e);
+        }
+    }
+    (fork_ns, pkg_ns)
+}
+
+/// Project total wall time to bring N units online from a single measured
+/// fork+pkg-build cost. Linear projection — an upper bound that ignores any
+/// per-process overhead growth (file-descriptor pressure, fork rate limits).
+#[cfg(not(target_arch = "wasm32"))]
+fn project_spawn_to(pop: usize, fork_ns: u64, pkg_ns: u64) {
+    let per_unit_ns = (fork_ns as u128) + (pkg_ns as u128);
+    let serial_ns = (pop as u128).saturating_mul(per_unit_ns);
+    // 8-way parallel disk + exec; optimistic floor.
+    let parallel_ns = serial_ns / 8;
+    println!(
+        "spawn projection at N={}: per-unit {} (pkg {} + fork {})",
+        pop,
+        fmt_wall(per_unit_ns),
+        fmt_wall(pkg_ns as u128),
+        fmt_wall(fork_ns as u128)
+    );
+    println!("  serial bring-up:    {}", fmt_wall(serial_ns));
+    println!(
+        "  8-way parallel:     {}  (optimistic; disk I/O may dominate)",
+        fmt_wall(parallel_ns)
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fmt_human_count(v: u64) -> String {
+    if v >= 1_000_000_000 {
+        format!("{:.2}G", v as f64 / 1e9)
+    } else if v >= 1_000_000 {
+        format!("{:.2}M", v as f64 / 1e6)
+    } else if v >= 1_000 {
+        format!("{:.2}k", v as f64 / 1e3)
+    } else {
+        format!("{}", v)
+    }
 }
 
 // ===========================================================================
@@ -3927,6 +4481,12 @@ fn print_help() {
     println!("  --trust LEVEL              Set trust: all, mesh, family, none");
     println!("  --serve [PORT]             Start HTTP bridge on 127.0.0.1 (default :9898)");
     println!("                             (requires: cargo build --features http)");
+    println!("  --bench [SIZES]            Run headless timing bench at the given");
+    println!("                             populations (comma-separated, default");
+    println!("                             10,100,1000,10000) and exit. Reports both");
+    println!("                             all-to-all and bounded-k gossip modes.");
+    println!("  --gossip-k K               Use bounded random gossip with fan-out K");
+    println!("                             on the live mesh (default: all-to-all).");
 }
 
 struct CliArgs {
@@ -3942,6 +4502,10 @@ struct CliArgs {
     quiet: bool,
     /// None = not serving, Some(p) = serve on 127.0.0.1:p.
     serve_port: Option<u16>,
+    /// None = no bench, Some(sizes) = run bench at those populations.
+    bench_pops: Option<Vec<usize>>,
+    /// None = all-to-all (legacy); Some(k) = bounded random gossip with k peers.
+    gossip_k: Option<usize>,
 }
 
 fn parse_args() -> Option<CliArgs> {
@@ -3958,6 +4522,8 @@ fn parse_args() -> Option<CliArgs> {
         trust: None,
         quiet: false,
         serve_port: None,
+        bench_pops: None,
+        gossip_k: None,
     };
     let mut i = 0;
     while i < args.len() {
@@ -4009,6 +4575,22 @@ fn parse_args() -> Option<CliArgs> {
                 };
                 cli.serve_port = Some(port);
             }
+            "--bench" => {
+                // Optional SIZES (comma-separated). If next arg parses as a
+                // comma-separated list of usize, consume it; otherwise default.
+                let pops: Vec<usize> = match args.get(i + 1) {
+                    Some(s) if s.split(',').all(|p| p.parse::<usize>().is_ok()) => {
+                        i += 1;
+                        s.split(',').filter_map(|p| p.parse().ok()).collect()
+                    }
+                    _ => vec![10, 100, 1000, 10000],
+                };
+                cli.bench_pops = Some(pops);
+            }
+            "--gossip-k" => {
+                i += 1;
+                cli.gossip_k = args.get(i).and_then(|s| s.parse().ok());
+            }
             other => {
                 eprintln!("unknown option: {}", other);
                 std::process::exit(1);
@@ -4025,6 +4607,24 @@ fn parse_args() -> Option<CliArgs> {
 
 fn main() {
     let cli = parse_args().unwrap();
+
+    // --bench: headless timing run, no mesh, no REPL. Native only — the
+    // metrics module is a no-op on wasm32 (no Instant), so bench would
+    // produce all zeros.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(ref pops) = cli.bench_pops {
+            let mut vm = VM::new();
+            vm.silent = true;
+            vm.load_prelude();
+            vm.silent = false;
+            vm.run_bench(pops);
+            return;
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = cli.bench_pops;
+
     let mut vm = VM::new();
     vm.silent = cli.quiet;
 
@@ -4115,6 +4715,16 @@ fn main() {
                         if !cli.quiet {
                             eprintln!("mesh-key: enabled");
                         }
+                    }
+                }
+
+                // Apply --gossip-k bounded fan-out.
+                if let Some(k) = cli.gossip_k {
+                    if let Some(ref mut m) = vm.mesh {
+                        m.gossip_fanout = Some(k);
+                    }
+                    if !cli.quiet {
+                        eprintln!("gossip: bounded fan-out k={}", k);
                     }
                 }
 

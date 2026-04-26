@@ -193,14 +193,131 @@ fn decode_header(data: &[u8], pos: &mut usize) -> Option<(u8, NodeId, u16)> {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-struct PeerInfo {
-    addr: SocketAddr,
-    id: NodeId,
-    load: u32,
-    capacity: u32,
-    peer_count: u16,
-    fitness: i64,
-    last_seen: Instant,
+pub(crate) struct PeerInfo {
+    pub(crate) addr: SocketAddr,
+    pub(crate) id: NodeId,
+    pub(crate) load: u32,
+    pub(crate) capacity: u32,
+    pub(crate) peer_count: u16,
+    pub(crate) fitness: i64,
+    pub(crate) last_seen: Instant,
+}
+
+// ---------------------------------------------------------------------------
+// PeerTable — indexable peer table for O(k) gossip sampling
+// ---------------------------------------------------------------------------
+//
+// Primary store is a Vec<PeerInfo>; a HashMap<NodeId, usize> indexes positions
+// for O(1) lookup by id. swap_remove keeps the Vec compact, with the swapped
+// peer's index updated in the map. The Vec layout lets gossip pick k random
+// indices and read peers directly — no full-table iteration.
+
+pub(crate) struct PeerTable {
+    items: Vec<PeerInfo>,
+    index: HashMap<NodeId, usize>,
+}
+
+impl PeerTable {
+    pub(crate) fn new() -> Self {
+        PeerTable {
+            items: Vec::new(),
+            index: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.items.len()
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+    pub(crate) fn contains_key(&self, id: &NodeId) -> bool {
+        self.index.contains_key(id)
+    }
+
+    pub(crate) fn get(&self, id: &NodeId) -> Option<&PeerInfo> {
+        self.index.get(id).map(|&i| &self.items[i])
+    }
+
+    pub(crate) fn get_mut(&mut self, id: &NodeId) -> Option<&mut PeerInfo> {
+        match self.index.get(id) {
+            Some(&i) => Some(&mut self.items[i]),
+            None => None,
+        }
+    }
+
+    /// Insert or replace by id. Returns true iff a new entry was created.
+    pub(crate) fn insert(&mut self, id: NodeId, info: PeerInfo) -> bool {
+        if let Some(&i) = self.index.get(&id) {
+            self.items[i] = info;
+            false
+        } else {
+            let i = self.items.len();
+            self.items.push(info);
+            self.index.insert(id, i);
+            true
+        }
+    }
+
+    /// Insert only if absent. Returns true iff inserted.
+    pub(crate) fn try_insert(&mut self, id: NodeId, info: PeerInfo) -> bool {
+        if self.index.contains_key(&id) {
+            return false;
+        }
+        let i = self.items.len();
+        self.items.push(info);
+        self.index.insert(id, i);
+        true
+    }
+
+    /// Remove by id. swap_remove from the Vec in O(1); update the swapped
+    /// peer's index entry to point at the freed slot.
+    pub(crate) fn remove(&mut self, id: &NodeId) -> Option<PeerInfo> {
+        let i = self.index.remove(id)?;
+        let removed = self.items.swap_remove(i);
+        if i < self.items.len() {
+            // The element previously at `last` now lives at `i`.
+            let swapped_id = self.items[i].id;
+            self.index.insert(swapped_id, i);
+        }
+        Some(removed)
+    }
+
+    pub(crate) fn iter(&self) -> std::slice::Iter<'_, PeerInfo> {
+        self.items.iter()
+    }
+    pub(crate) fn iter_mut(&mut self) -> std::slice::IterMut<'_, PeerInfo> {
+        self.items.iter_mut()
+    }
+
+    /// True O(k) gossip sampling: rejection-sample k distinct indices in
+    /// [0, len) and read those slots directly. Cache-friendly — only k items
+    /// are touched, regardless of N. For k ≥ len, returns all addrs.
+    pub(crate) fn sample_k_addrs(&self, k: usize, rng_state: &mut u64) -> Vec<SocketAddr> {
+        let n = self.items.len();
+        if n == 0 || k == 0 {
+            return Vec::new();
+        }
+        if k >= n {
+            return self.items.iter().map(|p| p.addr).collect();
+        }
+        let mut out: Vec<SocketAddr> = Vec::with_capacity(k);
+        let mut chosen: Vec<usize> = Vec::with_capacity(k);
+        while out.len() < k {
+            *rng_state ^= *rng_state << 13;
+            *rng_state ^= *rng_state >> 7;
+            *rng_state ^= *rng_state << 17;
+            if *rng_state == 0 {
+                *rng_state = 0xdeadbeefcafebabe;
+            }
+            let idx = (*rng_state as usize) % n;
+            if !chosen.contains(&idx) {
+                chosen.push(idx);
+                out.push(self.items[idx].addr);
+            }
+        }
+        out
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +355,7 @@ pub struct InboxMessage {
 pub(crate) struct MeshState {
     id: NodeId,
     port: u16,
-    peers: HashMap<NodeId, PeerInfo>,
+    peers: PeerTable,
     inbox: VecDeque<InboxMessage>,
     /// Active proposals (keyed by proposal ID).
     proposals: HashMap<u64, Proposal>,
@@ -351,6 +468,52 @@ impl MeshState {
     }
 }
 
+/// Size of one entry in the peer table, in bytes (Rust struct size, not
+/// counting HashMap bucket overhead). Used for memory-footprint accounting.
+pub fn peer_info_size_bytes() -> usize {
+    std::mem::size_of::<PeerInfo>()
+}
+
+/// Vitter Algorithm R reservoir sampling. Walks `iter` exactly once and
+/// returns a uniform random k-subset of its items. Allocation is O(k) — the
+/// full sequence is never materialized. If the iterator yields fewer than k
+/// items, all are returned.
+///
+/// Uniformity (proven, not just empirical): after n items have been seen, the
+/// reservoir holds a uniform random k-subset of those n. The (i+1)-th item
+/// (i ≥ k) is admitted with probability k/(i+1); each item already in the
+/// reservoir is evicted with probability 1/(i+1) on that step. Inductively,
+/// the marginal probability that any specific input item ends up in the final
+/// reservoir is exactly k/N.
+///
+/// `rng_state` is the xorshift64 PRNG state, advanced in place. Not crypto.
+fn reservoir_sample<T, I>(iter: I, k: usize, rng_state: &mut u64) -> Vec<T>
+where
+    I: Iterator<Item = T>,
+{
+    let mut reservoir: Vec<T> = Vec::with_capacity(k);
+    if k == 0 {
+        return reservoir;
+    }
+    for (i, item) in iter.enumerate() {
+        if i < k {
+            reservoir.push(item);
+        } else {
+            *rng_state ^= *rng_state << 13;
+            *rng_state ^= *rng_state >> 7;
+            *rng_state ^= *rng_state << 17;
+            if *rng_state == 0 {
+                *rng_state = 0xdeadbeefcafebabe;
+            }
+            let j = (*rng_state as usize) % (i + 1);
+            if j < k {
+                reservoir[j] = item;
+            }
+        }
+    }
+    reservoir
+}
+
 // ---------------------------------------------------------------------------
 // MeshNode — public API for the VM
 // ---------------------------------------------------------------------------
@@ -369,6 +532,13 @@ pub struct MeshNode {
     pub external_addr: Option<SocketAddr>,
     /// Mesh authentication key (set via UNIT_MESH_KEY).
     pub mesh_key: Option<String>,
+    /// Bounded-k random gossip fan-out. `None` = legacy all-to-all broadcast;
+    /// `Some(k)` = sample k random peers per send_sexp. Information then
+    /// propagates in O(log N) ticks via epidemic spread.
+    pub gossip_fanout: Option<usize>,
+    /// xorshift64 state used to pick gossip targets. Seeded from the node id
+    /// so different nodes pick independent random subsets.
+    gossip_rng: Mutex<u64>,
 }
 
 impl Drop for MeshNode {
@@ -403,7 +573,7 @@ impl MeshNode {
         let state = Arc::new(Mutex::new(MeshState {
             id,
             port: local_port,
-            peers: HashMap::new(),
+            peers: PeerTable::new(),
             inbox: VecDeque::new(),
             proposals: HashMap::new(),
             last_proposal_time: None,
@@ -480,6 +650,16 @@ impl MeshNode {
         // Start discovery beacon listener (best effort — port may be in use).
         Self::start_discovery_listener(Arc::clone(&state), id);
 
+        // Seed the gossip RNG from the node id so each node picks an
+        // independent random subset of peers per send.
+        let mut seed: u64 = 0;
+        for (i, b) in id.iter().enumerate() {
+            seed |= (*b as u64) << (i * 8);
+        }
+        if seed == 0 {
+            seed = 0xdeadbeefcafebabe;
+        }
+
         Ok(MeshNode {
             id,
             id_hex,
@@ -490,6 +670,8 @@ impl MeshNode {
             repl_port: actual_repl_port,
             external_addr: None,
             mesh_key: None,
+            gossip_fanout: None,
+            gossip_rng: Mutex::new(seed),
         })
     }
 
@@ -530,7 +712,7 @@ impl MeshNode {
         out.push_str(&format!("port:     {}\n", st.port));
         out.push_str(&format!("load:     {}/{}\n", st.load, st.capacity));
         out.push_str(&format!("peers:    {}\n", st.peers.len()));
-        for peer in st.peers.values() {
+        for peer in st.peers.iter() {
             let age = peer.last_seen.elapsed().as_secs();
             out.push_str(&format!(
                 "  {} @ {} load={}/{} seen={}s ago\n",
@@ -568,7 +750,7 @@ impl MeshNode {
     pub fn send_data(&self, data: &[u8]) {
         let st = self.state.lock().unwrap();
         let port = st.port;
-        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        let peers: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
         drop(st);
 
         let mut buf = Vec::with_capacity(HEADER_SIZE + 2 + data.len());
@@ -621,7 +803,7 @@ impl MeshNode {
 
         let total_peers = st.peers.len();
         let port = st.port;
-        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        let peers: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
 
         let proposal = Proposal {
             id: proposal_id,
@@ -689,7 +871,7 @@ impl MeshNode {
             })
             .unwrap_or_default();
         let port = st.port;
-        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        let peers: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
         drop(st);
 
         // Broadcast the goal to all peers.
@@ -714,7 +896,7 @@ impl MeshNode {
                 task_id, goal_id, desc
             ));
             let port = st.port;
-            let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+            let peers: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
             drop(st);
 
             // Broadcast claim.
@@ -744,7 +926,7 @@ impl MeshNode {
             result.output.len(),
         ));
         let port = st.port;
-        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        let peers: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
         drop(st);
 
         // Broadcast result with full TaskResult.
@@ -779,7 +961,7 @@ impl MeshNode {
                 task_id, goal_id
             ));
             let port = st.port;
-            let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+            let peers: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
             drop(st);
 
             // Broadcast claim.
@@ -812,7 +994,7 @@ impl MeshNode {
                 })
                 .unwrap_or_default();
             let port = st.port;
-            let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+            let peers: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
             drop(st);
 
             if let Some(goal) = goal {
@@ -842,7 +1024,7 @@ impl MeshNode {
                 })
                 .unwrap_or_default();
             let port = st.port;
-            let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+            let peers: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
             drop(st);
 
             if let Some(goal) = goal {
@@ -925,7 +1107,7 @@ impl MeshNode {
     pub fn peer_fitness_list(&self) -> Vec<PeerFitness> {
         let st = self.state.lock().unwrap();
         st.peers
-            .values()
+            .iter()
             .map(|p| PeerFitness {
                 id: p.id,
                 score: p.fitness,
@@ -937,7 +1119,7 @@ impl MeshNode {
     pub fn peer_details(&self) -> Vec<(String, i64, String)> {
         let st = self.state.lock().unwrap();
         st.peers
-            .values()
+            .iter()
             .map(|p| (id_to_hex(&p.id), p.fitness, p.addr.to_string()))
             .collect()
     }
@@ -957,7 +1139,7 @@ impl MeshNode {
     pub fn peer_table(&self) -> Vec<(String, String, i64, u64)> {
         let st = self.state.lock().unwrap();
         st.peers
-            .values()
+            .iter()
             .map(|p| {
                 let age_secs = p.last_seen.elapsed().as_secs();
                 (id_to_hex(&p.id), p.addr.to_string(), p.fitness, age_secs)
@@ -975,8 +1157,9 @@ impl MeshNode {
     pub fn connect_peer(&self, addr: SocketAddr) {
         let pseudo = addr_to_pseudo_id(&addr);
         let mut st = self.state.lock().unwrap();
-        if let std::collections::hash_map::Entry::Vacant(e) = st.peers.entry(pseudo) {
-            e.insert(PeerInfo {
+        let inserted = st.peers.try_insert(
+            pseudo,
+            PeerInfo {
                 addr,
                 id: pseudo,
                 load: 0,
@@ -984,7 +1167,9 @@ impl MeshNode {
                 peer_count: 0,
                 fitness: 0,
                 last_seen: Instant::now(),
-            });
+            },
+        );
+        if inserted {
             st.log_event(format!("manual connect: {}", addr));
         }
     }
@@ -992,7 +1177,7 @@ impl MeshNode {
     /// Remove a peer by hex ID.
     pub fn disconnect_peer(&self, hex_id: &str) -> bool {
         let mut st = self.state.lock().unwrap();
-        let key = st.peers.keys().find(|k| id_to_hex(k) == hex_id).copied();
+        let key = st.peers.iter().find(|p| id_to_hex(&p.id) == hex_id).map(|p| p.id);
         if let Some(k) = key {
             st.peers.remove(&k);
             st.log_event(format!("disconnected {}", hex_id));
@@ -1095,9 +1280,9 @@ impl MeshNode {
                         format!("{}:{}", src.ip(), sender_port).parse().unwrap();
 
                     let mut st = state.lock().unwrap();
-                    if let std::collections::hash_map::Entry::Vacant(e) = st.peers.entry(sender_id)
-                    {
-                        e.insert(PeerInfo {
+                    let inserted = st.peers.try_insert(
+                        sender_id,
+                        PeerInfo {
                             addr: peer_addr,
                             id: sender_id,
                             load: 0,
@@ -1105,7 +1290,9 @@ impl MeshNode {
                             peer_count: 0,
                             fitness: 0,
                             last_seen: Instant::now(),
-                        });
+                        },
+                    );
+                    if inserted {
                         st.log_event(format!(
                             "discovered {} via beacon @ {}",
                             id_to_hex(&sender_id),
@@ -1125,7 +1312,7 @@ impl MeshNode {
     pub fn share_word(&self, name: &str, source: &str) {
         let st = self.state.lock().unwrap();
         let port = st.port;
-        let peers: Vec<std::net::SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+        let peers: Vec<std::net::SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
         drop(st);
 
         let mut buf = Vec::with_capacity(HEADER_SIZE + 4 + name.len() + source.len());
@@ -1147,10 +1334,44 @@ impl MeshNode {
 
     /// Broadcast an S-expression message to all peers.
     pub fn send_sexp(&self, sexp_str: &str) {
+        let _t_send = crate::metrics::Timer::new("chatter.send");
+
+        // Snapshot the gossip RNG once into a local so the reservoir loop runs
+        // with no nested locks. We write back at the end.
+        let mut rng_state: u64 = match self.gossip_fanout {
+            Some(_) => match self.gossip_rng.lock() {
+                Ok(g) => *g,
+                Err(_) => 0xdeadbeefcafebabe,
+            },
+            None => 0,
+        };
+
         let st = self.state.lock().unwrap();
         let port = st.port;
-        let peers: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+
+        let peers: Vec<SocketAddr> = match self.gossip_fanout {
+            Some(k) if k > 0 => {
+                // True O(k) gossip: pick k random indices in 0..len and read
+                // those slots directly. No iteration over the full peer set.
+                let _t = crate::metrics::Timer::new("chatter.send.indexed_sample");
+                st.peers.sample_k_addrs(k, &mut rng_state)
+            }
+            _ => {
+                // Legacy all-to-all path: full O(N) collect.
+                let _t = crate::metrics::Timer::new("chatter.send.collect_peers");
+                st.peers.iter().map(|p| p.addr).collect()
+            }
+        };
         drop(st);
+
+        if self.gossip_fanout.is_some() {
+            if let Ok(mut g) = self.gossip_rng.lock() {
+                *g = rng_state;
+            }
+        }
+
+        // Record per-broadcast fan-out (after sampling).
+        crate::metrics::record_value("chatter.fanout", peers.len() as u64);
 
         let sb = sexp_str.as_bytes();
         let mut buf = Vec::with_capacity(HEADER_SIZE + 2 + sb.len());
@@ -1213,7 +1434,7 @@ impl MeshNode {
         }
         // Cull if fitness is below mesh average.
         let my_fitness = st.fitness;
-        let total: i64 = st.peers.values().map(|p| p.fitness).sum::<i64>() + my_fitness;
+        let total: i64 = st.peers.iter().map(|p| p.fitness).sum::<i64>() + my_fitness;
         let avg = total / units as i64;
         my_fitness < avg - 10 // only cull if significantly below average
     }
@@ -1488,13 +1709,13 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
     // Collect peer addresses for gossip (up to MAX_GOSSIP_PEERS).
     let gossip_addrs: Vec<SocketAddr> = st
         .peers
-        .values()
+        .iter()
         .take(MAX_GOSSIP_PEERS)
         .map(|p| p.addr)
         .collect();
 
     let fitness = st.fitness;
-    let all_peer_addrs: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+    let all_peer_addrs: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
     drop(st);
 
     let mut buf = Vec::with_capacity(HEADER_SIZE + 19 + gossip_addrs.len() * 6);
@@ -1702,7 +1923,7 @@ fn handle_heartbeat(
             continue;
         }
         // Check if we already know a peer at this address.
-        let known = st.peers.values().any(|p| p.addr == addr);
+        let known = st.peers.iter().any(|p| p.addr == addr);
         if !known {
             let pseudo_id = addr_to_pseudo_id(&addr);
             st.peers.insert(
@@ -2431,7 +2652,7 @@ fn check_proposals(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &No
 
     // Collect proposal IDs to process (avoid borrowing issues).
     let proposal_ids: Vec<u64> = st.proposals.keys().cloned().collect();
-    let peer_addrs: Vec<SocketAddr> = st.peers.values().map(|p| p.addr).collect();
+    let peer_addrs: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
 
     for pid in proposal_ids {
         let prop = match st.proposals.get(&pid) {
@@ -2536,8 +2757,8 @@ fn prune_peers(state: &Arc<Mutex<MeshState>>) {
     let stale: Vec<NodeId> = st
         .peers
         .iter()
-        .filter(|(_, p)| p.last_seen.elapsed() > PEER_TIMEOUT)
-        .map(|(id, _)| *id)
+        .filter(|p| p.last_seen.elapsed() > PEER_TIMEOUT)
+        .map(|p| p.id)
         .collect();
     for id in &stale {
         st.peers.remove(id);
@@ -2785,5 +3006,240 @@ fn deserialize_instruction(data: &[u8], pos: &mut usize) -> Option<Instruction> 
             Some(Instruction::BranchIfZero(offset))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod peer_table_tests {
+    use super::*;
+
+    fn id_of(n: u8) -> NodeId {
+        let mut id = [0u8; 8];
+        id[0] = n;
+        id
+    }
+    fn make(n: u8) -> PeerInfo {
+        PeerInfo {
+            addr: SocketAddr::from(([127, 0, 0, 1], 1024 + n as u16)),
+            id: id_of(n),
+            load: 0,
+            capacity: 0,
+            peer_count: 0,
+            fitness: 0,
+            last_seen: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn insert_get_round_trip() {
+        let mut t = PeerTable::new();
+        assert!(t.insert(id_of(1), make(1)));
+        assert!(t.insert(id_of(2), make(2)));
+        assert!(t.insert(id_of(3), make(3)));
+        assert_eq!(t.len(), 3);
+        assert!(t.contains_key(&id_of(2)));
+        assert_eq!(t.get(&id_of(2)).map(|p| p.id), Some(id_of(2)));
+        assert_eq!(t.get(&id_of(99)).map(|p| p.id), None);
+    }
+
+    #[test]
+    fn insert_existing_replaces_in_place() {
+        let mut t = PeerTable::new();
+        t.insert(id_of(1), make(1));
+        t.insert(id_of(2), make(2));
+        let mut updated = make(2);
+        updated.fitness = 42;
+        // Returns false (no new entry).
+        assert!(!t.insert(id_of(2), updated));
+        assert_eq!(t.len(), 2);
+        assert_eq!(t.get(&id_of(2)).unwrap().fitness, 42);
+    }
+
+    #[test]
+    fn try_insert_skips_existing() {
+        let mut t = PeerTable::new();
+        assert!(t.try_insert(id_of(1), make(1)));
+        assert!(!t.try_insert(id_of(1), make(1)));
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn remove_swap_preserves_index_for_swapped_peer() {
+        let mut t = PeerTable::new();
+        for n in 1..=5 {
+            t.insert(id_of(n), make(n));
+        }
+        // Remove the middle peer; this triggers swap_remove with the last one.
+        let removed = t.remove(&id_of(3));
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().id, id_of(3));
+        assert_eq!(t.len(), 4);
+        // Every remaining peer is still findable by id.
+        for n in [1u8, 2, 4, 5] {
+            let p = t.get(&id_of(n)).expect("peer missing after swap_remove");
+            assert_eq!(p.id, id_of(n));
+        }
+        // The removed peer is gone.
+        assert!(!t.contains_key(&id_of(3)));
+        assert!(t.get(&id_of(3)).is_none());
+    }
+
+    #[test]
+    fn remove_then_reinsert_works() {
+        let mut t = PeerTable::new();
+        t.insert(id_of(1), make(1));
+        t.insert(id_of(2), make(2));
+        t.remove(&id_of(1));
+        // Reinsert should succeed and create a new entry.
+        assert!(t.insert(id_of(1), make(1)));
+        assert_eq!(t.len(), 2);
+        assert!(t.contains_key(&id_of(1)));
+        assert!(t.contains_key(&id_of(2)));
+    }
+
+    #[test]
+    fn remove_absent_returns_none() {
+        let mut t = PeerTable::new();
+        t.insert(id_of(1), make(1));
+        assert!(t.remove(&id_of(99)).is_none());
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn sample_k_returns_unique_addrs() {
+        let mut t = PeerTable::new();
+        for n in 1..=20 {
+            t.insert(id_of(n), make(n));
+        }
+        let mut rng = 0x123456789abcdef0u64;
+        let s = t.sample_k_addrs(8, &mut rng);
+        assert_eq!(s.len(), 8);
+        let mut sorted = s.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 8, "duplicates in sample: {:?}", s);
+    }
+
+    #[test]
+    fn sample_k_returns_all_when_k_ge_n() {
+        let mut t = PeerTable::new();
+        for n in 1..=5 {
+            t.insert(id_of(n), make(n));
+        }
+        let mut rng = 1u64;
+        let s = t.sample_k_addrs(8, &mut rng);
+        assert_eq!(s.len(), 5);
+    }
+
+    #[test]
+    fn sample_k_distribution_is_uniform() {
+        // 50k samples of size k=8 from N=100. Each peer's expected count is
+        // K·k/N = 4000. σ ≈ √(K·k·(N-k)/N²) ≈ 60. Tolerance ±25%.
+        let mut t = PeerTable::new();
+        for n in 0..100u8 {
+            t.insert(id_of(n), make(n));
+        }
+        let trials = 50_000usize;
+        let k = 8usize;
+        let mut counts = vec![0usize; 100];
+        let mut rng = 0xcafebabedeadbeefu64;
+        for _ in 0..trials {
+            let s = t.sample_k_addrs(k, &mut rng);
+            for addr in s {
+                let port = match addr {
+                    SocketAddr::V4(v) => v.port(),
+                    _ => 0,
+                };
+                let n = (port - 1024) as usize;
+                counts[n] += 1;
+            }
+        }
+        let expected = (trials * k) as f64 / 100.0;
+        let min = *counts.iter().min().unwrap() as f64;
+        let max = *counts.iter().max().unwrap() as f64;
+        let dev = (max - min) / expected;
+        assert!(
+            dev < 0.25,
+            "min={} max={} expected={} range/expected={:.3}",
+            min,
+            max,
+            expected,
+            dev
+        );
+    }
+}
+
+#[cfg(test)]
+mod reservoir_tests {
+    use super::reservoir_sample;
+
+    #[test]
+    fn returns_all_when_n_le_k() {
+        let items: Vec<u32> = (0..5).collect();
+        let mut rng = 12345u64;
+        let mut r = reservoir_sample(items.iter().copied(), 8, &mut rng);
+        r.sort();
+        assert_eq!(r, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn returns_exactly_k_when_n_gt_k() {
+        let items: Vec<u32> = (0..1000).collect();
+        let mut rng = 0xabcdef1234567890u64;
+        let r = reservoir_sample(items.iter().copied(), 8, &mut rng);
+        assert_eq!(r.len(), 8);
+        // No duplicates, all in range.
+        let mut sorted = r.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 8, "duplicates in reservoir: {:?}", r);
+        for v in r {
+            assert!(v < 1000, "out-of-range value: {}", v);
+        }
+    }
+
+    #[test]
+    fn empty_when_k_is_zero() {
+        let items: Vec<u32> = (0..100).collect();
+        let mut rng = 1u64;
+        let r = reservoir_sample(items.iter().copied(), 0, &mut rng);
+        assert_eq!(r.len(), 0);
+    }
+
+    #[test]
+    fn distribution_is_uniform() {
+        // 100k samples of size k=8 from N=100 → each item should appear
+        // ~K·k/N = 8000 times. Standard deviation per bin ≈ √(K·k·(N-k)/N²)
+        // ≈ 86, so 6σ ≈ 516 across 100 bins. Tolerance ±25% is comfortable.
+        let n: usize = 100;
+        let k: usize = 8;
+        let trials: usize = 100_000;
+        let expected = (trials * k) as f64 / n as f64;
+        let mut counts = vec![0usize; n];
+        let mut rng = 0xdeadbeefcafebabeu64;
+        for _ in 0..trials {
+            let r = reservoir_sample(0u32..n as u32, k, &mut rng);
+            for v in r {
+                counts[v as usize] += 1;
+            }
+        }
+        let min = *counts.iter().min().unwrap() as f64;
+        let max = *counts.iter().max().unwrap() as f64;
+        let mean: f64 = counts.iter().map(|&c| c as f64).sum::<f64>() / n as f64;
+        let dev = (max - min) / expected;
+        assert!(
+            dev < 0.25,
+            "min={} max={} expected={} range/expected={:.3} (>0.25 → not uniform)",
+            min,
+            max,
+            expected,
+            dev
+        );
+        assert!(
+            (mean - expected).abs() < 1.0,
+            "mean={} expected={} (off by >1)",
+            mean,
+            expected
+        );
     }
 }
