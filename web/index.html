@@ -64,7 +64,7 @@
     <span class="desc">A self-replicating software nanobot.</span>
   </div>
   <div id="info-right">
-    <button class="mode-btn" id="spawn-btn" onclick="doSpawn()">spawn (1/10)</button>
+    <button class="mode-btn" id="spawn-btn" onclick="doSpawn()">spawn (1/7)</button>
     <button class="mode-btn" id="viz-toggle" onclick="cycleVizMode()">mesh</button>
     <button class="mode-btn" id="mute-btn" onclick="toggleMute()">chatter</button>
     <button class="mode-btn" id="dash-btn" onclick="toggleDashboard()">dashboard</button>
@@ -740,6 +740,7 @@ async function init() {
     mesh._solWords = [];
     mesh._landscapeDepth = 0;
     mesh.onEvent = (type, data) => {
+      if (type === 'spawn') spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
       if (type === 'goal_start' && vizNodes.length > 1) emitParticle(vizNodes[0].id, data.unitId, '#ff8800');
       if (type === 'goal_done' && vizNodes.length > 1) {
         emitParticle(data.unitId, vizNodes[0].id, '#00ff88');
