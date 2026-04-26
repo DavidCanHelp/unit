@@ -120,12 +120,59 @@ pub fn duration_mean_ns(name: &'static str) -> u64 {
         .unwrap_or(0)
 }
 
+/// Percentile (0.0..=1.0) of recorded durations, or 0 if absent.
+pub fn histogram_percentile_ns(name: &'static str, p: f64) -> u64 {
+    registry()
+        .lock()
+        .ok()
+        .and_then(|r| r.get(name).map(|h| h.percentile(p)))
+        .unwrap_or(0)
+}
+
+/// Max recorded duration in ns, or 0 if absent.
+pub fn histogram_max_ns(name: &'static str) -> u64 {
+    registry()
+        .lock()
+        .ok()
+        .and_then(|r| r.get(name).map(|h| h.max_ns))
+        .unwrap_or(0)
+}
+
+/// Number of samples recorded for a duration histogram.
+pub fn histogram_count(name: &'static str) -> u64 {
+    registry()
+        .lock()
+        .ok()
+        .and_then(|r| r.get(name).map(|h| h.count))
+        .unwrap_or(0)
+}
+
 /// Mean recorded value for a named counter, or 0 if absent.
 pub fn value_mean(name: &'static str) -> u64 {
     values_registry()
         .lock()
         .ok()
         .and_then(|r| r.get(name).map(|h| h.mean_ns()))
+        .unwrap_or(0)
+}
+
+/// Total of all recorded samples for a named counter (sum, not count).
+/// For e.g. `mesh.bytes_sent`, this is total bytes sent across the process.
+pub fn value_total(name: &'static str) -> u128 {
+    values_registry()
+        .lock()
+        .ok()
+        .and_then(|r| r.get(name).map(|h| h.total_ns))
+        .unwrap_or(0)
+}
+
+/// Number of samples (calls) recorded for a named counter.
+/// For e.g. `mesh.bytes_sent`, this is total messages sent.
+pub fn value_count(name: &'static str) -> u64 {
+    values_registry()
+        .lock()
+        .ok()
+        .and_then(|r| r.get(name).map(|h| h.count))
         .unwrap_or(0)
 }
 

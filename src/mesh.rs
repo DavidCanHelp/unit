@@ -357,6 +357,15 @@ pub(crate) struct MeshState {
     port: u16,
     peers: PeerTable,
     inbox: VecDeque<InboxMessage>,
+    /// Bounded-k random gossip fan-out applied to BOTH `send_sexp` AND
+    /// `send_heartbeat`. `None` = legacy all-to-all broadcast on both paths.
+    /// `Some(k)` = sample k random peers from the indexable peer table per
+    /// send. Lives in `MeshState` so the network thread's `send_heartbeat`
+    /// can read it directly without a separate handle.
+    pub(crate) gossip_fanout: Option<usize>,
+    /// xorshift64 state for picking gossip targets. Gated by the state
+    /// mutex (no separate lock needed).
+    pub(crate) gossip_rng: u64,
     /// Active proposals (keyed by proposal ID).
     proposals: HashMap<u64, Proposal>,
     /// Timestamp of the last completed/failed proposal by this node.
@@ -474,6 +483,16 @@ pub fn peer_info_size_bytes() -> usize {
     std::mem::size_of::<PeerInfo>()
 }
 
+/// Send a UDP packet and record `mesh.bytes_sent` (count = msgs, total = bytes).
+/// Used by the highest-volume send paths: send_sexp, send_sexp_to, and the
+/// per-tick send_heartbeat. Lower-volume paths (rare ack/discovery sends)
+/// are intentionally not counted to keep the change small; heartbeats and
+/// gossip dominate steady-state traffic by 100×+.
+fn tracked_send_to(socket: &UdpSocket, buf: &[u8], addr: &SocketAddr) {
+    crate::metrics::record_value("mesh.bytes_sent", buf.len() as u64);
+    let _ = socket.send_to(buf, addr);
+}
+
 /// Vitter Algorithm R reservoir sampling. Walks `iter` exactly once and
 /// returns a uniform random k-subset of its items. Allocation is O(k) — the
 /// full sequence is never materialized. If the iterator yields fewer than k
@@ -532,13 +551,6 @@ pub struct MeshNode {
     pub external_addr: Option<SocketAddr>,
     /// Mesh authentication key (set via UNIT_MESH_KEY).
     pub mesh_key: Option<String>,
-    /// Bounded-k random gossip fan-out. `None` = legacy all-to-all broadcast;
-    /// `Some(k)` = sample k random peers per send_sexp. Information then
-    /// propagates in O(log N) ticks via epidemic spread.
-    pub gossip_fanout: Option<usize>,
-    /// xorshift64 state used to pick gossip targets. Seeded from the node id
-    /// so different nodes pick independent random subsets.
-    gossip_rng: Mutex<u64>,
 }
 
 impl Drop for MeshNode {
@@ -570,11 +582,23 @@ impl MeshNode {
         let socket = UdpSocket::bind(bind_addr).map_err(|e| format!("bind: {}", e))?;
         let local_port = socket.local_addr().map_err(|e| format!("{}", e))?.port();
 
+        // Seed the gossip RNG from the node id so each node picks an
+        // independent random subset of peers per send.
+        let mut gossip_seed: u64 = 0;
+        for (i, b) in id.iter().enumerate() {
+            gossip_seed |= (*b as u64) << (i * 8);
+        }
+        if gossip_seed == 0 {
+            gossip_seed = 0xdeadbeefcafebabe;
+        }
+
         let state = Arc::new(Mutex::new(MeshState {
             id,
             port: local_port,
             peers: PeerTable::new(),
             inbox: VecDeque::new(),
+            gossip_fanout: None,
+            gossip_rng: gossip_seed,
             proposals: HashMap::new(),
             last_proposal_time: None,
             load: 0,
@@ -650,16 +674,6 @@ impl MeshNode {
         // Start discovery beacon listener (best effort — port may be in use).
         Self::start_discovery_listener(Arc::clone(&state), id);
 
-        // Seed the gossip RNG from the node id so each node picks an
-        // independent random subset of peers per send.
-        let mut seed: u64 = 0;
-        for (i, b) in id.iter().enumerate() {
-            seed |= (*b as u64) << (i * 8);
-        }
-        if seed == 0 {
-            seed = 0xdeadbeefcafebabe;
-        }
-
         Ok(MeshNode {
             id,
             id_hex,
@@ -670,9 +684,22 @@ impl MeshNode {
             repl_port: actual_repl_port,
             external_addr: None,
             mesh_key: None,
-            gossip_fanout: None,
-            gossip_rng: Mutex::new(seed),
         })
+    }
+
+    /// Set the bounded-k gossip fan-out. `None` = legacy all-to-all on both
+    /// `send_sexp` and `send_heartbeat`. `Some(k)` = sample k random peers
+    /// per call on both paths. Stored in MeshState so the network thread's
+    /// heartbeat sender can read it without a separate handle.
+    pub fn set_gossip_fanout(&self, k: Option<usize>) {
+        if let Ok(mut st) = self.state.lock() {
+            st.gossip_fanout = k;
+        }
+    }
+
+    /// Read the current gossip fan-out setting.
+    pub fn gossip_fanout(&self) -> Option<usize> {
+        self.state.lock().ok().and_then(|st| st.gossip_fanout)
     }
 
     pub fn id_hex(&self) -> &str {
@@ -698,6 +725,61 @@ impl MeshNode {
 
     pub fn set_load(&self, load: u32) {
         self.state.lock().unwrap().load = load;
+    }
+
+    /// Send one heartbeat synchronously (out-of-band of the network thread's
+    /// 2s timer). Used by the multi-unit bridge after spawning units so peers
+    /// learn the new unit count quickly, and by tests to avoid sleeping.
+    pub fn force_heartbeat(&self) {
+        send_heartbeat(&self.socket, &self.state, &self.id);
+    }
+
+    /// Send an S-expression to one specific peer addr (no broadcast). Used for
+    /// targeted host-to-host messages where gossip's k-fanout is unwanted —
+    /// e.g. a reply to a known sender. Honors mesh framing exactly like
+    /// `send_sexp` but with a single recipient.
+    pub fn send_sexp_to(&self, addr: SocketAddr, sexp_str: &str) {
+        let port = match self.state.lock() {
+            Ok(st) => st.port,
+            Err(_) => return,
+        };
+        let sb = sexp_str.as_bytes();
+        let mut buf = Vec::with_capacity(HEADER_SIZE + 2 + sb.len());
+        encode_header(&mut buf, MSG_SEXP, &self.id, port);
+        write_u16(&mut buf, sb.len() as u16);
+        write_bytes(&mut buf, sb);
+        tracked_send_to(&self.socket, &buf, &addr);
+    }
+
+    /// Per-peer (id, load, addr). `load` is the field a multi-unit host
+    /// uses to advertise its in-process unit count via heartbeat (see
+    /// `set_load`). Returned in arbitrary HashMap order.
+    pub fn peer_unit_counts(&self) -> Vec<(NodeId, u32, SocketAddr)> {
+        let st = self.state.lock().unwrap();
+        st.peers.iter().map(|p| (p.id, p.load, p.addr)).collect()
+    }
+
+    /// Evict peers whose `last_seen` is older than `threshold`. Returns the
+    /// number removed. The network thread does this on a 15s timer
+    /// (`PEER_TIMEOUT`); this method exists so the multi-unit bridge can
+    /// trigger pruning sooner (e.g. on tick) and so tests can verify peer
+    /// dropout without sleeping for the full timeout.
+    pub fn evict_peers_older_than(&self, threshold: Duration) -> usize {
+        let mut st = match self.state.lock() {
+            Ok(g) => g,
+            Err(_) => return 0,
+        };
+        let stale: Vec<NodeId> = st
+            .peers
+            .iter()
+            .filter(|p| p.last_seen.elapsed() > threshold)
+            .map(|p| p.id)
+            .collect();
+        let n = stale.len();
+        for id in &stale {
+            st.peers.remove(id);
+        }
+        n
     }
 
     pub fn capacity(&self) -> u32 {
@@ -1336,20 +1418,13 @@ impl MeshNode {
     pub fn send_sexp(&self, sexp_str: &str) {
         let _t_send = crate::metrics::Timer::new("chatter.send");
 
-        // Snapshot the gossip RNG once into a local so the reservoir loop runs
-        // with no nested locks. We write back at the end.
-        let mut rng_state: u64 = match self.gossip_fanout {
-            Some(_) => match self.gossip_rng.lock() {
-                Ok(g) => *g,
-                Err(_) => 0xdeadbeefcafebabe,
-            },
-            None => 0,
-        };
-
-        let st = self.state.lock().unwrap();
+        // Read gossip config + RNG state from MeshState (same lock as peers).
+        let mut st = self.state.lock().unwrap();
         let port = st.port;
+        let fanout = st.gossip_fanout;
+        let mut rng_state = st.gossip_rng;
 
-        let peers: Vec<SocketAddr> = match self.gossip_fanout {
+        let peers: Vec<SocketAddr> = match fanout {
             Some(k) if k > 0 => {
                 // True O(k) gossip: pick k random indices in 0..len and read
                 // those slots directly. No iteration over the full peer set.
@@ -1362,13 +1437,11 @@ impl MeshNode {
                 st.peers.iter().map(|p| p.addr).collect()
             }
         };
-        drop(st);
-
-        if self.gossip_fanout.is_some() {
-            if let Ok(mut g) = self.gossip_rng.lock() {
-                *g = rng_state;
-            }
+        // Write the advanced RNG back so the next send picks fresh peers.
+        if fanout.is_some() {
+            st.gossip_rng = rng_state;
         }
+        drop(st);
 
         // Record per-broadcast fan-out (after sampling).
         crate::metrics::record_value("chatter.fanout", peers.len() as u64);
@@ -1379,7 +1452,7 @@ impl MeshNode {
         write_u16(&mut buf, sb.len() as u16);
         write_bytes(&mut buf, sb);
         for addr in &peers {
-            let _ = self.socket.send_to(&buf, addr);
+            tracked_send_to(&self.socket, &buf, addr);
         }
     }
 
@@ -1666,6 +1739,7 @@ fn network_thread(socket: UdpSocket, state: Arc<Mutex<MeshState>>, my_id: NodeId
 
         // Try to receive a packet.
         if let Ok((len, src_addr)) = socket.recv_from(&mut recv_buf) {
+            crate::metrics::record_value("mesh.bytes_recv", len as u64);
             let packet = &recv_buf[..len];
             handle_packet(packet, src_addr, &socket, &state, &my_id);
         }
@@ -1700,13 +1774,16 @@ fn network_thread(socket: UdpSocket, state: Arc<Mutex<MeshState>>, my_id: NodeId
 }
 
 fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &NodeId) {
-    let st = state.lock().unwrap();
+    let mut st = state.lock().unwrap();
     let port = st.port;
     let load = st.load;
     let capacity = st.capacity;
     let peer_count = st.peers.len() as u16;
+    let fanout = st.gossip_fanout;
+    let mut rng_state = st.gossip_rng;
 
-    // Collect peer addresses for gossip (up to MAX_GOSSIP_PEERS).
+    // Collect peer addresses to embed in the heartbeat for transitive
+    // discovery (capped at MAX_GOSSIP_PEERS regardless of gossip mode).
     let gossip_addrs: Vec<SocketAddr> = st
         .peers
         .iter()
@@ -1715,7 +1792,17 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
         .collect();
 
     let fitness = st.fitness;
-    let all_peer_addrs: Vec<SocketAddr> = st.peers.iter().map(|p| p.addr).collect();
+
+    // Delivery targets: bounded-k random sample if gossip is configured,
+    // otherwise the legacy all-to-all peer list. This is the per-tick
+    // O(M²) → O(M·k) flattening for heartbeat traffic.
+    let delivery_addrs: Vec<SocketAddr> = match fanout {
+        Some(k) if k > 0 => st.peers.sample_k_addrs(k, &mut rng_state),
+        _ => st.peers.iter().map(|p| p.addr).collect(),
+    };
+    if fanout.is_some() {
+        st.gossip_rng = rng_state;
+    }
     drop(st);
 
     let mut buf = Vec::with_capacity(HEADER_SIZE + 19 + gossip_addrs.len() * 6);
@@ -1733,11 +1820,12 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
     // Fitness score appended after gossip addresses.
     write_i64(&mut buf, fitness);
 
-    for addr in &all_peer_addrs {
-        let _ = socket.send_to(&buf, addr);
+    for addr in &delivery_addrs {
+        tracked_send_to(socket, &buf, addr);
     }
 
-    // Also broadcast an S-expression peer-status envelope.
+    // Also broadcast an S-expression peer-status envelope to the same
+    // delivery set so heartbeat and status share fan-out semantics.
     let sexp = crate::sexp::msg_peer_status(my_id, peer_count as usize, fitness, load, capacity);
     let sexp_str = sexp.to_string();
     let sb = sexp_str.as_bytes();
@@ -1745,8 +1833,8 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
     encode_header(&mut sexp_buf, MSG_SEXP, my_id, port);
     write_u16(&mut sexp_buf, sb.len() as u16);
     write_bytes(&mut sexp_buf, sb);
-    for addr in &all_peer_addrs {
-        let _ = socket.send_to(&sexp_buf, addr);
+    for addr in &delivery_addrs {
+        tracked_send_to(socket, &sexp_buf, addr);
     }
 }
 

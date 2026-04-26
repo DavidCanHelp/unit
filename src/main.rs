@@ -34,6 +34,9 @@ pub mod landscape;
 // --- Timing instrumentation ---
 pub mod metrics;
 
+// --- Single-process multi-unit host (in-process port of the WASM browser model) ---
+pub mod multi_unit;
+
 // --- Integration tests ---
 #[cfg(test)]
 mod integration_tests;
@@ -4393,6 +4396,485 @@ fn project_spawn_to(pop: usize, fork_ns: u64, pkg_ns: u64) {
     );
 }
 
+// ---------------------------------------------------------------------------
+// --multi-unit smoke demo
+// ---------------------------------------------------------------------------
+//
+// Spawns N VMs in one process, dispatches a few goals via least-busy worker
+// selection, and demonstrates share_word + teach_from. Reports RSS so users
+// can compare per-unit memory to the native fork model. Mirrors the WASM
+// browser demo's lifecycle but with no upper bound below the configured cap.
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_multi_unit_demo(n: usize) {
+    use crate::multi_unit::MultiUnitHost;
+
+    let cap = n.max(1);
+    println!("=== unit --multi-unit {} ===", n);
+    println!("(single process, no fork, no UDP; cap = {})", cap);
+
+    let rss_before = read_rss_kb();
+    println!("RSS before spawn: {}", fmt_kb(rss_before));
+
+    let spawn_start = std::time::Instant::now();
+    let mut host = MultiUnitHost::new(cap);
+    let spawned = host.spawn_n(n);
+    let spawn_elapsed = spawn_start.elapsed();
+
+    let rss_after = read_rss_kb();
+    let rss_delta = rss_after.saturating_sub(rss_before);
+    let per_unit_kb = if spawned > 0 {
+        rss_delta / spawned as u64
+    } else {
+        0
+    };
+
+    println!(
+        "spawned {} units in {} ({} per unit, total Δ {})",
+        spawned,
+        fmt_wall(spawn_elapsed.as_nanos()),
+        fmt_kb(per_unit_kb),
+        fmt_kb(rss_delta)
+    );
+    println!("RSS after spawn:  {}", fmt_kb(rss_after));
+
+    if spawned == 0 {
+        return;
+    }
+
+    // Demo 1: dispatch a few goals. Verify least-busy picker spreads work.
+    let goals = ["2 3 + .", "10 4 - .", "6 7 * .", "100 5 / ."];
+    println!("\n--- goal dispatch (least-busy worker) ---");
+    for code in &goals {
+        if let Some(r) = host.execute_goal(code) {
+            println!(
+                "  unit #{:<4} `{}` → {}",
+                r.unit_index,
+                code,
+                r.output.trim().replace('\n', " ")
+            );
+        }
+    }
+
+    // Demo 2: share a word across every unit (zero-copy &str).
+    println!("\n--- share_word ---");
+    host.share_word(": DOUBLE 2 * ;");
+    let probe_idx = spawned.saturating_sub(1);
+    let out = host.units[probe_idx].vm.eval("21 DOUBLE .");
+    println!(
+        "  defined DOUBLE on every unit; unit #{} evaluates `21 DOUBLE .` → {}",
+        probe_idx,
+        out.trim()
+    );
+
+    // Demo 3: teach_from — define a word on one unit only, then teach it.
+    println!("\n--- teach_from ---");
+    host.define_on(0, ": TRIPLE 3 * ;");
+    let taught = host.teach_from(0, &["TRIPLE"]);
+    println!("  unit #0 taught: {:?}", taught);
+    if spawned > 1 {
+        let out = host.units[1].vm.eval("7 TRIPLE .");
+        println!(
+            "  unit #1 evaluates `7 TRIPLE .` → {}",
+            out.trim()
+        );
+    }
+
+    println!("\nfinal RSS: {}", fmt_kb(read_rss_kb()));
+}
+
+// ---------------------------------------------------------------------------
+// --multi-unit + --port: bridged demo (in-process units + mesh peer)
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_multi_unit_mesh_demo(n: usize, cli: &CliArgs) {
+    use crate::multi_unit::MultiUnitNode;
+    use std::time::{Duration, Instant};
+
+    let port = cli.port.unwrap_or(0);
+    // Reuse the same --peers parsing as the normal mesh path.
+    let peers_str = cli.peers.clone().unwrap_or_default();
+    let seed_peers: Vec<SocketAddr> = peers_str
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| {
+            let s = s.trim();
+            s.parse().ok().or_else(|| {
+                use std::net::ToSocketAddrs;
+                s.to_socket_addrs().ok().and_then(|mut a| a.next())
+            })
+        })
+        .collect();
+
+    println!("=== unit --multi-unit {} --port {} ===", n, port);
+    println!("(in-process units + mesh peer; seeds = {:?})", seed_peers);
+
+    let mut node = match MultiUnitNode::new(n.max(1), Some(port), seed_peers) {
+        Ok(node) => node,
+        Err(e) => {
+            eprintln!("multi-unit-mesh: failed to start mesh: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let spawned = node.spawn_n(n);
+    let host_hex = node.host_id_hex().unwrap_or_default();
+    println!(
+        "host id: {}  port: {}  units: {}",
+        host_hex,
+        node.mesh_port().unwrap_or(0),
+        spawned
+    );
+
+    // Brief discovery window: process inbound mesh messages and re-advertise.
+    println!("\nlistening for peers (5s)...");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let dispatched = node.drain_and_dispatch();
+        for ev in &dispatched {
+            println!(
+                "[recv] from {} → unit #{} → {}",
+                ev.from_host_hex,
+                ev.unit_index,
+                ev.output.trim().replace('\n', " ")
+            );
+        }
+        if let Some(ref m) = node.mesh {
+            m.force_heartbeat();
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    println!("\n--- discovered remote processes ---");
+    let remotes = node.remote_processes();
+    if remotes.is_empty() {
+        println!("  (none)");
+    } else {
+        for r in &remotes {
+            println!(
+                "  host {} @ {}  units={}",
+                r.host_id_hex, r.addr, r.units_hosted
+            );
+        }
+    }
+
+    // Demo the per-unit Forth queries.
+    println!("\n--- per-unit Forth queries (unit #0) ---");
+    if spawned > 0 {
+        let q = node.host.units[0].vm.eval("HOST-ID");
+        println!("  HOST-ID            → {}", q.trim());
+        let s = node.host.units[0].vm.eval("SIBLING-COUNT .");
+        println!("  SIBLING-COUNT      → {}", s.trim());
+        let r = node.host.units[0].vm.eval("MESH-PROCESS-COUNT .");
+        println!("  MESH-PROCESS-COUNT → {}", r.trim());
+    }
+
+    // If any remote is visible, send it a probe goal.
+    if let Some(r) = remotes.first() {
+        println!("\n--- cross-process send to {} ---", r.host_id_hex);
+        if node.send_to_process(&r.host_id, "21 2 * .") {
+            println!("  sent: `21 2 * .`");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        for ev in node.drain_and_dispatch() {
+            println!(
+                "  reply path (recv): from {} → unit #{} → {}",
+                ev.from_host_hex,
+                ev.unit_index,
+                ev.output.trim().replace('\n', " ")
+            );
+        }
+    }
+
+    println!("\nfinal RSS: {}", fmt_kb(read_rss_kb()));
+}
+
+// ---------------------------------------------------------------------------
+// --bench-two-tier: characterize the bridged MultiUnitNode deployment
+// ---------------------------------------------------------------------------
+//
+// Spins M MultiUnitNodes in one process, each with N in-process units, all
+// peered into one mesh on loopback. Reports peer-table size, gossip
+// bandwidth, cross-process send_to_process latency p50/p95, aggregate
+// spawn time, and any non-linear scaling. The single-process model is
+// chosen for simplicity; per-MultiUnitNode metrics are inferred by
+// dividing process-wide counters by M.
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_two_tier_bench(configs: &[(usize, usize)], gossip_k: Option<usize>) {
+    use crate::multi_unit::MultiUnitNode;
+    use std::net::SocketAddr;
+    use std::time::{Duration, Instant};
+
+    let mode_label = match gossip_k {
+        Some(k) => format!("gossip k={}", k),
+        None => "all-to-all".to_string(),
+    };
+    println!("=== two-tier scaling bench [{}] ===", mode_label);
+    println!(
+        "(M MultiUnitNodes × N units, all in one process; M peer tables on loopback)\n"
+    );
+    println!("sizeof(PeerInfo) = {} bytes", mesh::peer_info_size_bytes());
+    println!("self RSS at start: {}\n", fmt_kb(read_rss_kb()));
+
+    for &(m, n) in configs {
+        println!("###########################################################");
+        println!("# M={} processes × N={} units = {} aggregate", m, n, m * n);
+        println!("###########################################################");
+
+        let rss_before = read_rss_kb();
+        metrics::reset();
+
+        // ---- (4) aggregate spawn time ----
+        let spawn_start = Instant::now();
+        let mut nodes: Vec<MultiUnitNode> = Vec::with_capacity(m);
+        for i in 0..m {
+            // Seed each new node with up to 4 of the already-running peers,
+            // so transitive gossip can fill in the rest. This keeps the
+            // bootstrap O(M·k) instead of O(M²).
+            let seeds: Vec<SocketAddr> = nodes
+                .iter()
+                .rev()
+                .take(4)
+                .filter_map(|nd| nd.mesh_port())
+                .map(|p| format!("127.0.0.1:{}", p).parse().unwrap())
+                .collect();
+            let mut node = MultiUnitNode::new(n, Some(0), seeds)
+                .expect("MultiUnitNode start failed");
+            // Apply bounded-k gossip to BOTH send_sexp and send_heartbeat.
+            if let Some(k) = gossip_k {
+                if let Some(ref mesh_node) = node.mesh {
+                    mesh_node.set_gossip_fanout(Some(k));
+                }
+            }
+            node.spawn_n(n);
+            nodes.push(node);
+            // Periodic heartbeat during ramp so newcomers learn quickly.
+            if i % 10 == 9 {
+                for nd in &nodes {
+                    if let Some(ref mesh_node) = nd.mesh {
+                        mesh_node.force_heartbeat();
+                    }
+                }
+            }
+        }
+        let spawn_elapsed = spawn_start.elapsed();
+        let _rss_after_spawn = read_rss_kb();
+
+        // ---- discovery convergence ----
+        let conv_start = Instant::now();
+        for _ in 0..8 {
+            for nd in &nodes {
+                if let Some(ref mesh_node) = nd.mesh {
+                    mesh_node.force_heartbeat();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(60));
+        }
+        let conv_elapsed = conv_start.elapsed();
+
+        // Drain stale envelopes so they don't pollute later measurements.
+        for nd in nodes.iter_mut() {
+            let _ = nd.drain_and_dispatch();
+        }
+
+        // ---- (1) peer-table size + memory ----
+        let peer_counts: Vec<usize> = nodes.iter().map(|nd| nd.remote_processes().len()).collect();
+        let peer_min = *peer_counts.iter().min().unwrap_or(&0);
+        let peer_max = *peer_counts.iter().max().unwrap_or(&0);
+        let peer_sum: usize = peer_counts.iter().sum();
+        let peer_mean = if !peer_counts.is_empty() {
+            peer_sum as f64 / peer_counts.len() as f64
+        } else {
+            0.0
+        };
+        let per_entry_bytes = mesh::peer_info_size_bytes() + 24 + 16; // Vec slot + HashMap overhead
+        let per_proc_table_bytes = peer_max as u128 * per_entry_bytes as u128;
+        let total_peer_mem_bytes = (peer_sum as u128) * per_entry_bytes as u128;
+
+        // ---- (2) gossip bandwidth: sample over a steady-state window ----
+        // Rely on the network thread's natural HEARTBEAT_INTERVAL (2s); also
+        // force-tick to pump traffic for a denser sample. Reset metrics first.
+        let bw_window = Duration::from_secs(3);
+        let bytes_sent_before = metrics::value_total("mesh.bytes_sent");
+        let msgs_sent_before = metrics::value_count("mesh.bytes_sent");
+        let bytes_recv_before = metrics::value_total("mesh.bytes_recv");
+        let msgs_recv_before = metrics::value_count("mesh.bytes_recv");
+        let bw_start = Instant::now();
+        while bw_start.elapsed() < bw_window {
+            for nd in &nodes {
+                if let Some(ref mesh_node) = nd.mesh {
+                    mesh_node.force_heartbeat();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let bw_elapsed = bw_start.elapsed().as_secs_f64();
+        let bytes_sent = metrics::value_total("mesh.bytes_sent") - bytes_sent_before;
+        let msgs_sent = metrics::value_count("mesh.bytes_sent") - msgs_sent_before;
+        let bytes_recv = metrics::value_total("mesh.bytes_recv") - bytes_recv_before;
+        let msgs_recv = metrics::value_count("mesh.bytes_recv") - msgs_recv_before;
+        // Process-wide totals; per-process = total / M.
+        let per_proc_send_bps = (bytes_sent as f64) / bw_elapsed / m as f64;
+        let per_proc_send_mps = (msgs_sent as f64) / bw_elapsed / m as f64;
+        let per_proc_recv_bps = (bytes_recv as f64) / bw_elapsed / m as f64;
+        let per_proc_recv_mps = (msgs_recv as f64) / bw_elapsed / m as f64;
+
+        // ---- (3) cross-process send_to_process latency ----
+        // From node 0, send probes to a sweep of targets one-at-a-time and
+        // poll the target's inbox until the probe arrives, recording elapsed
+        // wall time. This measures actual end-to-end delivery (send →
+        // network thread recv → sexp_inbox enqueue → drain), not the time
+        // until our outer loop bothers to look.
+        let epoch = Instant::now();
+        let probe_targets = (1..m.min(11)).collect::<Vec<_>>(); // up to 10 targets
+        let probes_per_target = 50usize;
+        let poll_timeout = Duration::from_millis(50);
+        for &target_i in &probe_targets {
+            if target_i >= nodes.len() {
+                continue;
+            }
+            let target_id = nodes[target_i].host_id().expect("target host id");
+            for seq in 0..probes_per_target {
+                let send_ns = epoch.elapsed().as_nanos();
+                let payload = format!("__BENCH_PROBE_{}_{}", seq, send_ns);
+                nodes[0].send_to_process(&target_id, &payload);
+                // Poll-drain target until we see THIS probe (or timeout).
+                let probe_deadline = Instant::now() + poll_timeout;
+                let target_mesh = nodes[target_i].mesh.as_ref().expect("target mesh");
+                let mut found = false;
+                while !found && Instant::now() < probe_deadline {
+                    let raw_msgs = target_mesh.recv_sexp_messages();
+                    for raw in raw_msgs {
+                        let parsed = match crate::sexp::try_parse_mesh_msg(&raw) {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        let p = match parsed.get_key(":payload").and_then(|s| s.as_str()) {
+                            Some(p) => p.to_string(),
+                            None => continue,
+                        };
+                        if let Some(rest) = p.strip_prefix("__BENCH_PROBE_") {
+                            if let Some((_seq_str, send_ns_str)) = rest.split_once('_') {
+                                if let Ok(this_send_ns) = send_ns_str.parse::<u128>() {
+                                    let recv_ns = epoch.elapsed().as_nanos();
+                                    let lat = (recv_ns - this_send_ns) as u64;
+                                    metrics::record("send_to_process.latency", lat);
+                                    if this_send_ns == send_ns {
+                                        found = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !found {
+                        std::thread::sleep(Duration::from_micros(200));
+                    }
+                }
+            }
+        }
+        let lat_count = metrics::value_count("dummy"); // unused, just to keep API in scope
+        let _ = lat_count;
+        let lat_p50 = metrics::histogram_percentile_ns("send_to_process.latency", 0.50);
+        let lat_p95 = metrics::histogram_percentile_ns("send_to_process.latency", 0.95);
+        let lat_max = metrics::histogram_max_ns("send_to_process.latency");
+        let lat_n = metrics::histogram_count("send_to_process.latency");
+
+        let rss_after_bw = read_rss_kb();
+        let rss_delta = rss_after_bw.saturating_sub(rss_before);
+        let per_unit_kb = if m * n > 0 {
+            rss_delta / (m * n) as u64
+        } else {
+            0
+        };
+
+        // ---- print report ----
+        println!("spawn:");
+        println!(
+            "  aggregate spawn:          {} ({} per node, {} per unit)",
+            fmt_wall(spawn_elapsed.as_nanos()),
+            fmt_wall(spawn_elapsed.as_nanos() / m.max(1) as u128),
+            fmt_wall(spawn_elapsed.as_nanos() / (m * n).max(1) as u128)
+        );
+        println!(
+            "  discovery convergence:    {} ({} forced-heartbeat rounds)",
+            fmt_wall(conv_elapsed.as_nanos()),
+            8
+        );
+        println!("memory:");
+        println!(
+            "  RSS delta:                {}  ({} per unit)",
+            fmt_kb(rss_delta),
+            fmt_kb(per_unit_kb)
+        );
+        println!(
+            "  per-process peer table:   {} (max peers = {})",
+            fmt_kb((per_proc_table_bytes / 1024) as u64),
+            peer_max
+        );
+        println!(
+            "  aggregate peer-table:     {}",
+            fmt_kb((total_peer_mem_bytes / 1024) as u64)
+        );
+        println!("peer table:");
+        println!(
+            "  observed peers / process: min {} mean {:.1} max {} (target M-1 = {})",
+            peer_min,
+            peer_mean,
+            peer_max,
+            m.saturating_sub(1)
+        );
+        println!("gossip bandwidth (steady-state, per process):");
+        println!(
+            "  send: {:.0} msg/s, {} (over {:.2}s window)",
+            per_proc_send_mps,
+            fmt_bps(per_proc_send_bps),
+            bw_elapsed
+        );
+        println!(
+            "  recv: {:.0} msg/s, {}",
+            per_proc_recv_mps,
+            fmt_bps(per_proc_recv_bps)
+        );
+        println!("cross-process latency ({} samples):", lat_n);
+        println!(
+            "  p50: {}   p95: {}   max: {}",
+            fmt_wall(lat_p50 as u128),
+            fmt_wall(lat_p95 as u128),
+            fmt_wall(lat_max as u128)
+        );
+
+        // ---- (5) non-linear flags ----
+        let expected_peers = m.saturating_sub(1);
+        if peer_max < expected_peers {
+            println!(
+                "  ⚠ discovery did not fully converge: max peers {} < expected {} (need more rounds or larger seed fanout)",
+                peer_max, expected_peers
+            );
+        }
+        if lat_n == 0 {
+            println!("  ⚠ no latency samples — check probe parsing or send_to_process");
+        }
+
+        println!();
+        // Drop nodes between configs to free sockets/threads.
+        drop(nodes);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Format bytes-per-second as B/s, kB/s, MB/s.
+#[cfg(not(target_arch = "wasm32"))]
+fn fmt_bps(bps: f64) -> String {
+    if bps >= 1_000_000.0 {
+        format!("{:.2} MB/s", bps / 1_000_000.0)
+    } else if bps >= 1_000.0 {
+        format!("{:.2} kB/s", bps / 1_000.0)
+    } else {
+        format!("{:.0} B/s", bps)
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn fmt_human_count(v: u64) -> String {
     if v >= 1_000_000_000 {
@@ -4488,6 +4970,15 @@ fn print_help() {
     println!("                             all-to-all and bounded-k gossip modes.");
     println!("  --gossip-k K               Use bounded random gossip with fan-out K");
     println!("                             on the live mesh (default: all-to-all).");
+    println!("  --multi-unit N             Spawn N units in a single process (no fork,");
+    println!("                             no UDP). Combine with --port and --peers to");
+    println!("                             also participate in the mesh as one peer");
+    println!("                             process advertising N units. Runs a smoke");
+    println!("                             demo and exits.");
+    println!("  --bench-two-tier [CONFIGS] Two-tier scaling bench. CONFIGS is a comma-");
+    println!("                             separated list of MxN pairs (e.g.");
+    println!("                             10x10,100x100). Default:");
+    println!("                             10x10,10x100,100x10,100x100,50x200.");
 }
 
 struct CliArgs {
@@ -4507,6 +4998,10 @@ struct CliArgs {
     bench_pops: Option<Vec<usize>>,
     /// None = all-to-all (legacy); Some(k) = bounded random gossip with k peers.
     gossip_k: Option<usize>,
+    /// None = no multi-unit run; Some(n) = spawn n units in-process and demo.
+    multi_unit_n: Option<usize>,
+    /// None = no two-tier bench; Some(configs) = run bench with these (M, N) pairs.
+    bench_two_tier: Option<Vec<(usize, usize)>>,
 }
 
 fn parse_args() -> Option<CliArgs> {
@@ -4525,6 +5020,8 @@ fn parse_args() -> Option<CliArgs> {
         serve_port: None,
         bench_pops: None,
         gossip_k: None,
+        multi_unit_n: None,
+        bench_two_tier: None,
     };
     let mut i = 0;
     while i < args.len() {
@@ -4592,6 +5089,43 @@ fn parse_args() -> Option<CliArgs> {
                 i += 1;
                 cli.gossip_k = args.get(i).and_then(|s| s.parse().ok());
             }
+            "--multi-unit" => {
+                i += 1;
+                cli.multi_unit_n = args.get(i).and_then(|s| s.parse().ok());
+                if cli.multi_unit_n.is_none() {
+                    eprintln!("--multi-unit requires a positive integer N");
+                    std::process::exit(1);
+                }
+            }
+            "--bench-two-tier" => {
+                // Optional CONFIGS — comma-separated MxN pairs. If next arg
+                // parses as such, consume it; otherwise default.
+                let parsed: Option<Vec<(usize, usize)>> = args.get(i + 1).and_then(|s| {
+                    let pairs: Option<Vec<(usize, usize)>> = s
+                        .split(',')
+                        .map(|tok| {
+                            tok.split_once('x').and_then(|(a, b)| {
+                                Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?))
+                            })
+                        })
+                        .collect();
+                    pairs
+                });
+                cli.bench_two_tier = match parsed {
+                    Some(p) if !p.is_empty() => {
+                        i += 1;
+                        Some(p)
+                    }
+                    _ => Some(vec![
+                        (10, 10),
+                        (10, 100),
+                        (100, 10),
+                        (100, 100),
+                        (50, 200),
+                        (200, 50),
+                    ]),
+                };
+            }
             other => {
                 eprintln!("unknown option: {}", other);
                 std::process::exit(1);
@@ -4622,9 +5156,27 @@ fn main() {
             vm.run_bench(pops);
             return;
         }
+        if let Some(n) = cli.multi_unit_n {
+            // If --port is also set, run the bridged demo (in-process units +
+            // mesh peer). Otherwise run the strictly intra-process demo.
+            if cli.port.is_some() {
+                run_multi_unit_mesh_demo(n, &cli);
+            } else {
+                run_multi_unit_demo(n);
+            }
+            return;
+        }
+        if let Some(ref cfgs) = cli.bench_two_tier {
+            run_two_tier_bench(cfgs, cli.gossip_k);
+            return;
+        }
     }
     #[cfg(target_arch = "wasm32")]
-    let _ = cli.bench_pops;
+    {
+        let _ = cli.bench_pops;
+        let _ = cli.multi_unit_n;
+        let _ = cli.bench_two_tier;
+    }
 
     let mut vm = VM::new();
     vm.silent = cli.quiet;
@@ -4719,10 +5271,11 @@ fn main() {
                     }
                 }
 
-                // Apply --gossip-k bounded fan-out.
+                // Apply --gossip-k bounded fan-out (applies to both send_sexp
+                // and send_heartbeat).
                 if let Some(k) = cli.gossip_k {
-                    if let Some(ref mut m) = vm.mesh {
-                        m.gossip_fanout = Some(k);
+                    if let Some(ref m) = vm.mesh {
+                        m.set_gossip_fanout(Some(k));
                     }
                     if !cli.quiet {
                         eprintln!("gossip: bounded fan-out k={}", k);
