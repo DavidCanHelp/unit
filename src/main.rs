@@ -3877,6 +3877,7 @@ impl VM {
     ///   - render the dashboard once per tick
     ///   - run a fixed number of `spawn.build_package` calls
     ///   - run `tick_dist_goals` (mesh.tick) once per tick
+    ///
     /// The shape metrics are recorded as the *full theoretical* counts so the
     /// O(n²) growth is visible even though the bench doesn't actually invoke
     /// every receiver. Prints both a duration report and a values report per

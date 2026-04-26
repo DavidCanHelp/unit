@@ -294,7 +294,7 @@ impl GoalRegistry {
             .filter_map(|(tid, t)| self.goals.get(&t.goal_id).map(|g| (*tid, g.priority)))
             .collect();
 
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        candidates.sort_by_key(|&(_, prio)| std::cmp::Reverse(prio));
 
         if let Some(&(task_id, _)) = candidates.first() {
             if let Some(task) = self.tasks.get_mut(&task_id) {
@@ -341,7 +341,7 @@ impl GoalRegistry {
             })
             .collect();
 
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        candidates.sort_by_key(|&(_, prio)| std::cmp::Reverse(prio));
 
         if let Some(&(task_id, _)) = candidates.first() {
             if let Some(task) = self.tasks.get_mut(&task_id) {
@@ -719,7 +719,7 @@ impl GoalRegistry {
             return "  (no goals)\n".to_string();
         }
         let mut goals: Vec<&Goal> = self.goals.values().collect();
-        goals.sort_by(|a, b| b.priority.cmp(&a.priority));
+        goals.sort_by_key(|g| std::cmp::Reverse(g.priority));
 
         let mut out = String::new();
         for g in &goals {

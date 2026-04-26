@@ -125,7 +125,7 @@ pub struct PeerFitness {
 pub fn format_leaderboard(self_id: &NodeId, self_score: i64, peers: &[PeerFitness]) -> String {
     let mut entries: Vec<(NodeId, i64)> = peers.iter().map(|p| (p.id, p.score)).collect();
     entries.push((*self_id, self_score));
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
 
     let mut out = String::from("--- leaderboard ---\n");
     for (i, (id, score)) in entries.iter().enumerate() {

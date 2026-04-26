@@ -213,7 +213,7 @@ impl ChallengeRegistry {
     pub fn get_unsolved(&self) -> Vec<&Challenge> {
         let mut unsolved: Vec<&Challenge> =
             self.challenges.values().filter(|c| !c.solved).collect();
-        unsolved.sort_by(|a, b| b.reward.cmp(&a.reward));
+        unsolved.sort_by_key(|c| std::cmp::Reverse(c.reward));
         unsolved
     }
 
