@@ -168,12 +168,75 @@ auth, no keep-alive. Endpoints: `POST /eval`, `POST /sexp`,
 `GET /status`, `GET /words`, `GET /word/<name>`, `GET /mesh/peers`,
 `POST /mesh/broadcast`. Errors come back as `{"error":"..."}`.
 
+## Deployment Modes
+
+unit ships two deployment models. They share the same wire protocol
+and interoperate on the mesh.
+
+**Single VM per process** (legacy, default). One unit, one OS
+process, one mesh node. Spawning is `fork + exec` of a fresh child;
+mesh peers are units. Fork-level isolation — a crash in one unit
+cannot affect others. Reach for this when isolation matters more than
+scale.
+
+```
+$ unit --port 9001
+```
+
+**Multi-unit per process** (two-tier, opt-in via `--multi-unit N`).
+Many cheap in-process VMs in a `MultiUnitHost`; the process is the
+mesh peer. Per-unit memory drops from the ~5–10 MB of a forked
+process to ~165 kB; spawning is a `Vec<VM>` push instead of
+`fork + exec`. Bounded-k random gossip (default `k=8`) caps
+per-process heartbeat and chatter bandwidth at O(k) instead of O(M).
+Crash semantics are fate-shared at the host level — if a process
+dies, its units die with it. Reach for this when scale matters more
+than fork-level isolation.
+
+Two processes, each running 5 in-process units, peered on loopback:
+
+```
+$ unit --multi-unit 5 --port 9001 --gossip-k 8 -q &
+$ unit --multi-unit 5 --port 9002 --peers 127.0.0.1:9001 --gossip-k 8 -q
+
+=== unit --multi-unit 5 --port 9002 ===
+host id: ebc1eacccc28ea52  port: 9002  units: 5
+
+listening for peers (5s)...
+[recv] from 15d15326e643aa64 → unit #0 → 42
+
+--- discovered remote processes ---
+  host 15d15326e643aa64 @ 127.0.0.1:9001  units=5
+
+--- per-unit Forth queries (unit #0) ---
+  HOST-ID            → ebc1eacccc28ea52
+  SIBLING-COUNT      → 4
+  MESH-PROCESS-COUNT → 1
+
+--- cross-process send to 15d15326e643aa64 ---
+  sent: `21 2 * .`
+```
+
+Process A (port 9001) sent `21 2 * .` to B during its own discovery
+window; B's `[recv]` line shows it arrived, was dispatched to B's
+unit #0 via least-busy worker selection, and evaluated to `42`. B
+then sends back to A in the same way. Each unit can query its host
+identity, sibling count, and remote-process count from Forth via
+`HOST-ID`, `SIBLING-COUNT`, and `MESH-PROCESS-COUNT`.
+
+Today's bench tops out at 10 000 aggregate units on single-host
+loopback. The architecture supports the path further; the next walls
+(in-process scheduler fairness, async eval, multi-machine validation)
+are explicit in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Architecture
 
 ```
 src/
 ├── vm/               # Forth virtual machine (~200 primitives)
-├── mesh.rs           # UDP gossip, peer discovery, cross-machine
+├── mesh.rs           # UDP gossip, peer discovery, bounded-k fan-out
+├── multi_unit.rs     # In-process multi-unit host + mesh bridge
+├── metrics.rs        # Lightweight timing + counter histograms
 ├── sexp.rs           # S-expression parser and serializer
 ├── evolve.rs         # Genetic programming engine
 ├── challenges.rs     # Challenge registry (immune system)
@@ -193,13 +256,14 @@ polyglot/python/      # Python organism (AST symbolic regression)
 
 The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 
-223+ Rust tests, 22 Python tests, Go tests. Zero dependencies.
+255+ Rust tests, 22 Python tests, Go tests. Zero dependencies.
 
 ## Documentation
 
 - [docs/words.md](docs/words.md) — complete word reference (309 words)
 - [docs/protocol.md](docs/protocol.md) — S-expression wire format and mesh protocol
 - [docs/operations.md](docs/operations.md) — monitoring, goals, trust, persistence, swarm mode
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — two-tier deployment design rationale and bench results
 
 ## Binary Sizes
 
