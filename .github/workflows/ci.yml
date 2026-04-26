@@ -15,6 +15,14 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+# Force every JS action (including those still pinned to Node 20 in their
+# current major — upload-artifact@v5, download-artifact@v5, configure-pages@v5,
+# deploy-pages@v4, etc.) to run on Node 24 now. Drops the deprecation
+# annotations ahead of GitHub's June 2026 forced cutover. Per
+# https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   native-build:
     runs-on: ubuntu-latest
