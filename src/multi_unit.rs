@@ -89,6 +89,10 @@ impl MultiUnitHost {
         vm.output_buffer = None;
         vm.silent = false;
         let idx = self.units.len();
+        // Stamp a per-unit synthesized id so SAY! signals carry distinct
+        // sender attribution between siblings. The 0xC0FE prefix marks
+        // these as host-synthesized rather than mesh-issued.
+        vm.node_id_cache = Some([0xC0, 0xFE, 0, 0, 0, 0, 0, idx as u8]);
         self.units.push(UnitSlot {
             vm,
             busy: false,
@@ -96,6 +100,36 @@ impl MultiUnitHost {
             user_words: Vec::new(),
         });
         Some(idx)
+    }
+
+    /// Drain unit[idx]'s outbox and deliver each Direct signal into every
+    /// other unit's inbox. Returns the count of signals delivered.
+    /// Environmental signals are routed through `EnvironmentalField`
+    /// (added in the next commit) — Direct-only here.
+    /// Callers invoke after eval to propagate SAY! emissions.
+    pub fn route_signals_from(&mut self, idx: usize) -> usize {
+        if idx >= self.units.len() {
+            return 0;
+        }
+        let outgoing: Vec<crate::signaling::Signal> =
+            std::mem::take(&mut self.units[idx].vm.outbox);
+        if outgoing.is_empty() {
+            return 0;
+        }
+        let mut delivered = 0;
+        for signal in &outgoing {
+            if !signal.is_direct() {
+                continue;
+            }
+            for (j, slot) in self.units.iter_mut().enumerate() {
+                if j == idx {
+                    continue;
+                }
+                slot.vm.inbox.push(signal.clone());
+                delivered += 1;
+            }
+        }
+        delivered
     }
 
     /// Define a word on one specific unit and record the source string in
@@ -715,5 +749,81 @@ mod tests {
         // No unit defines NOPE; teach_from should return empty.
         let taught = h.teach_from(0, &["NOPE-NOT-A-WORD"]);
         assert!(taught.is_empty(), "got: {:?}", taught);
+    }
+
+    // -----------------------------------------------------------------------
+    // Signaling host integration (v0.28)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn say_then_route_lands_in_sibling_inboxes() {
+        let mut h = MultiUnitHost::new(3);
+        h.spawn_n(3);
+        // Unit 0 says "42".
+        h.units[0].vm.eval("42 SAY!");
+        assert_eq!(h.units[0].vm.outbox.len(), 1);
+        let delivered = h.route_signals_from(0);
+        assert_eq!(delivered, 2, "should reach both siblings, not self");
+        assert_eq!(h.units[0].vm.inbox.len(), 0, "sender does not self-receive");
+        assert_eq!(h.units[1].vm.inbox.len(), 1);
+        assert_eq!(h.units[2].vm.inbox.len(), 1);
+        assert_eq!(h.units[1].vm.inbox.iter().next().unwrap().value, 42);
+    }
+
+    #[test]
+    fn route_clears_outbox_after_delivery() {
+        let mut h = MultiUnitHost::new(2);
+        h.spawn_n(2);
+        h.units[0].vm.eval("7 SAY!");
+        h.route_signals_from(0);
+        assert!(h.units[0].vm.outbox.is_empty());
+    }
+
+    #[test]
+    fn listen_drains_signals_in_order() {
+        let mut h = MultiUnitHost::new(2);
+        h.spawn_n(2);
+        h.units[0].vm.eval("100 SAY!");
+        h.route_signals_from(0);
+        h.units[0].vm.eval("200 SAY!");
+        h.route_signals_from(0);
+        // Unit 1 has two signals; LISTEN twice returns oldest first.
+        h.units[1].vm.eval("LISTEN");
+        let after_first: Vec<i64> = h.units[1].vm.stack.clone();
+        assert_eq!(after_first, vec![100, -1]);
+        h.units[1].vm.stack.clear();
+        h.units[1].vm.eval("LISTEN");
+        assert_eq!(h.units[1].vm.stack, vec![200, -1]);
+    }
+
+    #[test]
+    fn route_from_invalid_idx_is_zero() {
+        let mut h = MultiUnitHost::new(2);
+        h.spawn_n(2);
+        assert_eq!(h.route_signals_from(99), 0);
+    }
+
+    #[test]
+    fn route_with_empty_outbox_delivers_nothing() {
+        let mut h = MultiUnitHost::new(2);
+        h.spawn_n(2);
+        assert_eq!(h.route_signals_from(0), 0);
+        assert!(h.units[1].vm.inbox.is_empty());
+    }
+
+    #[test]
+    fn spawn_assigns_distinct_node_ids() {
+        let mut h = MultiUnitHost::new(3);
+        h.spawn_n(3);
+        let id0 = h.units[0].vm.node_id_cache.unwrap();
+        let id1 = h.units[1].vm.node_id_cache.unwrap();
+        let id2 = h.units[2].vm.node_id_cache.unwrap();
+        assert_ne!(id0, id1);
+        assert_ne!(id1, id2);
+        // Sender attribution is preserved through routing.
+        h.units[0].vm.eval("5 SAY!");
+        h.route_signals_from(0);
+        let received = h.units[1].vm.inbox.iter().next().unwrap();
+        assert_eq!(received.sender, id0);
     }
 }

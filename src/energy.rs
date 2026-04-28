@@ -27,6 +27,12 @@ pub const GP_GENERATION_COST: i64 = 5;
 pub const EVAL_STEP_COST_PER_1000: i64 = 1;
 /// Energy cost to send a mesh message.
 pub const MESH_SEND_COST: i64 = 1;
+/// Energy cost for SAY! — direct signal broadcast (v0.28). Starting
+/// calibration; tunable in the v0.28.x patch series.
+pub const SAY_COST: i64 = 3;
+/// Energy cost for MARK! — environmental signal deposit (v0.28). Costs
+/// more than SAY! because the effect persists across ticks.
+pub const MARK_COST: i64 = 5;
 /// Energy level at or below which the unit becomes throttled.
 pub const STARVATION_THRESHOLD: i64 = 0;
 

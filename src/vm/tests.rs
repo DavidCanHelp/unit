@@ -810,3 +810,90 @@ fn test_swarm_on_word() {
     let out = eval(&mut vm, "SWARM-ON");
     assert!(out.contains("swarm mode"));
 }
+
+// -----------------------------------------------------------------------
+// Signaling primitives (v0.28) — direct channel
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_say_pushes_to_outbox() {
+    let mut vm = test_vm();
+    let energy_before = vm.energy.energy;
+    eval(&mut vm, "42 SAY!");
+    assert_eq!(vm.outbox.len(), 1);
+    assert_eq!(vm.outbox[0].value, 42);
+    assert!(vm.outbox[0].is_direct());
+    assert_eq!(
+        vm.energy.energy,
+        energy_before - crate::energy::SAY_COST,
+        "SAY! must charge SAY_COST"
+    );
+    assert!(vm.stack.is_empty(), "SAY! consumes its argument");
+}
+
+#[test]
+fn test_say_increments_signal_tick() {
+    let mut vm = test_vm();
+    eval(&mut vm, "1 SAY!");
+    eval(&mut vm, "2 SAY!");
+    eval(&mut vm, "3 SAY!");
+    assert_eq!(vm.outbox.len(), 3);
+    let ticks: Vec<u64> = vm.outbox.iter().map(|s| s.sent_at_tick).collect();
+    assert!(ticks[0] < ticks[1] && ticks[1] < ticks[2]);
+}
+
+#[test]
+fn test_say_no_op_when_starving() {
+    let mut vm = test_vm();
+    // Drain energy to just above the floor so we can't afford SAY_COST.
+    vm.energy.energy = -498;
+    let energy_before = vm.energy.energy;
+    eval(&mut vm, "99 SAY!");
+    assert!(vm.outbox.is_empty(), "starving unit must not emit");
+    assert_eq!(vm.stack, vec![99], "no-op preserves stack");
+    assert_eq!(vm.energy.energy, energy_before, "no-op charges nothing");
+}
+
+#[test]
+fn test_listen_empty_pushes_zero() {
+    let mut vm = test_vm();
+    eval(&mut vm, "LISTEN");
+    assert_eq!(vm.stack, vec![0]);
+}
+
+#[test]
+fn test_listen_returns_oldest_value_minus_one() {
+    let mut vm = test_vm();
+    vm.inbox
+        .push(crate::signaling::Signal::direct([0xaa; 8], 7, 1));
+    vm.inbox
+        .push(crate::signaling::Signal::direct([0xbb; 8], 11, 2));
+    eval(&mut vm, "LISTEN");
+    assert_eq!(vm.stack, vec![7, -1]);
+    assert_eq!(vm.inbox.len(), 1);
+}
+
+#[test]
+fn test_inbox_query_count() {
+    let mut vm = test_vm();
+    eval(&mut vm, "INBOX?");
+    assert_eq!(vm.stack, vec![0]);
+    vm.stack.clear();
+    for i in 0..5 {
+        vm.inbox
+            .push(crate::signaling::Signal::direct([0; 8], i, i as u64));
+    }
+    eval(&mut vm, "INBOX?");
+    assert_eq!(vm.stack, vec![5]);
+}
+
+#[test]
+fn test_listen_does_not_charge_energy() {
+    let mut vm = test_vm();
+    vm.inbox
+        .push(crate::signaling::Signal::direct([0; 8], 1, 0));
+    let energy_before = vm.energy.energy;
+    eval(&mut vm, "INBOX?");
+    eval(&mut vm, "LISTEN");
+    assert_eq!(vm.energy.energy, energy_before, "reads must be free");
+}

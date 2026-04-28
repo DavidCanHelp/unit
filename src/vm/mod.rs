@@ -280,6 +280,10 @@ pub(crate) const P_NICHE_HISTORY: usize = 500;
 pub(crate) const P_ECOLOGY: usize = 501;
 pub(crate) const P_DIVERSITY: usize = 502;
 pub(crate) const P_SOLUTIONS: usize = 503;
+// Signaling (v0.28) — direct (peer inbox) and environmental layers.
+pub(crate) const P_SAY_BANG: usize = 504;
+pub(crate) const P_LISTEN: usize = 505;
+pub(crate) const P_INBOX_QUERY: usize = 506;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -382,6 +386,9 @@ pub struct VM {
     // --- Signaling (v0.28) ---
     /// Per-unit signal inbox. FIFO with cap 64, drop-from-front on overflow.
     pub inbox: crate::signaling::Inbox,
+    /// Outgoing signal buffer. SAY!/MARK! push here; the host drains and
+    /// routes after each `eval` call. Always empty between host turns.
+    pub outbox: Vec<crate::signaling::Signal>,
     /// Monotonic tick counter stamped onto outgoing signals.
     pub signal_tick: u64,
 }
@@ -448,6 +455,7 @@ impl VM {
             pending_mate_request: None,
             niche_profile: crate::niche::NicheProfile::new(),
             inbox: crate::signaling::Inbox::new(),
+            outbox: Vec::new(),
             signal_tick: 0,
         };
         vm.register_primitives();
@@ -718,6 +726,10 @@ impl VM {
             ("ECOLOGY", P_ECOLOGY, false),
             ("DIVERSITY", P_DIVERSITY, false),
             ("SOLUTIONS", P_SOLUTIONS, false),
+            // Signaling (v0.28) — see docs/signaling.md
+            ("SAY!", P_SAY_BANG, false),
+            ("LISTEN", P_LISTEN, false),
+            ("INBOX?", P_INBOX_QUERY, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1578,6 +1590,10 @@ impl VM {
                     self.emit_str(&format!("no challenge #{}\n", id));
                 }
             }
+            // Signaling (v0.28)
+            P_SAY_BANG => self.prim_say_bang(),
+            P_LISTEN => self.prim_listen(),
+            P_INBOX_QUERY => self.prim_inbox_query(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),
@@ -1628,6 +1644,49 @@ impl VM {
     }
 
     // -----------------------------------------------------------------------
+    // Signaling primitives (v0.28) — direct channel: SAY!, LISTEN, INBOX?.
+    // MARK!/SENSE land in the next commit. See docs/signaling.md.
+    // -----------------------------------------------------------------------
+
+    /// `SAY!` ( v -- ) — broadcast value `v` to neighbors via outbox.
+    /// Costs `SAY_COST` energy. If the unit can't afford the cost the
+    /// verb is a no-op (stack untouched, nothing emitted) — matches the
+    /// failure-as-silence behavior of SEND under network failure.
+    pub(crate) fn prim_say_bang(&mut self) {
+        if self.stack.is_empty() {
+            eprintln!("stack underflow");
+            return;
+        }
+        if !self.energy.can_afford(crate::energy::SAY_COST) {
+            return;
+        }
+        let value = self.pop();
+        let _ = self.energy.spend(crate::energy::SAY_COST, "say");
+        let sender = self.node_id_cache.unwrap_or([0u8; 8]);
+        self.signal_tick = self.signal_tick.wrapping_add(1);
+        self.outbox
+            .push(crate::signaling::Signal::direct(sender, value, self.signal_tick));
+    }
+
+    /// `LISTEN` ( -- v -1 | 0 ) — pop oldest inbox entry. On hit push
+    /// the value then -1 (the success flag). On empty push only 0.
+    pub(crate) fn prim_listen(&mut self) {
+        match self.inbox.pop_oldest() {
+            Some(signal) => {
+                self.stack.push(signal.value);
+                self.stack.push(-1);
+            }
+            None => {
+                self.stack.push(0);
+            }
+        }
+    }
+
+    /// `INBOX?` ( -- n ) — push count of pending inbox entries without
+    /// consuming them. Free; lets evolved code branch on signal arrival.
+    pub(crate) fn prim_inbox_query(&mut self) {
+        self.stack.push(self.inbox.len() as i64);
+    }
 
     // -----------------------------------------------------------------------
     // Public API
