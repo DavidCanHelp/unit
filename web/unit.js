@@ -136,6 +136,29 @@ class BrowserMesh {
     vm.eval(': MESH-HELLO ." Mesh node " ID ."  gen=" GENERATION . ." peers=" PEER-COUNT . ." fitness=" FITNESS . CR ;');
     vm.eval(': PROUD ." fitness: " FITNESS . ." | generation: " GENERATION . ." | children: " CHILD-COUNT . CR ;');
     vm.eval(': ROLL-CALL ." === roll call ===" CR ." self: " ID ."  fitness=" FITNESS . CR LEADERBOARD ;');
+    // Re-eval personality / adaptation words from prelude.fs that captured
+    // the kernel's PEER-COUNT (UDP gossip mesh = 0 in WASM) at compile time.
+    // Same standard-Forth ordering issue as JOY/JOYFUL/HOW-ARE-YOU above —
+    // redefining the variable doesn't patch existing references. Without
+    // these, units in the browser produce chatter like "adapting to 0 peers"
+    // despite having visible siblings. INVENT-STRATEGY in particular drives
+    // the 'specialist'/'balanced'/'solo' personality assignment in
+    // teachFrom further down this file. Order matters: leaf words first
+    // (COMPOSE-ROUTINE, INVENT-STRATEGY), then ADAPT which calls them,
+    // then REFLECT/TEACH/DREAM which call ADAPT.
+    vm.eval(`: SAY-SOMETHING PERSONALITY-SEED @ FITNESS + 7 MOD DUP 0 = IF DROP FITNESS 50 > IF ." I've seen enough to teach. fitness=" FITNESS . CR ELSE ." still learning. fitness=" FITNESS . CR THEN ELSE DUP 1 = IF DROP PEER-COUNT 0 > IF ." " PEER-COUNT . ." peers — stronger together" CR ELSE ." searching for peers..." CR THEN ELSE DUP 2 = IF DROP ." energy=" FITNESS . ." tasks=" TASK-COUNT DROP DROP DROP DROP . CR ELSE DUP 3 = IF DROP FITNESS 30 > IF ." thriving. the mesh provides." CR ELSE ." working toward something." CR THEN ELSE DUP 4 = IF DROP PEER-COUNT DUP 3 > IF DROP ." colony is strong — " PEER-COUNT . ." nodes" CR ELSE 0 > IF ." small colony, big potential" CR ELSE ." alone but capable" CR THEN THEN ELSE DUP 5 = IF DROP ." (observe :fitness " FITNESS . ." :peers " PEER-COUNT . ." )" CR ELSE DROP ." adapting to " PEER-COUNT . ." peers, fitness " FITNESS . CR THEN THEN THEN THEN THEN THEN THEN PERSONALITY-SEED @ 1+ PERSONALITY-SEED ! ;`);
+    vm.eval(`: DASHBOARD CR ." === UNIT OPS ===" CR ." watches: " WATCH-COUNT . ."  alerts: " ALERT-COUNT . CR ." peers: " PEER-COUNT . ."  fitness: " FITNESS . CR GOAL-COUNT ." goals: " 4 0 DO . ." / " LOOP . CR ." ---" CR ;`);
+    vm.eval(`: WORKFORCE PEER-COUNT 1 + DUP . ." units available" CR TASK-COUNT DROP DROP DROP DROP DUP 0 > IF ." with " . ." pending tasks" CR ELSE DROP ." no pending work" CR THEN ;`);
+    vm.eval(`: COMPOSE-ROUTINE ." composing routine..." CR PEER-COUNT 0 > IF ." routine: social (HELLO JOY PATROL PROUD)" CR ELSE ." routine: solo (STRETCH PATROL EVOLVE PROUD)" CR THEN OBSERVE ;`);
+    vm.eval(`: INVENT-STRATEGY ." inventing strategy..." CR PEER-COUNT DUP 3 > IF DROP ." strategy: specialist (many peers)" CR ELSE DUP 0 > IF DROP ." strategy: balanced (patrol + claim)" CR ELSE DROP ." strategy: solo (do everything)" CR THEN THEN OBSERVE ;`);
+    vm.eval(`: ADAPT ." === adapting ===" CR COMPOSE-ROUTINE INVENT-GREETER INVENT-STRATEGY ." === adapted (" OBS-COUNT @ . ." observations) ===" CR ;`);
+    vm.eval(`: REFLECT ." reflecting..." CR FITNESS 50 > PEER-COUNT 0 > AND IF ." thriving in a mesh -- adapting" CR ADAPT ELSE FITNESS 0 = IF ." new -- establishing baseline" CR ADAPT ELSE ." steady -- no change needed" CR THEN THEN ;`);
+    vm.eval(`: TEACH ." === teaching ===" CR ADAPT PEER-COUNT 0 > IF SHARE-ALL ." shared words with mesh" CR ELSE ." no peers to teach" CR THEN ." === taught ===" CR ;`);
+    // DREAM was redefined above (line 126) to capture nested ." output for
+    // WASM. Re-eval it again here so its references to REFLECT /
+    // INVENT-STRATEGY / COMPOSE-ROUTINE / TEACH point at the freshly
+    // re-evaluated bodies above, not the prelude's compile-time captures.
+    vm.eval(`: DREAM ." dreaming..." CR REFLECT INVENT-STRATEGY COMPOSE-ROUTINE SMART-MUTATE IF ." evolved." CR ELSE ." held steady." CR THEN MUTATION-REPORT PEER-COUNT 0 > IF TEACH THEN ." waking. I am changed." CR ;`);
     // Platform-limited words: give informative messages instead of silent failure.
     vm.eval(': SLEEP DROP ." sleep not available in browser" CR ;');
     vm.eval(': SPAWN ." spawn handled by browser mesh -- use the spawn button" CR ;');
