@@ -394,12 +394,22 @@ function vizTick() {
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
     }
 
-    // Antibody orbit dots (SOL-* words)
+    // Antibody orbit dots (SOL-* words). The SOL-* count is cached per
+    // unit with a 500ms TTL — without the cache vizTick was running
+    // eval('WORDS') once per unit per frame (60 × N at the cap), each
+    // call walking the full 300+ word dictionary across the WASM boundary.
+    // On a busy machine that storms the renderer's watchdog and Chrome
+    // kills the tab. The cache is read-only here; SOL-* words only
+    // appear via GP-EVOLVE / SHARE-ALL / MATE, none of which fire at
+    // animation rates.
     if (mesh) {
       const unit = mesh.units[ni];
       if (unit) {
-        const solWords = (unit.vm.eval('WORDS') || '').split(/\s+/).filter(w => w.startsWith('SOL-'));
-        const abCount = solWords.length;
+        if (!unit._solWordsCachedAt || (now - unit._solWordsCachedAt) > 500) {
+          unit._solWordsCache = (unit.vm.eval('WORDS') || '').split(/\s+/).filter(w => w.startsWith('SOL-'));
+          unit._solWordsCachedAt = now;
+        }
+        const abCount = unit._solWordsCache.length;
         if (abCount > 0) {
           const orbitR = pr + 6;
           for (let ai = 0; ai < abCount; ai++) {
