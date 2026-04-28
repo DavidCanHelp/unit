@@ -2,18 +2,22 @@
 SECTION OUTLINE (proposed before drafting):
   1. Motivation
   2. Mechanism — two layers (direct inbox + environmental field)
-  3. Forth surface (EMIT!, LISTEN, INBOX?, MARK!, SENSE)
+  3. Forth surface (SAY!, LISTEN, INBOX?, MARK!, SENSE)
   4. Selection pressure: mate-finding first
   5. Selection pressure: resource-location, deferred
   6. The honesty question
   7. Connection to the demo
   8. Open questions
-  9. Summary — what v0.27 ships if implemented as written
+  9. Summary — what v0.28 ships if implemented as written
+
+Targets v0.28+; v0.27.0 shipped April 26 with two-tier deployment
+(MultiUnitHost, bounded-k gossip, HTTP bridge). Signaling rides on top
+of that substrate.
 -->
 
 # Inter-unit signaling
 
-**Status:** design doc for v0.27. No implementation in this PR.
+**Status:** design doc for v0.28. No implementation in this PR.
 **Scope:** add a two-layer signaling substrate that evolved Forth code
 can reach. Wire mate selection through the substrate. Leave honesty
 empirical, not enforced.
@@ -65,11 +69,12 @@ to one cell preserves the property that signaling is *cheap to evolve*
 A *neighbor* is any peer the sender already considers reachable for
 mesh purposes. Concretely: in the legacy single-VM-per-process mode this
 is the live set in `mesh::PeerTable`; in the v0.27 multi-unit-per-process
-mode it is the union of in-process siblings (the `MultiUnitHost`'s unit
-list) and the host's remote peers. We do *not* introduce a new spatial
-graph — the signaling layer rides on the existing peer topology so the
-bounded-k gossip path (`--gossip-k N`) governs broadcast reach the same
-way it governs every other mesh dispatch.
+mode (already shipped) it is the union of in-process siblings (the
+`MultiUnitHost`'s unit list) and the host's remote peers. We do *not*
+introduce a new spatial graph — the signaling layer rides on the
+existing peer topology so the bounded-k gossip path (`--gossip-k N`)
+governs broadcast reach the same way it governs every other mesh
+dispatch.
 
 The inbox is FIFO with a fixed capacity of 64 entries per unit. On
 overflow, the oldest entry is dropped (drop-head, not drop-incoming) so
@@ -86,7 +91,7 @@ arrives this tick), environmental signals are addressed only by *where
 and when* — a unit deposits a marker with `MARK!` and any unit that
 later runs `SENSE` in the same locale reads the current strength.
 
-Locale, in v0.27, is the unit's *niche bucket*: the dominant
+Locale, in v0.28, is the unit's *niche bucket*: the dominant
 specialization category from `niche.rs`'s `NicheProfile`. This avoids
 inventing a new spatial coordinate system the codebase does not have.
 Two units that have specialized into "fibonacci" share an environmental
@@ -94,7 +99,7 @@ slot; a "sorting" specialist deposits to a different slot. The shared
 environment is a `HashMap<NicheCategory, EnvSignal>` owned by the
 process (the `MultiUnitHost` in two-tier mode, or a thin per-process
 singleton in legacy mode). Cross-process environmental sharing is
-explicitly out of scope for v0.27 — the field is per-host. Cross-host
+explicitly out of scope for v0.28 — the field is per-host. Cross-host
 diffusion is an experiment for later.
 
 Decay is multiplicative per tick: `strength *= 0.95`. Below a floor of
@@ -111,7 +116,7 @@ exactly right for "I am here, I want to mate, I have energy." Envir-
 onmental signals are slow, locale-addressed, and persistent — exactly
 right for "this niche has had recent activity, this region is rich,
 this kind of work is being done here." The two share the Forth
-interface (`EMIT!` and `MARK!` both consume from the stack; `LISTEN`
+interface (`SAY!` and `MARK!` both consume from the stack; `LISTEN`
 and `SENSE` both push to it) and share the energy lever (both
 broadcast verbs cost energy, both read verbs are free). The substrate
 is one mechanism with two timescales, not two parallel systems with
@@ -121,20 +126,25 @@ their own state machines.
 
 Five new words. Naming follows the existing convention: bang suffixes
 (`!`) on words that *write*, question marks on words that *test
-without consuming state*. `EMIT!` is deliberately spelled with a bang
-to distinguish it from the existing `EMIT` (which writes a single
-character to stdout — see `P_EMIT` in `src/vm/mod.rs`).
+without consuming state*. `SAY!` is the broadcast verb — deliberately
+*not* `EMIT!`, since `EMIT` is the standard Forth char-output
+primitive that has been in unit's dictionary since the kernel days
+(`P_EMIT` in `src/vm/mod.rs`, listed under I/O in `docs/words.md`);
+spelling it `EMIT!` would read as "EMIT but destructive" rather than
+"broadcast a signal." `SAY!` pairs cleanly with the existing
+`SAY-SOMETHING` personality word and matches the doc's framing of
+organisms saying things to each other.
 
 | Word     | Stack effect             | Energy cost | Rationale |
 |----------|--------------------------|-------------|-----------|
-| `EMIT!`  | `( v -- )`               | 2           | Broadcast value `v` to every neighbor's inbox. Cost is small but non-zero; this is the load-bearing asymmetry that lets honesty be an empirical question. |
+| `SAY!`   | `( v -- )`               | 2           | Broadcast value `v` to every neighbor's inbox. Cost is small but non-zero; this is the load-bearing asymmetry that lets honesty be an empirical question. |
 | `LISTEN` | `( -- v -1 \| 0 )`       | 0           | Pop the oldest inbox entry, push value and `-1`; if the inbox is empty, push only `0`. The two-cell `value/flag` shape matches existing Forth idioms (cf. `KEY?`-style words in standard Forth). |
 | `INBOX?` | `( -- n )`               | 0           | Push the count of pending inbox entries. Lets evolved code branch on "did anyone signal me" without consuming the queue. |
-| `MARK!`  | `( v -- )`               | 3           | Deposit value `v` into the environmental slot for this unit's current niche. Slightly more expensive than `EMIT!` because the effect persists across ticks. |
+| `MARK!`  | `( v -- )`               | 3           | Deposit value `v` into the environmental slot for this unit's current niche. Slightly more expensive than `SAY!` because the effect persists across ticks. |
 | `SENSE`  | `( -- v )`               | 0           | Read the current environmental strength for this unit's niche slot, or `0` if empty. |
 
-Costs are charged through the existing `EnergyTracker::spend` path in
-`src/energy.rs`; the reasons (`"emit"`, `"mark"`) join the existing
+Costs are charged through the existing `EnergyState::spend` path in
+`src/energy.rs`; the reasons (`"say"`, `"mark"`) join the existing
 `"spawn"`, `"gp"`, `"send"` set. If a unit cannot afford the cost the
 verb is a no-op and pushes nothing additional to the stack — same
 failure-as-silence behavior as `SEND` under network failure today.
@@ -145,7 +155,7 @@ documentation taxonomy in `docs/words.md`.
 
 ## 4. Selection pressure: mate-finding first
 
-The point of this layer in v0.27 is to make sexual reproduction
+The point of this layer in v0.28 is to make sexual reproduction
 *choose* with information instead of *select* by mechanism.
 
 Today, `reproduction::select_mate` (src/reproduction.rs:81) takes a
@@ -155,7 +165,7 @@ the algorithm — so the tournament selects over a *signaled* candidate
 set rather than the raw peer list:
 
 1. Before reproduction is attempted, every unit that wants to mate
-   broadcasts its intent with `EMIT!` of a self-fitness value (or, more
+   broadcasts its intent with `SAY!` of a self-fitness value (or, more
    evolvably, *whatever value its dictionary chooses to broadcast in
    response to a "ready to mate" prelude word*).
 2. `select_mate` reads the inbox via a new `gather_mate_signals(...)`
@@ -166,7 +176,7 @@ set rather than the raw peer list:
 
 The change is small in code (one helper, one input swap) but large in
 substrate. A unit that broadcasts a high signal is more likely to be
-chosen — but `EMIT!` costs energy, and the broadcast value is *whatever
+chosen — but `SAY!` costs energy, and the broadcast value is *whatever
 the unit puts on the stack*, not a verified fitness reading. This is
 where deception becomes possible and where the experiment becomes
 interesting.
@@ -174,7 +184,7 @@ interesting.
 The prelude (`src/prelude.fs`) gains a single new word, e.g.
 
 ```forth
-: COURT  FITNESS EMIT! ;   \ honest courting; subject to GP mutation
+: COURT  FITNESS SAY! ;    \ honest courting; subject to GP mutation
 ```
 
 …which a unit can override, mutate, or replace via `SMART-MUTATE` like
@@ -190,14 +200,14 @@ same niche read elevated strength and gain a small fitness bonus when
 they pursue work in that category. This connects niche construction to
 collective foraging without inventing new state — the niche map already
 exists, the energy system already tracks rewards, the two just become
-mutually visible. **Not in v0.27.** Flagged here so the design above
+mutually visible. **Not in v0.28.** Flagged here so the design above
 does not foreclose it.
 
 ## 6. The honesty question
 
 Honesty is not enforced by construction.
 
-`EMIT!` puts whatever the sender's stack holds onto the wire. There is
+`SAY!` puts whatever the sender's stack holds onto the wire. There is
 no signature, no verification, no honest-broker. The only discipline on
 deception is metabolic: broadcasting costs energy, and a unit that
 broadcasts inflated mate-signals while running short on energy cannot
@@ -219,15 +229,15 @@ the bubbles are emitted by JS on a timer and the spawn is a JS call to
 `doSpawn()`. After this design ships, the same visitor experience
 becomes the *visible surface of a real layer*.
 
-The smallest change: when a unit's `EMIT!` fires in the WASM mesh, the
+The smallest change: when a unit's `SAY!` fires in the WASM mesh, the
 JS shim renders the broadcast value as a chatter bubble — using the
 existing `setBubble` and `addChatter` paths. If the value is small and
 positive, render it as a number. If the unit's dictionary contains a
 convention for stringy values (e.g., a packed ASCII cell, or a
 sentinel that maps to a phrase), render that. The lone unit's
-"Hello?" becomes the bubble for an `EMIT!` that the lone unit is
+"Hello?" becomes the bubble for a `SAY!` that the lone unit is
 actually executing because its prelude says so when alone. The
-"Spawn" bubble becomes the bubble for the `EMIT!` that fires
+"Spawn" bubble becomes the bubble for the `SAY!` that fires
 immediately before reproduction. JS no longer fakes the conversation;
 JS *renders* it.
 
@@ -241,13 +251,13 @@ The visitor sees the same thing. The substrate underneath is real.
 - **Environmental decay rate.** 0.95/tick is a starting value chosen to
   give roughly 14-tick half-life. Should it be tunable per niche
   category? Per environment?
-- **Signal type.** v0.27 ships single-cell signals. A two-cell variant
+- **Signal type.** v0.28 ships single-cell signals. A two-cell variant
   (`value`, `tag`) would let signals be typed (`mate-ready`,
   `food-here`, `danger`) without parsing. Worth the API surface?
 - **Cross-process environmental field.** Per-host today. Diffusing
   environmental signals across hosts via gossip is the obvious next
   step but adds protocol surface — should it wait for v0.28?
-- **GP visibility.** Should `EMIT!` and `MARK!` be in the GP
+- **GP visibility.** Should `SAY!` and `MARK!` be in the GP
   primitive set from day one (so evolution can discover them
   unbidden), or gated to user-defined words only at first?
 - **Signal cost as a tuning knob vs. a research variable.** If we
@@ -260,9 +270,9 @@ its code review — should make explicit.
 
 ## 9. Summary
 
-If this design is implemented as written, v0.27 ships:
+If this design is implemented as written, v0.28 ships:
 
-- Five new Forth words (`EMIT!`, `LISTEN`, `INBOX?`, `MARK!`, `SENSE`)
+- Five new Forth words (`SAY!`, `LISTEN`, `INBOX?`, `MARK!`, `SENSE`)
   costing 2, 0, 0, 3, 0 energy respectively, registered in
   `src/vm/mod.rs` and implemented in `src/vm/primitives.rs` (or a new
   `src/vm/signaling.rs` if the implementer prefers).
@@ -275,13 +285,13 @@ If this design is implemented as written, v0.27 ships:
 - A swap of `reproduction::select_mate`'s input from raw peer fitness
   to inbox-gathered signals, with peer-fitness fallback when the inbox
   is empty. One new helper, one prelude word (`COURT`).
-- A WASM/JS shim change in `web/index.html` so that real `EMIT!`
+- A WASM/JS shim change in `web/index.html` so that real `SAY!`
   events from the WASM mesh render through the existing bubble +
   chatter pipeline. The lone-unit "Hello?" sequence becomes the
-  visible surface of `EMIT!` calls the lone unit is actually executing.
+  visible surface of `SAY!` calls the lone unit is actually executing.
 - Zero new dependencies. No protocol-level changes. No simulation
   behavior changes outside the new verbs and the one-line input swap
   in mate selection — every existing test continues to pass.
 
-The point of v0.27 is not the words. The point is the experiment they
+The point of v0.28 is not the words. The point is the experiment they
 make possible.
