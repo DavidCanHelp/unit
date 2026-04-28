@@ -701,13 +701,16 @@ function autoTick() {
   // signal value is whatever the unit's dictionary chose to broadcast
   // (FITNESS for COURT). This is the substrate showing through —
   // setBubble is the same path the lone-unit narrative uses.
+  // Pass `msg` (not a pre-formed sexp) to addChatter — it wraps via
+  // toSexp into (say :from "#X" :msg "TEXT"). Passing a pre-formed
+  // sexp would produce doubly-escaped output.
   if (mesh.units.length > 1) {
     const emitted = mesh.drainAndRoute(unit);
     if (emitted.length > 0) {
       const last = emitted[emitted.length - 1];
       const msg = behavior.signal ? `signals ${last}` : `${last}`;
       setBubble(unit.id, msg, '#9fd');
-      addChatter(unit.id, `(say :from "#${unit.id}" :value ${last})`);
+      addChatter(unit.id, msg);
     }
   }
 
