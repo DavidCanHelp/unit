@@ -587,7 +587,10 @@ const BEHAVIORS = [
   // the lone-unit narrative uses, but for a real substrate event).
   { weight: 6, cmd: 'COURT', signal: true },
   // LISTEN-side cue: read a pending inbox signal if there is one.
-  { weight: 4, cmd: null, listen: true },
+  // Weight matches COURT so the receiver-side bubble cadence keeps pace
+  // with the speaker-side; without this match the conversation surface
+  // skews one-sided (verified at weight=4: heard:signals ratio ~22%).
+  { weight: 6, cmd: null, listen: true },
   { weight: 8, cmd: null }, // idle
 ];
 const totalWeight = BEHAVIORS.reduce((s,b) => s+b.weight, 0);
