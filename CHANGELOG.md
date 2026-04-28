@@ -3,6 +3,37 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.28.0] - 2026-04-28
+
+### Added
+- Inter-unit signaling substrate (docs/signaling.md). Two layers riding the existing peer topology — direct peer inbox + per-host environmental field — with five new Forth words and one prelude word.
+- `SAY!` ( v -- ) — broadcast value `v` to neighbors' inboxes. Costs 3 energy. Works on native and WASM.
+- `LISTEN` ( -- v -1 | 0 ) — pop the oldest inbox entry, push value+flag, or 0 if empty. Free.
+- `INBOX?` ( -- n ) — push count of pending inbox entries without consuming them. Free.
+- `MARK!` ( v -- ) — deposit value into the per-host environmental field, keyed by the unit's dominant niche. Costs 5 energy. Native only; WASM shim emits "MARK! not available in browser".
+- `SENSE` ( -- v ) — read current environmental strength for this unit's niche. Free. Native only; WASM shim.
+- `COURT` — prelude convenience word, `: COURT FITNESS SAY! ;`. Honest mate-finding signal; subject to GP mutation like any other dictionary entry.
+- `crate::signaling` module: `Signal` struct, `SignalKind` enum (Direct + Environmental), `Inbox` (Vec-backed FIFO with cap 64 and drop-from-front overflow), `EnvironmentalField` (HashMap with sum-or-displace deposit and 0.95/tick multiplicative decay).
+- `MultiUnitHost::route_signals_from(idx)` — drains a unit's outbox after eval, delivers Direct signals to sibling inboxes (sender does not self-receive) and routes Environmental signals into the host's `env_field`.
+- `MultiUnitHost::refresh_env_view(idx)` and `env_decay_tick()` — host-side helpers for keeping per-unit `env_view` caches current and aging the field once per tick.
+- `MultiUnitHost::spawn` now stamps each spawned unit with a synthesized `node_id_cache` (`0xC0FE` prefix + slot index) so SAY! signals carry distinct sender attribution between siblings.
+- `reproduction::select_mate_signaled(peers, inbox, rng)` — additive companion to `select_mate`. Reads Direct signals from the inbox to build a candidate list, runs tournament-of-three on signaled values, falls through to `select_mate` (peer-fitness path) when the inbox is empty or has no overlapping senders. The existing `select_mate` and its callers are untouched.
+- WASM shim exports `drain_outbox_direct(vm) -> *const u8` and `push_inbox_direct(vm, value)` so the browser mesh can route SAY! emissions between in-page units.
+- Browser demo wires real SAY! through the existing setBubble path: `BEHAVIORS` gains `COURT` (signal-emitting) and a LISTEN cue; autoTick drains and routes after every eval, rendering "signals N" bubbles for emissions and "heard N" for receives. The lone-unit "Hello?" → "Spawn" narrative arc is unchanged.
+- `EnergyState` constants: `SAY_COST = 3`, `MARK_COST = 5`. Starting calibrations; the v0.28.x patch series is where they tune.
+- 46 new tests covering inbox FIFO + cap semantics, EnvironmentalField deposit/decay/floor, SAY!/LISTEN/INBOX? VM-level + host integration, MARK!/SENSE native + cfg-gated paths, signal-weighted mate selection (most-recent-wins, fallback paths, environmental-signal exclusion), and COURT prelude integration. Total native test count: 301.
+
+### Changed
+- `web/unit.js` fetches `unit.wasm` and itself with `cache: 'no-store'` so substrate updates aren't shadowed by browser caches.
+- `web/index.html` references `unit.js?v=0.28.0` for the same reason on the JS side.
+- `MultiUnitHost`-spawned units now pass the `Some(id)` branch in persistence/snapshot paths (previously hit the "no node ID (mesh offline)" message). Two-tier-mode users calling `SAVE` / `HIBERNATE` will now write to `~/.unit/state/c0fe…/` directories — single-VM mode and WASM mode unaffected.
+
+### Design principles held
+- Honesty is not enforced. `SAY!` puts whatever the sender's stack holds onto the wire; the only discipline on deception is metabolic. Whether honest signaling stabilizes is the empirical question this substrate exists to ask.
+- In-process only. v0.28 ships signaling between siblings in `MultiUnitHost` and the WASM browser host. Cross-process direct signals over the gossip path are deferred — the existing UDP wire protocol is unchanged.
+- Additive selection pressure. `select_mate` keeps its signature; `select_mate_signaled` is a new function with a peer-fitness fallback. No existing reproduction test changes behavior.
+- Zero new dependencies. Cargo.lock still contains only the `unit` crate.
+
 ## [0.27.1] - 2026-04-25
 
 Reduced WASM demo colony cap from 10 to 7 to mitigate browser-tab freeze under sustained run.

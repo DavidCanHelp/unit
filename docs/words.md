@@ -1,6 +1,6 @@
 # unit — Word Reference
 
-309 words. Organized by category.
+315 words. Organized by category.
 
 ## Stack
 
@@ -162,6 +162,20 @@
 | `NICHE` | show niche profile: specializations and modifiers |
 | `NICHE-HISTORY` | last 20 challenge outcomes with categories |
 | `ECOLOGY` | colony-wide ecological diversity |
+
+## Signaling
+
+Inter-unit signaling — direct (peer inbox) and environmental layers.
+See [signaling.md](signaling.md) for the design rationale.
+
+| Word | Stack effect | Cost | Description |
+|------|--------------|------|-------------|
+| `SAY!` | `( v -- )` | 3 | broadcast value `v` to neighbors' inboxes |
+| `LISTEN` | `( -- v -1 \| 0 )` | 0 | pop oldest inbox entry; push value+flag, or 0 if empty |
+| `INBOX?` | `( -- n )` | 0 | push count of pending inbox entries |
+| `MARK!` | `( v -- )` | 5 | deposit `v` into per-host environmental field, keyed by dominant niche (native only; WASM shim) |
+| `SENSE` | `( -- v )` | 0 | read current environmental strength for this unit's niche (native only; WASM shim) |
+| `COURT` | `( -- )` | 3 | prelude word: `: COURT FITNESS SAY! ;` — honest mate-finding signal |
 
 ## Trust & Consent
 

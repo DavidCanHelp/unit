@@ -12,7 +12,7 @@
 
 ```
 $ unit
-unit v0.26.2 -- seed online
+unit v0.28.0 -- seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
 > 2 3 + .
 5  ok
@@ -95,6 +95,16 @@ child — shared words from the fitter parent, unique words with 50%
 probability, antibodies always preserved. Niche construction lets units
 that excel at certain challenge types see more of those challenges,
 creating ecological specialization across the colony.
+
+Then signaling. Units gained the ability to *say something to other
+units because they chose to* — `SAY!` broadcasts a value to neighbors'
+inboxes, `LISTEN` drains them, `MARK!`/`SENSE` deposit and read from a
+per-host environmental field keyed by niche. Mate selection now reads
+the inbox: a peer that broadcast `FITNESS SAY!` (the `COURT` prelude)
+gets weighted into the tournament. Honesty is not enforced — `SAY!`
+costs energy but the value broadcast is whatever the dictionary chose,
+which makes signal stability an empirical question. See
+[docs/signaling.md](docs/signaling.md).
 
 None of this was planned from the start. It emerged from asking "what
 should a self-improving organism do next?"
@@ -266,10 +276,11 @@ The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 
 ## Documentation
 
-- [docs/words.md](docs/words.md) — complete word reference (309 words)
+- [docs/words.md](docs/words.md) — complete word reference (315 words)
 - [docs/protocol.md](docs/protocol.md) — S-expression wire format and mesh protocol
 - [docs/operations.md](docs/operations.md) — monitoring, goals, trust, persistence, swarm mode
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — two-tier deployment design rationale and bench results
+- [docs/signaling.md](docs/signaling.md) — inter-unit signaling design (v0.28)
 
 ## Binary Sizes
 
