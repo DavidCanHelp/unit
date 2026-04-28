@@ -147,7 +147,7 @@ mating with #cafe (fitness=45)...
   fibonacci: 100% (modifier: 2.0x)
 ```
 
-See [docs/words.md](docs/words.md) for the complete word reference (309 words).
+See [docs/words.md](docs/words.md) for the complete word reference (315 words).
 
 ## Interfaces
 
