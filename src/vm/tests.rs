@@ -973,3 +973,19 @@ fn test_sense_default_zero() {
     eval(&mut vm, "SENSE");
     assert_eq!(vm.stack, vec![0]);
 }
+
+#[test]
+fn test_court_prelude_word_emits_signal() {
+    let mut vm = test_vm();
+    // COURT should be defined by the prelude as `: COURT FITNESS SAY! ;`.
+    // FITNESS reads the unit's fitness value; with no setup it returns 0.
+    let energy_before = vm.energy.energy;
+    eval(&mut vm, "COURT");
+    assert_eq!(vm.outbox.len(), 1, "COURT should emit one signal");
+    assert!(vm.outbox[0].is_direct());
+    assert_eq!(
+        vm.energy.energy,
+        energy_before - crate::energy::SAY_COST,
+        "COURT should charge SAY_COST via the SAY! it calls"
+    );
+}

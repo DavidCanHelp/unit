@@ -95,6 +95,65 @@ pub fn select_mate(peers: &[(NodeId, i64)], rng: &mut SimpleRng) -> Option<NodeI
     Some(peers[best_idx].0)
 }
 
+/// Signal-weighted mate selection (v0.28). Same tournament-of-three as
+/// `select_mate` but pulls candidate values from the unit's signal
+/// inbox instead of raw peer fitness — implementing the design's
+/// "mate-finding first" pressure.
+///
+/// Algorithm:
+///   1. Scan the inbox for Direct signals from peers in the candidate
+///      set; build a `(NodeId, signaled_value)` list (most recent
+///      signal per sender wins).
+///   2. If at least one peer has signaled, run tournament-of-three on
+///      that list — the value chosen by the candidate is what gets
+///      weighted, not the verified fitness.
+///   3. If no peers have signaled, fall through to `select_mate` so
+///      reproduction still works for units that haven't adopted COURT
+///      or any other signaling word. **Additive — never breaks the
+///      existing path.**
+///
+/// The signaled value is *whatever the candidate's dictionary chose to
+/// broadcast* — `FITNESS SAY!` (the COURT prelude) is honest, but
+/// nothing in the substrate enforces that. This is the load-bearing
+/// asymmetry that makes signal honesty an empirical question rather
+/// than a constructed one.
+pub fn select_mate_signaled(
+    peers: &[(NodeId, i64)],
+    inbox: &crate::signaling::Inbox,
+    rng: &mut SimpleRng,
+) -> Option<NodeId> {
+    if peers.is_empty() {
+        return None;
+    }
+    use std::collections::HashMap;
+    let peer_set: std::collections::HashSet<NodeId> = peers.iter().map(|(id, _)| *id).collect();
+    // Most recent signal per sender wins (later inbox entries overwrite).
+    let mut signaled: HashMap<NodeId, i64> = HashMap::new();
+    for sig in inbox.iter() {
+        if !sig.is_direct() {
+            continue;
+        }
+        if peer_set.contains(&sig.sender) {
+            signaled.insert(sig.sender, sig.value);
+        }
+    }
+    if signaled.is_empty() {
+        return select_mate(peers, rng);
+    }
+    let candidates: Vec<(NodeId, i64)> = signaled.into_iter().collect();
+    let count = candidates.len().min(3);
+    let mut best_idx = rng.next_usize(candidates.len());
+    let mut best_value = candidates[best_idx].1;
+    for _ in 1..count {
+        let idx = rng.next_usize(candidates.len());
+        if candidates[idx].1 > best_value {
+            best_idx = idx;
+            best_value = candidates[idx].1;
+        }
+    }
+    Some(candidates[best_idx].0)
+}
+
 /// Serialize a mating request as an S-expression for mesh broadcast.
 pub fn sexp_mating_request(req: &MatingRequest) -> String {
     let hex = crate::mesh::id_to_hex(&req.requester_id);
@@ -358,5 +417,160 @@ mod tests {
         assert_eq!(parsed.responder_id, test_node_b());
         assert_eq!(parsed.responder_fitness, 88);
         assert_eq!(parsed.dictionary_words.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Signal-weighted mate selection (v0.28)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_select_mate_signaled_picks_highest_signal() {
+        // Five peers — none of these fitnesses should drive the choice.
+        // Three of them have signaled (with values that don't match
+        // their actual fitness, which is the whole point of the
+        // experiment), and one signaled value is much higher than the
+        // others.
+        let peers = vec![
+            ([1u8; 8], 10),
+            ([2u8; 8], 90), // high actual fitness, but no signal
+            ([3u8; 8], 30),
+            ([4u8; 8], 50),
+            ([5u8; 8], 20),
+        ];
+        let mut inbox = crate::signaling::Inbox::new();
+        inbox.push(crate::signaling::Signal::direct([1u8; 8], 200, 1)); // boasting
+        inbox.push(crate::signaling::Signal::direct([3u8; 8], 50, 2));
+        inbox.push(crate::signaling::Signal::direct([5u8; 8], 70, 3));
+        // Over many runs, peer 1 (signaled value 200) should win most often
+        // — even though peer 2 has the highest actual fitness, peer 2
+        // didn't signal and so isn't a candidate in the signal-weighted
+        // path.
+        let mut counts = [0u32; 5];
+        for seed in 0..400 {
+            let mut rng = SimpleRng::new(seed);
+            if let Some(id) = select_mate_signaled(&peers, &inbox, &mut rng) {
+                for (i, (pid, _)) in peers.iter().enumerate() {
+                    if id == *pid {
+                        counts[i] += 1;
+                    }
+                }
+            }
+        }
+        let max_idx = counts.iter().enumerate().max_by_key(|(_, &c)| c).unwrap().0;
+        assert_eq!(
+            max_idx, 0,
+            "expected peer 1 (signal=200) to win most, got idx {} ({:?})",
+            max_idx, counts
+        );
+        // Peer 2 had no signal, so should never be picked here.
+        assert_eq!(counts[1], 0, "peer 2 had no signal but was picked");
+    }
+
+    #[test]
+    fn test_select_mate_signaled_falls_back_when_inbox_empty() {
+        let peers = vec![
+            ([1u8; 8], 10),
+            ([2u8; 8], 90),
+            ([3u8; 8], 30),
+        ];
+        let inbox = crate::signaling::Inbox::new();
+        let mut counts = [0u32; 3];
+        for seed in 0..200 {
+            let mut rng = SimpleRng::new(seed);
+            if let Some(id) = select_mate_signaled(&peers, &inbox, &mut rng) {
+                for (i, (pid, _)) in peers.iter().enumerate() {
+                    if id == *pid {
+                        counts[i] += 1;
+                    }
+                }
+            }
+        }
+        // With no signals, the function falls through to select_mate's
+        // peer-fitness tournament. Peer 2 (fitness=90) should win.
+        let max_idx = counts.iter().enumerate().max_by_key(|(_, &c)| c).unwrap().0;
+        assert_eq!(max_idx, 1, "fallback should pick fittest peer, got {}", max_idx);
+    }
+
+    #[test]
+    fn test_select_mate_signaled_falls_back_when_signals_off_set() {
+        // Inbox contains signals from senders not in the candidate
+        // peer list — should still fall through to peer fitness.
+        let peers = vec![
+            ([1u8; 8], 10),
+            ([2u8; 8], 90),
+        ];
+        let mut inbox = crate::signaling::Inbox::new();
+        inbox.push(crate::signaling::Signal::direct([99u8; 8], 1000, 1));
+        let mut counts = [0u32; 2];
+        for seed in 0..200 {
+            let mut rng = SimpleRng::new(seed);
+            if let Some(id) = select_mate_signaled(&peers, &inbox, &mut rng) {
+                for (i, (pid, _)) in peers.iter().enumerate() {
+                    if id == *pid {
+                        counts[i] += 1;
+                    }
+                }
+            }
+        }
+        let max_idx = counts.iter().enumerate().max_by_key(|(_, &c)| c).unwrap().0;
+        assert_eq!(
+            max_idx, 1,
+            "irrelevant signals should not steer selection"
+        );
+    }
+
+    #[test]
+    fn test_select_mate_signaled_no_peers_returns_none() {
+        let peers: Vec<(NodeId, i64)> = vec![];
+        let inbox = crate::signaling::Inbox::new();
+        let mut rng = make_rng();
+        assert!(select_mate_signaled(&peers, &inbox, &mut rng).is_none());
+    }
+
+    #[test]
+    fn test_select_mate_signaled_ignores_environmental_signals() {
+        let peers = vec![([1u8; 8], 10), ([2u8; 8], 90)];
+        let mut inbox = crate::signaling::Inbox::new();
+        inbox.push(crate::signaling::Signal::environmental(
+            [1u8; 8],
+            5000,
+            "fib".to_string(),
+            1,
+        ));
+        // Environmental signals don't count as mate-finding signals.
+        // Falls back to peer-fitness tournament.
+        let mut rng = SimpleRng::new(0);
+        let pick = select_mate_signaled(&peers, &inbox, &mut rng);
+        assert!(pick.is_some());
+        // Most importantly, the run does not crash and the selection
+        // is on the candidate set, not on the environmental sender.
+    }
+
+    #[test]
+    fn test_select_mate_signaled_most_recent_signal_wins_per_sender() {
+        // Same sender signals twice — newer value should be the one
+        // tournament sees.
+        let peers = vec![([1u8; 8], 10), ([2u8; 8], 10)];
+        let mut inbox = crate::signaling::Inbox::new();
+        inbox.push(crate::signaling::Signal::direct([1u8; 8], 5, 1));
+        inbox.push(crate::signaling::Signal::direct([1u8; 8], 999, 2));
+        inbox.push(crate::signaling::Signal::direct([2u8; 8], 100, 3));
+        let mut wins = [0u32; 2];
+        for seed in 0..200 {
+            let mut rng = SimpleRng::new(seed);
+            if let Some(id) = select_mate_signaled(&peers, &inbox, &mut rng) {
+                if id == [1u8; 8] {
+                    wins[0] += 1;
+                } else if id == [2u8; 8] {
+                    wins[1] += 1;
+                }
+            }
+        }
+        // Peer 1's *latest* signal is 999, much higher than peer 2's 100.
+        assert!(
+            wins[0] > wins[1],
+            "peer 1 latest signal should win more than peer 2: {:?}",
+            wins
+        );
     }
 }

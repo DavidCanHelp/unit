@@ -603,6 +603,14 @@ VARIABLE OBS-COUNT
   ."   Snapshots are JSON: ~/.unit/snapshots/{node-id}.json" CR
 ;
 
+\ --- Signaling (v0.28) ---
+\ COURT broadcasts the unit's current fitness as a mate-finding signal.
+\ Honest by default; subject to GP mutation like any other dictionary
+\ entry. The reproduction system reads the resulting inbox signals via
+\ select_mate_signaled and weights tournament selection toward signaled
+\ candidates. Override or replace freely — the word is courtesy, not law.
+: COURT FITNESS SAY! ;
+
 \ --- Boot ---
 ." unit v0.27.0 -- seed online" CR
 MESH-HELLO
