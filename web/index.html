@@ -280,10 +280,27 @@ function toSexp(unitId, text) {
   return `(say :from "#${unitId}" :msg "${short.replace(/"/g, '\\"')}")`;
 }
 
+// Append a chatter line whose text gets wrapped in (say :from "#X" :msg "TEXT").
+// Use this when the caller has a meaningful inner message (a phrase, a sentence).
+// If you already have a fully-formed S-expression like (peer-hello ...) or
+// (mating-request ...), use addChatterRaw — passing it here would double-wrap.
 function addChatter(unitId, text) {
   if (!chatterOn) return;
   const line = document.createElement('div');
   line.textContent = toSexp(unitId, text);
+  chatterDiv.appendChild(line);
+  while (chatterDiv.childNodes.length > 8) chatterDiv.removeChild(chatterDiv.firstChild);
+  chatterDiv.scrollTop = chatterDiv.scrollHeight;
+}
+
+// Append a chatter line verbatim — no envelope wrapping. Use this when the
+// caller already constructed a complete S-expression that names its own
+// :from / :to / etc. Both functions render to the same DOM shape; the
+// difference is purely whether the text gets wrapped before insertion.
+function addChatterRaw(text) {
+  if (!chatterOn) return;
+  const line = document.createElement('div');
+  line.textContent = text;
   chatterDiv.appendChild(line);
   while (chatterDiv.childNodes.length > 8) chatterDiv.removeChild(chatterDiv.firstChild);
   chatterDiv.scrollTop = chatterDiv.scrollHeight;
@@ -644,7 +661,7 @@ function autoTick() {
     if (partner) {
       setBubble(unit.id, `mating with #${partner.id}...`, '#ff88cc');
       setBubble(partner.id, `mating with #${unit.id}...`, '#ff88cc');
-      addChatter(unit.id, `(mating-request :from "#${unit.id}" :to "#${partner.id}")`);
+      addChatterRaw(`(mating-request :from "#${unit.id}" :to "#${partner.id}")`);
       mesh.mate(unit, partner).then(child => {
         if (child) {
           spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
@@ -653,7 +670,7 @@ function autoTick() {
           const childNode = vizNodes.find(nd => nd.id === child.id);
           if (childNode) vizSpawnRings.push({ x: childNode.x, y: childNode.y, time: Date.now(), color: '#ff88cc' });
           setBubble(child.id, 'hybrid offspring!', '#ff88cc');
-          addChatter(child.id, `(born :parents ["#${unit.id}" "#${partner.id}"] :words ${child.userWords.length})`);
+          addChatterRaw(`(born :parents ["#${unit.id}" "#${partner.id}"] :words ${child.userWords.length})`);
         }
       });
     }
@@ -717,7 +734,16 @@ function autoTick() {
   if (output) {
     const color = behavior.dream ? '#a080cc' : null;
     setBubble(unit.id, output, color);
-    addChatter(unit.id, output);
+    // HELLO/PROUD branches above produce pre-formed (peer-hello ...) /
+    // (status ...) S-expressions; everything else (ENERGY, CHALLENGES,
+    // HOW-ARE-YOU, raw Forth eval output, DREAM's multi-line text) is
+    // plain. Dispatch on shape so sexps don't get double-wrapped.
+    const trimmed = output.trim();
+    if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+      addChatterRaw(trimmed);
+    } else {
+      addChatter(unit.id, output);
+    }
     if (behavior.dream) {
       const n = vizNodes.find(nd => nd.id === unit.id);
       if (n) { n.pulse = 1.4; n.glowColor = '#8060aa'; }
@@ -814,8 +840,8 @@ async function autoSpawnCheck() {
   emitParticle(parent.id, child.id, '#00ff88');
 
   const hello = `(peer-hello :id "#${child.id}" :gen 0 :peers ${mesh.units.length - 1} :fitness 0)`;
-  addChatter(child.id, hello);
-  addChatter(parent.id, `(auto-spawn :parent "#${parent.id}" :child "#${child.id}" :reason "${reason}")`);
+  addChatterRaw(hello);
+  addChatterRaw(`(auto-spawn :parent "#${parent.id}" :child "#${child.id}" :reason "${reason}")`);
   appendOutput(`[mesh] unit #${child.id} auto-spawned by #${parent.id} (${mesh.units.length} units online)\n`, 'mesh-event');
 
   setTimeout(() => {
@@ -837,7 +863,7 @@ async function doSpawn() {
     spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
     appendOutput(`[mesh] unit #${u.id} spawned (${mesh.units.length} units online)\n`, 'mesh-event');
     const peers = mesh.units.length - 1;
-    addChatter(u.id, `(peer-hello :id "#${u.id}" :gen 0 :peers ${peers} :fitness 0)`);
+    addChatterRaw(`(peer-hello :id "#${u.id}" :gen 0 :peers ${peers} :fitness 0)`);
     // Short, readable bubble for the canvas — chatter feed keeps the full sexp.
     setTimeout(() => { setBubble(u.id, 'Hi!', '#00ccff'); }, 900);
   }
@@ -910,7 +936,7 @@ async function finishTutorial() {
     if (u) {
       spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
       appendOutput(`[mesh] unit #${u.id} has joined the colony\n`, 'mesh-event');
-      addChatter(u.id, `(peer-hello :id "#${u.id}" :gen 0 :peers ${mesh.units.length - 1} :fitness 0)`);
+      addChatterRaw(`(peer-hello :id "#${u.id}" :gen 0 :peers ${mesh.units.length - 1} :fitness 0)`);
       setTimeout(() => {
         const msg = `Hi! I'm unit #${u.id}, generation 0 with ${mesh.units.length - 1} peers and fitness 0`;
         setBubble(u.id, msg);
@@ -964,7 +990,7 @@ async function init() {
     muteBtn.className = 'mode-btn active';
     applyVizMode();
     appendOutput('browser mesh: 1 unit online\n', 'mesh-event');
-    addChatter('self', `(peer-hello :id "self" :gen 0 :fitness 0 :peers 0)`);
+    addChatterRaw(`(peer-hello :id "self" :gen 0 :fitness 0 :peers 0)`);
     renderTutorial();
     // Kick off the lone chatter early so the visitor sees "Hello?" promptly.
     setTimeout(loneChatterTick, 1800);
@@ -1156,7 +1182,7 @@ input.addEventListener('keydown', async (e) => {
           const childNode = vizNodes.find(nd => nd.id === mateChild.id);
           if (childNode) vizSpawnRings.push({ x: childNode.x, y: childNode.y, time: Date.now(), color: '#ff88cc' });
           setBubble(mateChild.id, 'I have two parents!', '#ff88cc');
-          addChatter(mateChild.id, `(born :parents ["#${mesh.units[0].id}" "#${matePartner.id}"] :words ${mateChild.userWords.length})`);
+          addChatterRaw(`(born :parents ["#${mesh.units[0].id}" "#${matePartner.id}"] :words ${mateChild.userWords.length})`);
         }
         break;
       }
@@ -1211,7 +1237,7 @@ input.addEventListener('keydown', async (e) => {
 
       // Set coordinator bubble.
       setBubble(selfUnit.id, `distributing ${exprs.length} sub-goals...`, '#ff8800');
-      addChatter(selfUnit.id, `(dist-start :id "${goalId}" :count ${exprs.length})`);
+      addChatterRaw(`(dist-start :id "${goalId}" :count ${exprs.length})`);
 
       const results = [];
       for (let i = 0; i < exprs.length; i++) {
@@ -1222,7 +1248,7 @@ input.addEventListener('keydown', async (e) => {
         if (worker.id !== selfUnit.id) {
           emitParticle(selfUnit.id, worker.id, '#ff8800');
         }
-        addChatter(selfUnit.id,
+        addChatterRaw(
           `(sub-goal :id "${goalId}" :seq ${i} :from "#${selfUnit.id}" :to "#${worker.id}" :expr "${expr}")`);
         setBubble(worker.id, `computing ${expr.substring(0, 20)}`, '#cc8800');
 
@@ -1236,7 +1262,7 @@ input.addEventListener('keydown', async (e) => {
         if (worker.id !== selfUnit.id) {
           emitParticle(worker.id, selfUnit.id, '#00ff88');
         }
-        addChatter(worker.id,
+        addChatterRaw(
           `(sub-result :id "${goalId}" :seq ${i} :from "#${worker.id}" :result "${output}")`);
       }
 
@@ -1256,7 +1282,7 @@ input.addEventListener('keydown', async (e) => {
 
       // Completion effects.
       setBubble(selfUnit.id, `done: ${combined.substring(0, 30)}`, '#00ff88');
-      addChatter(selfUnit.id,
+      addChatterRaw(
         `(dist-complete :id "${goalId}" :results "${combined}" :peers ${units.length})`);
 
       // Feed DIST-STATUS data into the Forth VM so it reflects browser distribution.
