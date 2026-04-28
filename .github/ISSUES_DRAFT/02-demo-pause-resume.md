@@ -28,6 +28,14 @@ It also leaves room for follow-up polish (keyboard shortcut, auto-pause
 when the tab is hidden, "step one tick" while paused) that a contributor
 can scope as they like.
 
+Note: as of v0.28, `autoTick` also drives the signaling layer's visible
+surface — `COURT` emissions render as `signals N` bubbles, the LISTEN
+cue renders `heard N` bubbles, and `mesh.drainAndRoute` routes signals
+into siblings' inboxes after every eval. All of these run *inside*
+`autoTick`, so pausing the three existing timers stops them too — no
+additional pause wiring is needed. Just be aware they exist when
+verifying.
+
 ## Acceptance criteria
 
 - [ ] A `pause` chip appears in the `#info-right` header next to the

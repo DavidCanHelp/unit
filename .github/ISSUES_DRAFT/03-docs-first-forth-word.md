@@ -5,7 +5,7 @@ labels: ["good first issue", "area:docs"]
 
 ## Summary
 
-The README sells the idea, `docs/words.md` catalogues the 309 primitives,
+The README sells the idea, `docs/words.md` catalogues the 315 primitives,
 and the whitepaper covers the theory. There is currently no short,
 hands-on walkthrough for a reader who has just run `cargo install unit`,
 hit `>`, and is wondering what to type. The closest thing is the embedded
@@ -53,5 +53,7 @@ between them, a closing pointer to `docs/words.md` and the demo.
 
 ## Nice-to-haves (not required)
 
-- A short "what's next" paragraph pointing at `SPAWN`, `GP-EVOLVE`, and
-  the immune system as natural next steps.
+- A short "what's next" paragraph pointing at `SPAWN`, `GP-EVOLVE`, the
+  immune system, and the v0.28 signaling words (`SAY!`, `LISTEN`,
+  `COURT`, see [docs/signaling.md](../docs/signaling.md)) as natural
+  next steps.
