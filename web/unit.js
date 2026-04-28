@@ -10,7 +10,7 @@ class UnitVM {
   }
 
   static async create(wasmPath) {
-    const response = await fetch(wasmPath);
+    const response = await fetch(wasmPath, { cache: 'no-store' });
     const bytes = await response.arrayBuffer();
     const { instance } = await WebAssembly.instantiate(bytes, { env: {} });
     return new UnitVM(instance);
@@ -32,6 +32,25 @@ class UnitVM {
 
   isRunning() { return this.exports.is_running(this.vmPtr) !== 0; }
   destroy() { this.exports.destroy(this.vmPtr); this.vmPtr = null; }
+
+  // ---- Signaling shim (v0.28) ----
+  // Drain Direct signals emitted by SAY!. Returns array of integer values
+  // (empty if none). Outbox is cleared as a side effect.
+  drainOutboxDirect() {
+    const ptr = this.exports.drain_outbox_direct(this.vmPtr);
+    const mem = new Uint8Array(this.exports.memory.buffer);
+    let end = ptr;
+    while (mem[end] !== 0) end++;
+    const text = this.decoder.decode(mem.slice(ptr, end));
+    if (!text) return [];
+    return text.split(' ').map(s => parseInt(s, 10)).filter(n => !isNaN(n));
+  }
+
+  // Push a Direct signal value into this VM's inbox. Used by the host
+  // when routing siblings' SAY! emissions.
+  pushInboxDirect(value) {
+    this.exports.push_inbox_direct(this.vmPtr, BigInt(value));
+  }
 }
 
 // =========================================================================
@@ -66,7 +85,7 @@ class BrowserMesh {
   }
 
   async init(wasmPath) {
-    const response = await fetch(wasmPath);
+    const response = await fetch(wasmPath, { cache: 'no-store' });
     this.wasmBytes = await response.arrayBuffer();
     // Create the first unit.
     const unit = await this._spawn();
@@ -333,6 +352,23 @@ class BrowserMesh {
     });
 
     return child;
+  }
+
+  // ---- Signaling routing (v0.28) ----
+  // After a unit has eval'd, drain any Direct signals it emitted via SAY!
+  // and deliver each into every sibling's inbox. Returns the array of
+  // emitted values so callers can render them as bubbles. Sender does
+  // not self-receive — matches MultiUnitHost::route_signals_from.
+  drainAndRoute(senderUnit) {
+    const emitted = senderUnit.vm.drainOutboxDirect();
+    if (emitted.length === 0) return emitted;
+    for (const target of this.units) {
+      if (target === senderUnit) continue;
+      for (const value of emitted) {
+        target.vm.pushInboxDirect(value);
+      }
+    }
+    return emitted;
   }
 
   // Get mesh status.

@@ -83,3 +83,50 @@ pub extern "C" fn destroy(vm_ptr: *mut VM) {
         let _ = Box::from_raw(vm_ptr);
     }
 }
+
+// ===========================================================================
+// Signaling shim (v0.28) — drain SAY! emissions and inject Direct signals.
+// ===========================================================================
+// The browser-mesh JS owns cross-unit routing in WASM (no MultiUnitHost in
+// the browser). After every eval, JS calls drain_outbox_direct on the
+// caller, gets a space-separated list of emitted Direct values, renders
+// them as chatter bubbles, and pushes each into every sibling's inbox via
+// push_inbox_direct. Environmental signals are not routed in the browser
+// (MARK!/SENSE shim out per docs/signaling.md §3); the drain ignores them.
+
+/// Drain Direct signals from the VM's outbox and return them as a
+/// NUL-terminated, space-separated decimal list. Empty if the outbox had
+/// no Direct signals. Caller frees.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn drain_outbox_direct(vm_ptr: *mut VM) -> *const u8 {
+    let vm = unsafe { &mut *vm_ptr };
+    let mut out = String::new();
+    let drained: Vec<crate::signaling::Signal> = std::mem::take(&mut vm.outbox);
+    for s in drained {
+        if !s.is_direct() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&s.value.to_string());
+    }
+    let mut bytes = out.into_bytes();
+    bytes.push(0);
+    let ptr = bytes.as_ptr();
+    std::mem::forget(bytes);
+    ptr
+}
+
+/// Push a Direct signal into the VM's inbox with sender = all-zero
+/// (browser mesh does not synthesize sender ids; the visual cue does
+/// not need attribution). Used by the JS routing helper after a
+/// sibling's drain.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn push_inbox_direct(vm_ptr: *mut VM, value: i64) {
+    let vm = unsafe { &mut *vm_ptr };
+    vm.inbox
+        .push(crate::signaling::Signal::direct([0u8; 8], value, 0));
+}

@@ -167,7 +167,7 @@
   </div>
 </div>
 
-<script src="unit.js"></script>
+<script src="unit.js?v=0.28.0"></script>
 <script>
 const terminal = document.getElementById('terminal');
 const input = document.getElementById('input');
@@ -555,7 +555,13 @@ const BEHAVIORS = [
   { weight: 4,  cmd: 'CHALLENGES' },
   { weight: 3,  cmd: 'ENERGY' },
   { weight: 2,  cmd: 'MATE', mate: true },
-  { weight: 12, cmd: null }, // idle
+  // v0.28: real signaling. COURT calls FITNESS SAY!; the value emitted
+  // is drained after eval and rendered as a bubble (same setBubble path
+  // the lone-unit narrative uses, but for a real substrate event).
+  { weight: 6, cmd: 'COURT', signal: true },
+  // LISTEN-side cue: read a pending inbox signal if there is one.
+  { weight: 4, cmd: null, listen: true },
+  { weight: 8, cmd: null }, // idle
 ];
 const totalWeight = BEHAVIORS.reduce((s,b) => s+b.weight, 0);
 let autoIdx = 0; // round-robin index for which unit acts next
@@ -581,6 +587,27 @@ function autoTick() {
   if (autoIdx >= mesh.units.length) autoIdx = 1;
   const unit = mesh.units[autoIdx];
   const behavior = pickBehavior();
+
+  // v0.28 LISTEN cue: receive-side visual for the signaling layer.
+  // No Forth verb is invoked from autoTick here — instead we peek at
+  // INBOX? and, if non-empty, evaluate LISTEN to drain one entry and
+  // render it as a heard-signal bubble. The unit's energy is unchanged
+  // (LISTEN/INBOX? are free per design).
+  if (behavior.listen) {
+    const depth = parseInt(unit.vm.eval('INBOX? .').trim(), 10);
+    if (depth > 0) {
+      // LISTEN pushes (value -1) on success; '. .' prints both then drops.
+      const out = unit.vm.eval('LISTEN . .').trim();
+      const heard = out.split(/\s+/)[0];
+      if (heard) {
+        const msg = `heard ${heard}`;
+        setBubble(unit.id, msg, '#88ccff');
+        addChatter(unit.id, msg);
+      }
+    }
+    return;
+  }
+
   if (!behavior.cmd) return;
 
   // TEACH: actually share words with other units.
@@ -658,6 +685,22 @@ function autoTick() {
     // Credit fitness for autonomous activity.
     if (output && behavior.cmd !== 'OBSERVE') unit.fitness += 1;
   }
+
+  // v0.28: drain real Direct signals emitted by SAY! during this eval
+  // and render them as bubbles + route into siblings' inboxes. The
+  // signal value is whatever the unit's dictionary chose to broadcast
+  // (FITNESS for COURT). This is the substrate showing through —
+  // setBubble is the same path the lone-unit narrative uses.
+  if (mesh.units.length > 1) {
+    const emitted = mesh.drainAndRoute(unit);
+    if (emitted.length > 0) {
+      const last = emitted[emitted.length - 1];
+      const msg = behavior.signal ? `signals ${last}` : `${last}`;
+      setBubble(unit.id, msg, '#9fd');
+      addChatter(unit.id, `(say :from "#${unit.id}" :value ${last})`);
+    }
+  }
+
   if (output) {
     const color = behavior.dream ? '#a080cc' : null;
     setBubble(unit.id, output, color);
