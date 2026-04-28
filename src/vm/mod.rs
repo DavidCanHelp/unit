@@ -379,6 +379,11 @@ pub struct VM {
     pub pending_mate_request: Option<crate::reproduction::MatingRequest>,
     // --- Niche construction ---
     pub niche_profile: crate::niche::NicheProfile,
+    // --- Signaling (v0.28) ---
+    /// Per-unit signal inbox. FIFO with cap 64, drop-from-front on overflow.
+    pub inbox: crate::signaling::Inbox,
+    /// Monotonic tick counter stamped onto outgoing signals.
+    pub signal_tick: u64,
 }
 
 impl Default for VM {
@@ -442,6 +447,8 @@ impl VM {
             mating_offspring: Vec::new(),
             pending_mate_request: None,
             niche_profile: crate::niche::NicheProfile::new(),
+            inbox: crate::signaling::Inbox::new(),
+            signal_tick: 0,
         };
         vm.register_primitives();
         vm

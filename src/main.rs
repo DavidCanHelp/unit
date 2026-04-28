@@ -55,6 +55,9 @@ pub mod reproduction;
 #[allow(dead_code)]
 pub mod niche;
 
+/// Inter-unit signaling — direct (peer inbox) and environmental layers.
+pub mod signaling;
+
 // --- Replication & persistence ---
 #[allow(dead_code)]
 pub mod persist;
