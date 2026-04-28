@@ -16,31 +16,49 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%230a0a0a' width='100' height='100' rx='12'/><text x='50' y='72' font-size='64' font-family='monospace' fill='%2300ff88' text-anchor='middle'>u</text></svg>">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0a0a0a; color: #00ff88; font-family: 'Courier New', monospace; font-size: 14px; height: 100vh; display: flex; flex-direction: column; }
+  body { background: #0a0a0a; color: #00ff88; font-family: 'Courier New', monospace; font-size: 14px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
   a { color: #00ff88; text-decoration: none; } a:hover { text-decoration: underline; }
-  #info { padding: 10px 14px 8px; border-bottom: 1px solid #1a1a1a; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; }
+  #info { padding: 8px 14px; border-bottom: 1px solid #111; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; flex: 0 0 auto; background:#0a0a0a; }
   #info-left { display: flex; align-items: center; gap: 12px; }
   .title { color: #00ff88; font-weight: bold; } .desc { color: #555; font-size: 12px; }
-  #info-right { display: flex; gap: 8px; font-size: 11px; color: #444; align-items: center; }
+  #info-right { display: flex; gap: 6px; font-size: 11px; color: #444; align-items: center; }
   .mode-btn { background: #111; border: 1px solid #222; color: #555; font-family: inherit; font-size: 11px; padding: 2px 8px; border-radius: 3px; cursor: pointer; }
   .mode-btn:hover { color: #00ff88; border-color: #444; }
   .mode-btn.active { color: #00ff88; border-color: #0a4a0a; }
-  #viz { display: none; border-bottom: 1px solid #111; position: relative; }
-  #viz canvas { display: block; width: 100%; }
-  #viz-label { position: absolute; bottom: 4px; right: 8px; font-size: 9px; color: #444; }
-  #chatter { max-height: 80px; overflow-y: auto; padding: 2px 14px; font-size: 10px; color: #445; border-bottom: 1px solid #111; display: none; }
-  #terminal { flex: 1; overflow-y: auto; padding: 12px; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; line-height: 1.4; }
-  #tutorial-bar { padding: 6px 14px; border-top: 1px solid #1a2a1a; border-left: 3px solid #0a4a0a; background: #0a0f0a; font-size: 12px; color: #4a7a4a; display: flex; justify-content: space-between; align-items: center; min-height: 28px; }
+  /* FOREGROUND: viz canvas always visible, fills the room. */
+  #viz { display: block; flex: 1 1 auto; min-height: 240px; position: relative; background:#0a0a14; }
+  #viz canvas { display: block; width: 100%; height: 100%; }
+  #viz-label { position: absolute; bottom: 6px; right: 10px; font-size: 10px; color: #445; letter-spacing: 0.5px; }
+  /* BACKGROUND: metrics strip — small, periphery, still readable. */
+  #dashboard { display: none; flex: 0 0 auto; padding: 6px 12px; background: #08080e; border-top: 1px solid #111; gap: 10px; }
+  #dashboard.visible { display: flex; }
+  @media (max-width:768px) { #dashboard.visible { flex-wrap: wrap; } }
+  .dash-panel { background:#0c0c14; border:1px solid #181828; border-radius:3px; padding:4px 8px; flex: 1 1 0; min-width: 110px; }
+  .dash-title { font-size:9px; color:#3a3a55; margin-bottom:3px; text-transform:uppercase; letter-spacing:1px; }
+  .dash-panel svg { width:100%; display:block; }
+  /* REPL DRAWER: collapsed by default, contains all REPL surface. */
+  #repl-drawer { display: flex; flex-direction: column; flex: 0 0 auto; height: 32px; overflow: hidden; background:#0a0a0a; border-top: 1px solid #1a1a1a; transition: height 0.22s ease; }
+  #repl-drawer.open { height: 50vh; }
+  #repl-handle { display:flex; align-items:center; gap:10px; padding:6px 14px; height:32px; cursor:pointer; user-select:none; background:#0d0d0d; color:#556; font-size:11px; flex: 0 0 auto; }
+  #repl-handle:hover { color:#00ff88; }
+  #repl-handle .chev { display:inline-block; width:10px; transition: transform 0.2s; color:#338; }
+  #repl-drawer.open #repl-handle .chev { transform: rotate(90deg); color:#00ff88; }
+  #repl-handle .label { letter-spacing:0.5px; }
+  #repl-handle .hint-text { color:#333; font-size:10px; margin-left:auto; }
+  #repl-body { flex: 1 1 auto; display:flex; flex-direction:column; overflow:hidden; min-height: 0; }
+  #chatter { max-height: 70px; overflow-y: auto; padding: 4px 14px; font-size: 10px; color: #445; border-bottom: 1px solid #111; flex: 0 0 auto; background:#08080a; }
+  #terminal { flex: 1 1 auto; overflow-y: auto; padding: 10px 14px; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; line-height: 1.4; min-height:0; }
+  #tutorial-bar { padding: 5px 14px; border-top: 1px solid #1a2a1a; border-left: 3px solid #0a4a0a; background: #0a0f0a; font-size: 12px; color: #4a7a4a; display: flex; justify-content: space-between; align-items: center; min-height: 26px; flex: 0 0 auto; }
   #tutorial-bar .step { color: #2a5a2a; font-size: 10px; }
   #tutorial-bar .cmd { color: #00ff88; background: #0d1a0d; padding: 1px 6px; border-radius: 2px; cursor: pointer; border: 1px solid #1a3a1a; }
   #tutorial-bar .cmd:hover { background: #0a2a0a; }
   #tutorial-bar .skip { color: #333; cursor: pointer; font-size: 10px; margin-left: 12px; }
   #tutorial-bar .skip:hover { color: #666; }
   #tutorial-bar .links a { margin: 0 6px; font-size: 11px; }
-  #hints { padding: 4px 14px 6px; border-top: 1px solid #111; font-size: 11px; color: #333; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  #hints { padding: 4px 14px; border-top: 1px solid #111; font-size: 11px; color: #333; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; flex: 0 0 auto; }
   .hint { color: #2a6; cursor: pointer; background: #0d0d0d; padding: 1px 5px; border-radius: 2px; border: 1px solid #1a1a1a; }
   .hint:hover { color: #00ff88; border-color: #333; }
-  #input-line { display: flex; padding: 8px 14px; background: #0d0d0d; border-top: 1px solid #222; }
+  #input-line { display: flex; padding: 6px 14px; background: #0d0d0d; border-top: 1px solid #222; flex: 0 0 auto; }
   #prompt { color: #00ff88; margin-right: 8px; line-height: 24px; }
   #input { flex: 1; background: transparent; border: none; outline: none; color: #00ff88; font-family: inherit; font-size: 14px; caret-color: #00ff88; }
   .output { color: #bbb; } .error { color: #ff4444; } .info { color: #555; } .mesh-event { color: #886; } .tutorial-msg { color: #3a6a3a; font-style: italic; }
@@ -49,55 +67,104 @@
   #genome-panel .gp-close { position:absolute; top:4px; right:8px; cursor:pointer; color:#666; font-size:14px; }
   #genome-panel .gp-close:hover { color:#ff4444; }
   #genome-cmd { width:100%; background:#111; border:1px solid #333; color:#00ff88; font-family:monospace; font-size:11px; padding:2px 4px; margin-top:6px; outline:none; }
-  #dashboard { display:none; border-bottom:1px solid #111; padding:8px 14px; background:#0a0a14; }
-  #dashboard.visible { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-  @media (max-width:768px) { #dashboard.visible { grid-template-columns:1fr; } }
-  .dash-panel { background:#0d0d14; border:1px solid #1a1a2a; border-radius:3px; padding:6px 8px; }
-  .dash-title { font-size:9px; color:#555; margin-bottom:4px; text-transform:uppercase; letter-spacing:1px; }
-  .dash-panel svg { width:100%; display:block; }
 </style>
 </head>
 <body>
+<!--
+  ============================================================================
+  LAYOUT PLAN — alife-first thesis (presentation pass, no sim changes)
+  ============================================================================
+
+  The visitor lands on a living thing, not a metrics dashboard.
+
+  +--------------------------------------------------------------------------+
+  | #info — slim header: title + chips (repl, metrics, mute, GitHub)         |
+  +--------------------------------------------------------------------------+
+  |                                                                          |
+  |   FOREGROUND  (#viz)                                                     |
+  |   - canvas fills the screen; one organism at start, then more            |
+  |   - speech bubbles are the primary text — larger, longer-lived           |
+  |   - births: scale-in + fade-in over ~400ms (#node.bornAt drives it)      |
+  |   - lone unit emits "Hello?" sparsely; after 3 unanswered calls          |
+  |     it says "Spawn" and we trigger an actual mesh.spawn() — same         |
+  |     code path as autoSpawnCheck, just unlocked while alone               |
+  |                                                                          |
+  |   MIDGROUND                                                              |
+  |   - existing lineage edges already say "one became many" — kept,         |
+  |     just less competing chrome around them                               |
+  |                                                                          |
+  +--------------------------------------------------------------------------+
+  | #dashboard — METRICS STRIP, demoted to a thin row at the bottom edge.    |
+  |   Visible by default but small. fitness / energy / challenges / heatmap. |
+  +--------------------------------------------------------------------------+
+  | #repl-drawer — collapsed by default, toggled by the "repl" chip.         |
+  |   Expands upward to reveal tutorial bar, hints, terminal, input.         |
+  |   Nothing is removed — every existing word, the tutorial, history        |
+  |   navigation, DIST-GOAL, share, etc. all still live here.                |
+  +--------------------------------------------------------------------------+
+
+  Chatter feed (#chatter) is folded into the REPL drawer as the chronological
+  log — bubbles in the canvas remain the primary surface. Mute still works.
+
+  Hooks added (no behavior change):
+    - startLoneChatter(): sets a sparse interval emitting "Hello?" when alone.
+      This drives setBubble + addChatter only — no VM eval that affects fitness.
+    - After N (=3) unanswered calls, emit "Spawn" bubble and call doSpawn().
+      doSpawn() already exists and is the user-clickable spawn path, so the
+      simulation behaves exactly as if the user had clicked.
+    - Birth animation: each new node gets bornAt = now; vizTick scales radius
+      and alpha for the first ~400ms of life.
+-->
 <div id="info">
   <div id="info-left">
-    <span class="title">unit v0.26.0</span>
+    <span class="title">unit v0.27.0</span>
     <span class="desc">A self-replicating software nanobot.</span>
   </div>
   <div id="info-right">
     <button class="mode-btn" id="spawn-btn" onclick="doSpawn()">spawn (1/7)</button>
-    <button class="mode-btn" id="viz-toggle" onclick="cycleVizMode()">mesh</button>
     <button class="mode-btn" id="mute-btn" onclick="toggleMute()">chatter</button>
-    <button class="mode-btn" id="dash-btn" onclick="toggleDashboard()">dashboard</button>
+    <button class="mode-btn" id="dash-btn" onclick="toggleDashboard()">metrics</button>
+    <button class="mode-btn" id="repl-btn" onclick="toggleRepl()">repl</button>
+    <button class="mode-btn" id="viz-toggle" onclick="cycleVizMode()" style="display:none">mesh</button>
     <a href="https://github.com/DavidCanHelp/unit">GitHub</a>
     <a href="https://crates.io/crates/unit">crates.io</a>
   </div>
 </div>
-<div id="viz" style="position:relative"><canvas id="viz-canvas"></canvas><span id="viz-label"></span><div id="genome-panel"><span class="gp-close" onclick="closeGenome()">x</span><div id="genome-content"></div><input id="genome-cmd" placeholder="run command on this unit..." /></div></div>
-<div id="chatter"></div>
-<div id="dashboard">
+<div id="viz"><canvas id="viz-canvas"></canvas><span id="viz-label"></span><div id="genome-panel"><span class="gp-close" onclick="closeGenome()">x</span><div id="genome-content"></div><input id="genome-cmd" placeholder="run command on this unit..." /></div></div>
+<div id="dashboard" class="visible">
   <div class="dash-panel">
-    <div class="dash-title">fitness over generations</div>
-    <svg id="dash-fitness" viewBox="0 0 200 60" preserveAspectRatio="none"><polyline id="fitness-line" fill="none" stroke="#4EC9B0" stroke-width="1.5" points=""/><text x="2" y="10" font-size="7" fill="#555" id="fitness-label"></text></svg>
+    <div class="dash-title">fitness</div>
+    <svg id="dash-fitness" viewBox="0 0 200 32" preserveAspectRatio="none"><polyline id="fitness-line" fill="none" stroke="#4EC9B0" stroke-width="1.5" points=""/><text x="2" y="9" font-size="7" fill="#555" id="fitness-label"></text></svg>
   </div>
   <div class="dash-panel">
     <div class="dash-title">energy</div>
     <svg id="dash-energy" viewBox="0 0 200 16"><rect x="0" y="2" width="200" height="12" fill="#111" rx="2"/><rect id="energy-fill" x="0" y="2" width="100" height="12" fill="#4EC9B0" rx="2"/><text id="energy-text" x="100" y="11" font-size="8" fill="#ccc" text-anchor="middle"></text></svg>
   </div>
   <div class="dash-panel">
-    <div class="dash-title">challenge tree</div>
-    <svg id="dash-tree" viewBox="0 0 200 80"></svg>
+    <div class="dash-title">challenges</div>
+    <svg id="dash-tree" viewBox="0 0 200 32"></svg>
   </div>
   <div class="dash-panel">
-    <div class="dash-title">population heatmap</div>
+    <div class="dash-title">population</div>
     <svg id="dash-heatmap" viewBox="0 0 200 16"></svg>
   </div>
 </div>
-<div id="terminal" onclick="document.getElementById('input').focus()"></div>
-<div id="tutorial-bar"></div>
-<div id="hints"></div>
-<div id="input-line">
-  <span id="prompt">&gt;</span>
-  <input id="input" type="text" autofocus autocomplete="off" spellcheck="false">
+<div id="repl-drawer">
+  <div id="repl-handle" onclick="toggleRepl()">
+    <span class="chev">&#x25B6;</span>
+    <span class="label">REPL &amp; chatter log</span>
+    <span class="hint-text">click to expand the Forth REPL, tutorial, and full chatter feed</span>
+  </div>
+  <div id="repl-body">
+    <div id="chatter"></div>
+    <div id="terminal" onclick="document.getElementById('input').focus()"></div>
+    <div id="tutorial-bar"></div>
+    <div id="hints"></div>
+    <div id="input-line">
+      <span id="prompt">&gt;</span>
+      <input id="input" type="text" autocomplete="off" spellcheck="false">
+    </div>
+  </div>
 </div>
 
 <script src="unit.js"></script>
@@ -122,6 +189,15 @@ function toggleMute() {
   muteBtn.className = chatterOn ? 'mode-btn active' : 'mode-btn';
 }
 
+// REPL drawer — collapsed by default. Opens on click; focuses the input.
+const replDrawer = document.getElementById('repl-drawer');
+function toggleRepl() {
+  const open = replDrawer.classList.toggle('open');
+  document.getElementById('repl-btn').className = open ? 'mode-btn active' : 'mode-btn';
+  if (open) setTimeout(() => { resizeCanvas(); document.getElementById('input').focus(); }, 250);
+  else setTimeout(resizeCanvas, 250);
+}
+
 // =========================================================================
 // Visualizer
 // =========================================================================
@@ -139,19 +215,20 @@ function cycleVizMode() {
   applyVizMode();
 }
 function applyVizMode() {
+  // Viz is always visible in the alife-first layout. The cycle button is hidden
+  // by default but kept callable so anyone with the old habit can still hit it
+  // via the console — it now just resizes the canvas to current container.
   vizToggle.className = vizMode > 0 ? 'mode-btn active' : 'mode-btn';
-  if (vizMode === 0) { vizDiv.style.display = 'none'; chatterDiv.style.display = 'none'; terminal.style.flex = '1'; }
-  else if (vizMode === 1) { vizDiv.style.display = 'block'; vizDiv.style.height = '40vh'; chatterDiv.style.display = 'block'; terminal.style.flex = '1'; }
-  else { vizDiv.style.display = 'block'; vizDiv.style.height = 'calc(100vh - 120px)'; chatterDiv.style.display = 'block'; terminal.style.flex = '0'; terminal.style.height = '0'; terminal.style.overflow = 'hidden'; }
-  if (vizMode < 2) { terminal.style.flex = '1'; terminal.style.height = ''; terminal.style.overflow = ''; }
   resizeCanvas();
 }
 function resizeCanvas() {
   const r = vizDiv.getBoundingClientRect();
-  vizCanvas.width = r.width * devicePixelRatio;
-  vizCanvas.height = r.height * devicePixelRatio;
+  if (r.width === 0 || r.height === 0) return;
+  vizCanvas.width = Math.max(1, r.width * devicePixelRatio);
+  vizCanvas.height = Math.max(1, r.height * devicePixelRatio);
+  vizCanvas.style.width = r.width + 'px';
   vizCanvas.style.height = r.height + 'px';
-  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 }
 
 function moodColor(fitness) {
@@ -172,7 +249,10 @@ function syncVizFromMesh() {
       n = {
         id: u.id, x: W/2+(Math.random()-0.5)*100, y: H/2+(Math.random()-0.5)*80,
         vx: 0, vy: 0, fitness: u.fitness, color: isFirst ? '#00ff88' : '#00ccff',
-        alpha: 0, pulse: 1.5, label: isFirst ? u.id + ' ' + (mesh.units[0].personality || 'self') : u.id, glowColor: moodColor(u.fitness)
+        alpha: 0, pulse: 1.5, label: isFirst ? u.id + ' ' + (mesh.units[0].personality || 'self') : u.id,
+        glowColor: moodColor(u.fitness),
+        // bornAt drives the birth animation (~400ms scale + fade-in).
+        bornAt: Date.now()
       };
       vizNodes.push(n);
       if (!isFirst) vizEdges.push({ from: vizNodes[0].id, to: u.id });
@@ -189,9 +269,10 @@ function syncVizFromMesh() {
 
 function setBubble(unitId, text, color) {
   const existing = vizBubbles.find(b => b.id === unitId);
-  const short = text.split('\n')[0].substring(0, 35);
-  if (existing) { existing.text = short; existing.age = 0; existing.color = color || '#6a8'; }
-  else vizBubbles.push({ id: unitId, text: short, age: 0, color: color || '#6a8' });
+  const oneLine = text.split('\n')[0];
+  const short = oneLine.length > 36 ? oneLine.slice(0, 34) + '…' : oneLine;
+  if (existing) { existing.text = short; existing.age = 0; existing.color = color || '#9fd'; }
+  else vizBubbles.push({ id: unitId, text: short, age: 0, color: color || '#9fd' });
 }
 
 function toSexp(unitId, text) {
@@ -217,7 +298,6 @@ function emitParticle(fromId, toId, color) {
 }
 
 function vizTick() {
-  if (vizMode === 0) { requestAnimationFrame(vizTick); return; }
   syncVizFromMesh();
   const W = vizCanvas.width/devicePixelRatio||400, H = vizCanvas.height/devicePixelRatio||300;
   ctx.clearRect(0, 0, W, H);
@@ -234,7 +314,18 @@ function vizTick() {
     }
     n.x += n.vx + (Math.random()-0.5)*0.3; n.y += n.vy + (Math.random()-0.5)*0.3;
     n.x = Math.max(40, Math.min(W-40, n.x)); n.y = Math.max(40, Math.min(H-40, n.y));
-    if (n.alpha < 1) n.alpha = Math.min(1, n.alpha + 0.02);
+    // Birth animation: scale + fade in over BIRTH_MS, easing out.
+    const BIRTH_MS = 420;
+    const birthAge = (Date.now() - (n.bornAt || 0)) / BIRTH_MS;
+    if (birthAge < 1) {
+      const t = Math.max(0, birthAge);
+      const ease = 1 - Math.pow(1 - t, 3);
+      n.alpha = ease;
+      n.birthScale = 0.25 + 0.75 * ease;
+    } else {
+      n.alpha = 1;
+      n.birthScale = 1;
+    }
     if (n.pulse > 1) n.pulse -= 0.02;
   }
 
@@ -282,7 +373,7 @@ function vizTick() {
     const heartScale = heartPhase < 0.167 ? 1 + 0.05 * Math.sin(heartPhase / 0.167 * Math.PI) : 1;
 
     const r = 6 + Math.min(n.fitness, 200) * 0.15;
-    const pr = r * n.pulse * heartScale;
+    const pr = r * n.pulse * heartScale * (n.birthScale || 1);
     const gc = ctx.createRadialGradient(n.x,n.y,pr,n.x,n.y,pr+12);
     gc.addColorStop(0, (n.glowColor||n.color)+'33'); gc.addColorStop(1, 'transparent');
     ctx.beginPath(); ctx.arc(n.x,n.y,pr+8,0,Math.PI*2); ctx.fillStyle = gc; ctx.fill();
@@ -354,23 +445,36 @@ function vizTick() {
     ctx.globalAlpha = 1;
   }
 
-  // Speech bubbles
+  // Speech bubbles — primary text surface; readable, longer-lived.
   for (let i = vizBubbles.length-1; i >= 0; i--) {
     const b = vizBubbles[i]; b.age += 0.016;
-    if (b.age > 3) { vizBubbles.splice(i,1); continue; }
+    if (b.age > 5) { vizBubbles.splice(i,1); continue; }
     const n = vizNodes.find(nd => nd.id === b.id);
     if (!n) continue;
-    const alpha = b.age < 2.5 ? 1 : Math.max(0, 1-(b.age-2.5)*2);
-    const bx = n.x, by = n.y - 24;
+    const inAlpha = Math.min(1, b.age / 0.18);
+    const outAlpha = b.age < 4.2 ? 1 : Math.max(0, 1-(b.age-4.2)*1.25);
+    const alpha = Math.min(inAlpha, outAlpha);
+    ctx.font = 'bold 13px "Courier New", monospace';
     const tw = ctx.measureText(b.text).width;
+    const pad = 8, bw = tw+pad*2, bh = 22;
+    const bx = n.x, by = n.y - (10 + (n.birthScale||1)*8) - 6;
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = '#111'; ctx.strokeStyle = '#333';
-    const pad = 4, bw = tw+pad*2, bh = 14;
+    ctx.fillStyle = '#0a1414';
+    ctx.strokeStyle = (b.color || '#9fd') + '88';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.roundRect ? ctx.roundRect(bx-bw/2, by-bh, bw, bh, 3) : ctx.rect(bx-bw/2, by-bh, bw, bh);
+    if (ctx.roundRect) ctx.roundRect(bx-bw/2, by-bh, bw, bh, 5);
+    else ctx.rect(bx-bw/2, by-bh, bw, bh);
     ctx.fill(); ctx.stroke();
-    ctx.fillStyle = b.color || '#6a8'; ctx.font = '8px monospace'; ctx.textAlign = 'center';
-    ctx.fillText(b.text, bx, by-3);
+    // Tail pointing at the unit.
+    ctx.beginPath();
+    ctx.moveTo(bx-4, by); ctx.lineTo(bx+4, by); ctx.lineTo(bx, by+5); ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = b.color || '#9fd';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.text, bx, by-bh/2);
+    ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
   }
 
@@ -579,6 +683,49 @@ function autoTick() {
 }
 setInterval(autoTick, 5000);
 
+// =========================================================================
+// Lone-unit chatter — the alife thesis opening line.
+// =========================================================================
+// When the mesh has exactly one unit, the lone unit calls "Hello?" into
+// the void at a sparse cadence. After three unanswered calls it emits
+// "Spawn" and triggers an actual mesh spawn — same code path as clicking
+// the spawn button, so simulation behavior is unchanged.
+//
+// Driven by setTimeout/setInterval (not rAF) so a visitor who tabs away
+// during the first ~15s still returns to a colony of two — Chrome throttles
+// background timers but does not suspend them.
+//
+// True one-shot: once spawn fires, loneSequenceDone latches and we clear
+// the interval. The sequence will not re-fire even if the colony later
+// shrinks back to a single unit. Normal chatter (autoTick, autoSpawnCheck)
+// continues independently.
+let loneCount = 0;
+let loneSequenceDone = false;
+let loneIntervalId = null;
+const HELLO_PHRASES = ['Hello?', 'Anyone there?', 'Hello?'];
+async function loneChatterTick() {
+  if (loneSequenceDone) return;
+  if (!mesh || !chatterOn) return;
+  if (mesh.units.length !== 1) { loneCount = 0; return; }
+  const self = mesh.units[0];
+  if (loneCount < 3) {
+    const text = HELLO_PHRASES[loneCount];
+    setBubble(self.id, text, '#9fd');
+    addChatter(self.id, text);
+    loneCount++;
+  } else {
+    setBubble(self.id, 'Spawn', '#00ff88');
+    addChatter(self.id, 'Spawn');
+    loneSequenceDone = true;
+    if (loneIntervalId !== null) { clearInterval(loneIntervalId); loneIntervalId = null; }
+    // Ring on the parent before the child appears.
+    const selfNode = vizNodes.find(nd => nd.id === self.id);
+    if (selfNode) vizSpawnRings.push({ x: selfNode.x, y: selfNode.y, time: Date.now(), color: selfNode.color });
+    setTimeout(() => doSpawn(), 600);
+  }
+}
+loneIntervalId = setInterval(loneChatterTick, 4500);
+
 async function autoSpawnCheck() {
   if (!mesh || !tutorialComplete) return;
   if (mesh.units.length < 2 || mesh.units.length >= mesh.maxUnits) return;
@@ -634,9 +781,9 @@ async function doSpawn() {
     spawnBtn.textContent = `spawn (${mesh.units.length}/${mesh.maxUnits})`;
     appendOutput(`[mesh] unit #${u.id} spawned (${mesh.units.length} units online)\n`, 'mesh-event');
     const peers = mesh.units.length - 1;
-    const hello = `(peer-hello :id "#${u.id}" :gen 0 :peers ${peers} :fitness 0)`;
-    addChatter(u.id, hello);
-    setTimeout(() => { setBubble(u.id, hello); }, 1000);
+    addChatter(u.id, `(peer-hello :id "#${u.id}" :gen 0 :peers ${peers} :fitness 0)`);
+    // Short, readable bubble for the canvas — chatter feed keeps the full sexp.
+    setTimeout(() => { setBubble(u.id, 'Hi!', '#00ccff'); }, 900);
   }
 }
 
@@ -763,6 +910,8 @@ async function init() {
     appendOutput('browser mesh: 1 unit online\n', 'mesh-event');
     addChatter('self', `(peer-hello :id "self" :gen 0 :fitness 0 :peers 0)`);
     renderTutorial();
+    // Kick off the lone chatter early so the visitor sees "Hello?" promptly.
+    setTimeout(loneChatterTick, 1800);
   } catch (e) {
     appendOutput('Failed to load WASM: ' + e.message + '\n', 'error');
   }
@@ -1130,15 +1279,16 @@ input.addEventListener('keydown', async (e) => {
 // =========================================================================
 const dashDiv = document.getElementById('dashboard');
 const dashBtn = document.getElementById('dash-btn');
-let dashVisible = false;
+// Metrics strip is visible by default but demoted; clicking the chip hides it.
+let dashVisible = dashDiv.classList.contains('visible');
 
 function toggleDashboard() {
   dashVisible = !dashVisible;
   dashDiv.className = dashVisible ? 'visible' : '';
   dashBtn.className = dashVisible ? 'mode-btn active' : 'mode-btn';
+  setTimeout(resizeCanvas, 0);
 }
-// Auto-show on desktop.
-if (dashVisible) { dashDiv.className = 'visible'; dashBtn.className = 'mode-btn active'; }
+if (dashVisible) dashBtn.className = 'mode-btn active';
 
 // --- Fitness Graph ---
 const fitnessData = []; // { gen, fitness }
