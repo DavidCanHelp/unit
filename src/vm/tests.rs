@@ -897,3 +897,79 @@ fn test_listen_does_not_charge_energy() {
     eval(&mut vm, "LISTEN");
     assert_eq!(vm.energy.energy, energy_before, "reads must be free");
 }
+
+// -----------------------------------------------------------------------
+// Signaling primitives (v0.28) — environmental channel
+// -----------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_mark_pushes_environmental_signal() {
+    let mut vm = test_vm();
+    // No dominant niche → should fall back to "general".
+    let energy_before = vm.energy.energy;
+    eval(&mut vm, "55 MARK!");
+    assert_eq!(vm.outbox.len(), 1);
+    let s = &vm.outbox[0];
+    assert!(!s.is_direct(), "MARK! emits Environmental, not Direct");
+    match &s.kind {
+        crate::signaling::SignalKind::Environmental { niche } => {
+            assert_eq!(niche, "general");
+        }
+        _ => panic!("expected Environmental kind"),
+    }
+    assert_eq!(s.value, 55);
+    assert_eq!(
+        vm.energy.energy,
+        energy_before - crate::energy::MARK_COST,
+        "MARK! must charge MARK_COST"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_mark_uses_dominant_niche() {
+    let mut vm = test_vm();
+    vm.niche_profile
+        .specializations
+        .insert("fibonacci".to_string(), 0.9);
+    eval(&mut vm, "100 MARK!");
+    let s = &vm.outbox[0];
+    match &s.kind {
+        crate::signaling::SignalKind::Environmental { niche } => {
+            assert_eq!(niche, "fibonacci");
+        }
+        _ => panic!("expected Environmental"),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_mark_no_op_when_starving() {
+    let mut vm = test_vm();
+    vm.energy.energy = -498;
+    let energy_before = vm.energy.energy;
+    eval(&mut vm, "9 MARK!");
+    assert!(vm.outbox.is_empty());
+    assert_eq!(vm.stack, vec![9]);
+    assert_eq!(vm.energy.energy, energy_before);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_sense_reads_env_view() {
+    let mut vm = test_vm();
+    vm.env_view = 42;
+    let energy_before = vm.energy.energy;
+    eval(&mut vm, "SENSE");
+    assert_eq!(vm.stack, vec![42]);
+    assert_eq!(vm.energy.energy, energy_before, "SENSE is free");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_sense_default_zero() {
+    let mut vm = test_vm();
+    eval(&mut vm, "SENSE");
+    assert_eq!(vm.stack, vec![0]);
+}

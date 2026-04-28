@@ -284,6 +284,8 @@ pub(crate) const P_SOLUTIONS: usize = 503;
 pub(crate) const P_SAY_BANG: usize = 504;
 pub(crate) const P_LISTEN: usize = 505;
 pub(crate) const P_INBOX_QUERY: usize = 506;
+pub(crate) const P_MARK_BANG: usize = 507;
+pub(crate) const P_SENSE: usize = 508;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -391,6 +393,10 @@ pub struct VM {
     pub outbox: Vec<crate::signaling::Signal>,
     /// Monotonic tick counter stamped onto outgoing signals.
     pub signal_tick: u64,
+    /// Cached environmental-field strength for this unit's dominant niche.
+    /// Refreshed by the host between evals via `refresh_env_view`. Read by
+    /// SENSE. Native-only meaningfully; on wasm32 stays at 0.
+    pub env_view: i64,
 }
 
 impl Default for VM {
@@ -457,6 +463,7 @@ impl VM {
             inbox: crate::signaling::Inbox::new(),
             outbox: Vec::new(),
             signal_tick: 0,
+            env_view: 0,
         };
         vm.register_primitives();
         vm
@@ -730,6 +737,8 @@ impl VM {
             ("SAY!", P_SAY_BANG, false),
             ("LISTEN", P_LISTEN, false),
             ("INBOX?", P_INBOX_QUERY, false),
+            ("MARK!", P_MARK_BANG, false),
+            ("SENSE", P_SENSE, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1594,6 +1603,8 @@ impl VM {
             P_SAY_BANG => self.prim_say_bang(),
             P_LISTEN => self.prim_listen(),
             P_INBOX_QUERY => self.prim_inbox_query(),
+            P_MARK_BANG => self.prim_mark_bang(),
+            P_SENSE => self.prim_sense(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),
@@ -1686,6 +1697,61 @@ impl VM {
     /// consuming them. Free; lets evolved code branch on signal arrival.
     pub(crate) fn prim_inbox_query(&mut self) {
         self.stack.push(self.inbox.len() as i64);
+    }
+
+    /// `MARK!` ( v -- ) — deposit value `v` into the environmental field
+    /// for this unit's dominant niche. Costs `MARK_COST` energy. The
+    /// host's `route_signals_from` consumes the Environmental signal
+    /// from outbox and applies it to the per-host `EnvironmentalField`.
+    /// Native only; wasm32 shims to a one-line notice.
+    pub(crate) fn prim_mark_bang(&mut self) {
+        if self.stack.is_empty() {
+            eprintln!("stack underflow");
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = self.pop();
+            self.emit_str("MARK! not available in browser\n");
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if !self.energy.can_afford(crate::energy::MARK_COST) {
+                return;
+            }
+            // The dominant niche keys the slot; if no clear specialization,
+            // fall back to "general" so the verb still has somewhere to
+            // deposit. This mirrors how the niche system itself handles
+            // pre-specialization units.
+            let niche = crate::niche::dominant_niche(&self.niche_profile)
+                .map(|(k, _)| k)
+                .unwrap_or_else(|| "general".to_string());
+            let value = self.pop();
+            let _ = self.energy.spend(crate::energy::MARK_COST, "mark");
+            let sender = self.node_id_cache.unwrap_or([0u8; 8]);
+            self.signal_tick = self.signal_tick.wrapping_add(1);
+            self.outbox.push(crate::signaling::Signal::environmental(
+                sender,
+                value,
+                niche,
+                self.signal_tick,
+            ));
+        }
+    }
+
+    /// `SENSE` ( -- v ) — push current environmental strength for this
+    /// unit's niche. Free. Native: reads `env_view`, populated by the
+    /// host between evals. WASM: shim emits a notice and pushes 0.
+    pub(crate) fn prim_sense(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.emit_str("SENSE not available in browser\n");
+            self.stack.push(0);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.stack.push(self.env_view);
+        }
     }
 
     // -----------------------------------------------------------------------

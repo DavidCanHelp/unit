@@ -45,6 +45,12 @@ pub struct GoalResult {
 pub struct MultiUnitHost {
     pub units: Vec<UnitSlot>,
     cap: usize,
+    /// Per-host environmental signal field — the second signaling layer.
+    /// MARK! deposits into it (via outbox routing); SENSE reads from it
+    /// (via per-VM env_view caches refreshed between evals). Native-only
+    /// in v0.28; the wasm32 demo runs without one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub env_field: crate::signaling::EnvironmentalField,
 }
 
 impl MultiUnitHost {
@@ -52,6 +58,8 @@ impl MultiUnitHost {
         MultiUnitHost {
             units: Vec::new(),
             cap,
+            #[cfg(not(target_arch = "wasm32"))]
+            env_field: crate::signaling::EnvironmentalField::new(),
         }
     }
 
@@ -102,11 +110,15 @@ impl MultiUnitHost {
         Some(idx)
     }
 
-    /// Drain unit[idx]'s outbox and deliver each Direct signal into every
-    /// other unit's inbox. Returns the count of signals delivered.
-    /// Environmental signals are routed through `EnvironmentalField`
-    /// (added in the next commit) — Direct-only here.
-    /// Callers invoke after eval to propagate SAY! emissions.
+    /// Drain unit[idx]'s outbox and route each signal:
+    ///   - Direct: deliver to every sibling's inbox (sender does not
+    ///     self-receive).
+    ///   - Environmental: deposit into the per-host `EnvironmentalField`
+    ///     keyed by the signal's niche.
+    ///
+    /// Returns the count of cross-unit deliveries (Direct signal × sibling
+    /// count); Environmental deposits are not counted in this number.
+    /// Callers invoke after eval to propagate SAY! / MARK! emissions.
     pub fn route_signals_from(&mut self, idx: usize) -> usize {
         if idx >= self.units.len() {
             return 0;
@@ -118,18 +130,50 @@ impl MultiUnitHost {
         }
         let mut delivered = 0;
         for signal in &outgoing {
-            if !signal.is_direct() {
-                continue;
-            }
-            for (j, slot) in self.units.iter_mut().enumerate() {
-                if j == idx {
-                    continue;
+            match &signal.kind {
+                crate::signaling::SignalKind::Direct => {
+                    for (j, slot) in self.units.iter_mut().enumerate() {
+                        if j == idx {
+                            continue;
+                        }
+                        slot.vm.inbox.push(signal.clone());
+                        delivered += 1;
+                    }
                 }
-                slot.vm.inbox.push(signal.clone());
-                delivered += 1;
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::signaling::SignalKind::Environmental { niche } => {
+                    self.env_field.deposit(niche.clone(), signal.value as f64);
+                }
+                #[cfg(target_arch = "wasm32")]
+                crate::signaling::SignalKind::Environmental { .. } => {
+                    // No-op on wasm32 — MARK! shim never produces these
+                    // signals, but defend against future code paths.
+                }
             }
         }
         delivered
+    }
+
+    /// Refresh unit[idx]'s `env_view` cache from the per-host environmental
+    /// field, keyed by its dominant niche. Called between evals so SENSE
+    /// returns a current value. Native-only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn refresh_env_view(&mut self, idx: usize) {
+        if idx >= self.units.len() {
+            return;
+        }
+        let niche = crate::niche::dominant_niche(&self.units[idx].vm.niche_profile)
+            .map(|(k, _)| k)
+            .unwrap_or_else(|| "general".to_string());
+        let v = self.env_field.sense(&niche);
+        self.units[idx].vm.env_view = v;
+    }
+
+    /// Apply one decay step to the environmental field. Native-only; the
+    /// wasm32 demo has no field to age.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn env_decay_tick(&mut self) {
+        self.env_field.decay_tick();
     }
 
     /// Define a word on one specific unit and record the source string in
@@ -825,5 +869,77 @@ mod tests {
         h.route_signals_from(0);
         let received = h.units[1].vm.inbox.iter().next().unwrap();
         assert_eq!(received.sender, id0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Environmental signaling host integration (v0.28, native-only)
+    // -----------------------------------------------------------------------
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn mark_then_route_deposits_in_env_field() {
+        let mut h = MultiUnitHost::new(2);
+        h.spawn_n(2);
+        h.units[0]
+            .vm
+            .niche_profile
+            .specializations
+            .insert("fibonacci".to_string(), 0.9);
+        h.units[0].vm.eval("100 MARK!");
+        h.route_signals_from(0);
+        assert_eq!(h.env_field.sense("fibonacci"), 100);
+        assert_eq!(h.env_field.sense("general"), 0);
+        // Direct delivery count for env signals is zero.
+        assert_eq!(h.units[1].vm.inbox.len(), 0);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn refresh_env_view_populates_sense() {
+        let mut h = MultiUnitHost::new(2);
+        h.spawn_n(2);
+        h.env_field.deposit("fibonacci".to_string(), 200.0);
+        h.units[1]
+            .vm
+            .niche_profile
+            .specializations
+            .insert("fibonacci".to_string(), 0.9);
+        h.refresh_env_view(1);
+        h.units[1].vm.eval("SENSE");
+        assert_eq!(h.units[1].vm.stack, vec![200]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn env_decay_tick_ages_field() {
+        let mut h = MultiUnitHost::new(1);
+        h.spawn_n(1);
+        h.env_field.deposit("fib".to_string(), 100.0);
+        for _ in 0..5 {
+            h.env_decay_tick();
+        }
+        // 100 * 0.95^5 ≈ 77
+        let v = h.env_field.sense("fib");
+        assert!((76..=78).contains(&v), "got {}", v);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn mixed_say_and_mark_route_correctly() {
+        let mut h = MultiUnitHost::new(2);
+        h.spawn_n(2);
+        h.units[0]
+            .vm
+            .niche_profile
+            .specializations
+            .insert("sorting".to_string(), 0.9);
+        // One SAY! and one MARK! from the same unit, same eval cycle.
+        h.units[0].vm.eval("7 SAY! 50 MARK!");
+        h.route_signals_from(0);
+        // Direct went to sibling.
+        assert_eq!(h.units[1].vm.inbox.len(), 1);
+        assert_eq!(h.units[1].vm.inbox.iter().next().unwrap().value, 7);
+        // Environmental went to the field.
+        assert_eq!(h.env_field.sense("sorting"), 50);
     }
 }
