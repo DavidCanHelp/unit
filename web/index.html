@@ -1384,9 +1384,12 @@ function updateFitnessGraph(gen, fitness) {
   fitnessData.push({ gen, fitness });
   if (fitnessData.length > 100) fitnessData.shift();
   const maxF = Math.max(1, ...fitnessData.map(d => d.fitness));
+  // dash-fitness viewBox is "0 0 200 32"; keep the line inside the
+  // 32-unit-tall canvas (3px top/bottom margin). Pre-demotion coords
+  // assumed a 60-unit-tall canvas and drew off-screen.
   const pts = fitnessData.map((d, i) => {
     const x = (i / Math.max(1, fitnessData.length - 1)) * 200;
-    const y = 58 - (d.fitness / maxF) * 54;
+    const y = 29 - (d.fitness / maxF) * 26;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
   fitnessLine.setAttribute('points', pts);
@@ -1422,23 +1425,26 @@ function updateChallengeTree(challenges) {
 function renderChallengeTree() {
   let svg = '';
   const n = challengeTree.length;
-  if (n === 0) { dashTree.innerHTML = '<text x="100" y="40" font-size="8" fill="#333" text-anchor="middle">no challenges</text>'; return; }
-  for (let i = 0; i < n; i++) {
+  // dash-tree viewBox is "0 0 200 32"; render up to 10 challenges in a
+  // single horizontal row that fits the demoted strip. Pre-demotion the
+  // viewBox was 80-tall and the layout was a 5-wide grid; a second row
+  // started at y=45 and never showed in the demoted strip.
+  if (n === 0) { dashTree.innerHTML = '<text x="100" y="18" font-size="8" fill="#333" text-anchor="middle">no challenges</text>'; return; }
+  const maxRow = 10;
+  const cols = Math.min(n, maxRow);
+  const step = 200 / (maxRow + 1);
+  const y = 13, r = 4, textY = 26;
+  for (let i = 0; i < cols; i++) {
     const c = challengeTree[i];
-    const x = 20 + (i % 5) * 36;
-    const y = 15 + Math.floor(i / 5) * 30;
-    const r = 6;
-    // Draw edge to parent.
-    if (c.parentIdx >= 0) {
-      const px = 20 + (c.parentIdx % 5) * 36;
-      const py = 15 + Math.floor(c.parentIdx / 5) * 30;
-      svg += `<line x1="${px}" y1="${py}" x2="${x}" y2="${y}" stroke="#1a3a2a" stroke-width="0.5"/>`;
+    const x = step * (i + 1);
+    if (c.parentIdx >= 0 && c.parentIdx < cols) {
+      const px = step * (c.parentIdx + 1);
+      svg += `<line x1="${px}" y1="${y}" x2="${x}" y2="${y}" stroke="#1a3a2a" stroke-width="0.5"/>`;
     }
-    // Draw node.
     const fill = c.solved ? '#4EC9B0' : 'none';
     const stroke = c.solved ? '#4EC9B0' : '#9CDCFE';
     svg += `<circle cx="${x}" cy="${y}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="1"/>`;
-    svg += `<text x="${x}" y="${y + r + 8}" font-size="5" fill="#555" text-anchor="middle">${c.name.substring(0, 8)}</text>`;
+    svg += `<text x="${x}" y="${textY}" font-size="5" fill="#555" text-anchor="middle">${c.name.substring(0, 8)}</text>`;
   }
   dashTree.innerHTML = svg;
 }
@@ -1486,8 +1492,29 @@ appendOutput = function(text, className) {
   if (text) parseDashboardOutput(text);
 };
 
-// Initialize heatmap with empty population.
-updateHeatmap(popFitness);
+// Drive all four metrics cards from live mesh state on a 1Hz interval.
+// Before this, only ENERGY ever populated (via the tutorial's ENERGY step
+// writing "energy: N/M" to the REPL output, which parseDashboardOutput
+// happened to match). FITNESS / CHALLENGES / POPULATION were defined to
+// consume REPL-output regex matches (`[gen N] fitness=F`, "challenges",
+// etc.) that autonomous behavior never produces — so those three cards
+// stayed empty during normal play. The state-driven refresh below pulls
+// directly from mesh.units / mesh._challenges so every card updates as
+// the colony evolves; the existing parseDashboardOutput path stays in
+// place and remains harmless (the renderers just receive extra updates).
+let metricsTickN = 0;
+function refreshMetricsFromState() {
+  if (!dashVisible || !mesh || mesh.units.length === 0) return;
+  const units = mesh.units;
+  const bestFitness = units.reduce((m, u) => Math.max(m, u.fitness), 0);
+  updateFitnessGraph(metricsTickN++, bestFitness);
+  const self = units[0];
+  updateEnergyBar(self.energy, self.energyMax);
+  updateChallengeTree((mesh._challenges || []).map(c => ({ name: c.name, solved: c.solved })));
+  updateHeatmap(units.map(u => u.fitness));
+}
+setInterval(refreshMetricsFromState, 1000);
+refreshMetricsFromState(); // initial paint, harmless if mesh is still booting.
 
 init();
 </script>
