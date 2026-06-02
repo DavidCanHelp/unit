@@ -430,6 +430,10 @@ pub enum TickTransport {
 pub struct MultiUnitNode {
     pub host: MultiUnitHost,
     pub mesh: Option<MeshNode>,
+    /// Per-node RNG for the placement tie-break, seeded from this node's mesh
+    /// identity so different nodes shedding into the same gossiped view pick
+    /// different tied-maximum peers (decorrelating concurrent senders).
+    rng: crate::features::mutation::SimpleRng,
 }
 
 impl MultiUnitNode {
@@ -445,9 +449,22 @@ impl MultiUnitNode {
             Some(p) => Some(MeshNode::start(p, seed_peers)?),
             None => None,
         };
+        // Seed the placement RNG from the mesh identity so each node draws an
+        // independent tie-break sequence; fall back to a fixed seed off-mesh.
+        let rng_seed = mesh
+            .as_ref()
+            .map(|m| {
+                m.id()
+                    .iter()
+                    .enumerate()
+                    .fold(0u64, |acc, (i, b)| acc | ((*b as u64) << (i * 8)))
+            })
+            .filter(|&s| s != 0)
+            .unwrap_or(0x9e37_79b9_7f4a_7c15);
         Ok(MultiUnitNode {
             host: MultiUnitHost::new(cap),
             mesh,
+            rng: crate::features::mutation::SimpleRng::new(rng_seed),
         })
     }
 
@@ -563,26 +580,23 @@ impl MultiUnitNode {
         crate::transport::is_mislocated(local)
     }
 
-    /// Two-tier destination from this node's own gossiped resource view,
-    /// mirroring [`transport::choose_destination`](crate::transport::choose_destination):
-    /// if any peer is *abundantly* free, pick the emptiest such peer (spread
-    /// load toward a clearly-emptier home); otherwise take the FIRST merely-
-    /// sufficient peer in gossip order (frugal, herd-avoiding). `None` if no
-    /// peer advertises sufficient room. The thresholds live in `resources.rs`.
-    pub fn choose_destination(&self) -> Option<RemoteProcess> {
+    /// Two-tier destination from this node's own gossiped resource view. This
+    /// delegates to [`transport::choose_destination`](crate::transport::choose_destination)
+    /// — the single source of truth for the rule (abundant → emptiest with a
+    /// random tie-break; else first-sufficient) — over candidates built from the
+    /// live peer view, then maps the chosen address back to its `RemoteProcess`.
+    /// `&mut self` because the tie-break advances the per-node RNG.
+    pub fn choose_destination(&mut self) -> Option<RemoteProcess> {
         let remotes = self.remote_processes();
-        // Tier 1: emptiest among the abundantly-free peers.
-        if let Some(best) = remotes
+        let candidates: Vec<crate::transport::Candidate> = remotes
             .iter()
-            .filter(|p| crate::resources::headroom_pct_abundant(p.advertised_headroom))
-            .max_by_key(|p| p.advertised_headroom)
-        {
-            return Some(best.clone());
-        }
-        // Tier 2: first merely-sufficient peer.
-        remotes
-            .into_iter()
-            .find(|p| crate::resources::headroom_pct_sufficient(p.advertised_headroom))
+            .map(|p| crate::transport::Candidate {
+                headroom_pct: p.advertised_headroom,
+                addr: p.addr,
+            })
+            .collect();
+        let chosen_addr = crate::transport::choose_destination(&candidates, &mut self.rng)?.addr;
+        remotes.into_iter().find(|p| p.addr == chosen_addr)
     }
 
     /// Relocate unit `idx` to `dest_addr`, performing the actual transport via

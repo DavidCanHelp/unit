@@ -3646,12 +3646,16 @@ impl VM {
             })
             .unwrap_or_default();
         let can_afford = self.energy.can_afford(energy::TRANSPORT_COST);
+        // Derive the placement tie-break seed from this unit's own RNG (advanced
+        // each call) BEFORE the send closure borrows `self` — passing a u64 by
+        // value avoids an `&mut self.rng` / `&self` borrow collision.
+        let tie_seed = self.rng.next_u64();
 
         // Capture + ship lazily inside the closure: we only serialize the
         // complete self when we will actually transport (mislocated, a
         // sufficient destination exists, and the cost is affordable).
         let attempt =
-            crate::transport::attempt_transport(&local, &candidates, can_afford, |addr| {
+            crate::transport::attempt_transport(&local, &candidates, can_afford, tie_seed, |addr| {
                 let payload = persist::serialize_snapshot(&self.make_snapshot());
                 crate::transport::send_transport(&addr.to_string(), &payload)
             });

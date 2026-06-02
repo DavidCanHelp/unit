@@ -36,6 +36,7 @@
 //! `signaling.rs`. The pure frame encode/decode and the snapshot-handling
 //! logic compile everywhere and are deterministically unit-tested.
 
+use crate::features::mutation::SimpleRng;
 use crate::mesh::NodeId;
 use std::net::SocketAddr;
 
@@ -316,17 +317,40 @@ pub struct Candidate {
 /// keeps every sender from piling onto the same box. Returns `None` if no peer
 /// is even sufficient (the unit stays put).
 ///
+/// When several peers tie at the maximum abundant headroom, the choice is made
+/// uniformly at RANDOM among them (via `rng`), not last/first-wins. Gossip order
+/// is arbitrary and unstable, and a deterministic tie-break would make multiple
+/// senders shedding at the same instant — who share the same abundant view —
+/// all pick the SAME peer: a correlated mini-thundering-herd, the exact thing
+/// two-tier placement guards against. Random-among-tied decorrelates concurrent
+/// senders so they spread across the tied peers. (A unique maximum is still
+/// chosen deterministically — `next_usize(1)` is always 0.)
+///
 /// The two thresholds live in `resources.rs` as the single source of truth; the
-/// node-side `MultiUnitNode::choose_destination` mirrors this exact rule over
-/// the live gossip view.
-pub fn choose_destination(candidates: &[Candidate]) -> Option<&Candidate> {
-    // Tier 1: the emptiest among abundantly-free peers, if any.
-    if let Some(best) = candidates
+/// node-side `MultiUnitNode::choose_destination` delegates to this exact rule
+/// over the live gossip view.
+pub fn choose_destination<'a>(
+    candidates: &'a [Candidate],
+    rng: &mut SimpleRng,
+) -> Option<&'a Candidate> {
+    // Tier 1: the headroom of the emptiest abundantly-free peer, if any.
+    let max_abundant = candidates
         .iter()
-        .filter(|c| crate::resources::headroom_pct_abundant(c.headroom_pct))
-        .max_by_key(|c| c.headroom_pct)
-    {
-        return Some(best);
+        .map(|c| c.headroom_pct)
+        .filter(|&h| crate::resources::headroom_pct_abundant(h))
+        .max();
+    if let Some(max) = max_abundant {
+        // Reservoir sample over the tied-maximum peers: one pass, uniform pick.
+        // The k-th tied peer replaces the choice with probability 1/k.
+        let mut chosen: Option<&Candidate> = None;
+        let mut seen = 0usize;
+        for c in candidates.iter().filter(|c| c.headroom_pct == max) {
+            seen += 1;
+            if rng.next_usize(seen) == 0 {
+                chosen = Some(c);
+            }
+        }
+        return chosen;
     }
     // Tier 2: the first merely-sufficient peer (herd-avoiding).
     candidates
@@ -376,10 +400,17 @@ pub enum TransportAttempt {
 /// the chosen destination address and performs the actual transport (the real
 /// [`send_transport`] in production, a stub in tests). The caller decides what
 /// to charge and whether to retire based on the returned [`TransportAttempt`].
+///
+/// `tie_seed` seeds the random tie-break in [`choose_destination`]. It is passed
+/// by value (not a `&mut SimpleRng`) so the caller can derive it from its own
+/// per-unit RNG without that borrow colliding with a `send` closure that
+/// captures the unit. Advancing the caller's RNG each call varies the seed per
+/// call; seeding each unit's RNG from its identity decorrelates units.
 pub fn attempt_transport<S>(
     local: &crate::resources::HostResources,
     candidates: &[Candidate],
     can_afford: bool,
+    tie_seed: u64,
     send: S,
 ) -> TransportAttempt
 where
@@ -388,7 +419,8 @@ where
     if !is_mislocated(local) {
         return TransportAttempt::NotMislocated;
     }
-    let dest = match choose_destination(candidates) {
+    let mut rng = SimpleRng::new(tie_seed);
+    let dest = match choose_destination(candidates, &mut rng) {
         Some(d) => d,
         None => return TransportAttempt::NoDestination,
     };
@@ -878,7 +910,8 @@ mod tests {
             addr: addr(9003),
         };
         let view = [a, b, c];
-        let chosen = choose_destination(&view).unwrap();
+        let mut rng = SimpleRng::new(0);
+        let chosen = choose_destination(&view, &mut rng).unwrap();
         assert_eq!(
             chosen.addr,
             addr(9001),
@@ -899,7 +932,8 @@ mod tests {
             addr: addr(9002),
         };
         let view = [a, b];
-        let chosen = choose_destination(&view).unwrap();
+        let mut rng = SimpleRng::new(0);
+        let chosen = choose_destination(&view, &mut rng).unwrap();
         assert_eq!(
             chosen.addr,
             addr(9002),
@@ -909,7 +943,8 @@ mod tests {
 
     #[test]
     fn choose_destination_picks_emptiest_among_abundant() {
-        // Several abundant peers → the emptiest (most headroom) wins.
+        // Several abundant peers, UNIQUE maximum (80%) → the emptiest wins,
+        // deterministically (a single tied peer is always chosen).
         let a = Candidate {
             headroom_pct: 55,
             addr: addr(9001),
@@ -923,12 +958,66 @@ mod tests {
             addr: addr(9003),
         };
         let view = [a, b, c];
-        let chosen = choose_destination(&view).unwrap();
-        assert_eq!(
-            chosen.addr,
-            addr(9002),
-            "emptiest abundant peer wins when several are abundant"
+        // Any seed gives the same result when the maximum is unique.
+        for seed in 0..8 {
+            let mut rng = SimpleRng::new(seed);
+            let chosen = choose_destination(&view, &mut rng).unwrap();
+            assert_eq!(
+                chosen.addr,
+                addr(9002),
+                "unique emptiest abundant peer wins regardless of seed"
+            );
+        }
+    }
+
+    #[test]
+    fn choose_destination_random_among_equally_abundant() {
+        // Three abundant peers TIED at the maximum (70%) and one lower-but-
+        // abundant (55%). The choice is uniformly random among the three tied
+        // at 70 — decorrelating concurrent senders — and never the 55% one.
+        let tied = [addr(9001), addr(9002), addr(9003)];
+        let view = [
+            Candidate {
+                headroom_pct: 70,
+                addr: tied[0],
+            },
+            Candidate {
+                headroom_pct: 55,
+                addr: addr(9009),
+            },
+            Candidate {
+                headroom_pct: 70,
+                addr: tied[1],
+            },
+            Candidate {
+                headroom_pct: 70,
+                addr: tied[2],
+            },
+        ];
+        let mut picks = std::collections::HashSet::new();
+        for seed in 0..64 {
+            let mut rng = SimpleRng::new(seed);
+            let chosen = choose_destination(&view, &mut rng).unwrap();
+            assert!(
+                tied.contains(&chosen.addr),
+                "must pick a tied-maximum peer, got {}",
+                chosen.addr
+            );
+            assert_ne!(chosen.headroom_pct, 55, "must not pick the lower peer");
+            picks.insert(chosen.addr);
+        }
+        // Decorrelation: across seeds, more than one of the tied peers is chosen.
+        assert!(
+            picks.len() > 1,
+            "random tie-break must spread across tied peers, got only {:?}",
+            picks
         );
+        // Determinism under a fixed seed: same seed → same pick.
+        let pick = |s| {
+            let mut r = SimpleRng::new(s);
+            choose_destination(&view, &mut r).unwrap().addr
+        };
+        assert_eq!(pick(7), pick(7), "same seed must be deterministic");
     }
 
     #[test]
@@ -943,7 +1032,8 @@ mod tests {
             addr: addr(9002),
         };
         let view = [tight, ok];
-        let chosen = choose_destination(&view).unwrap();
+        let mut rng = SimpleRng::new(0);
+        let chosen = choose_destination(&view, &mut rng).unwrap();
         assert_eq!(chosen.addr, addr(9002));
     }
 
@@ -957,9 +1047,10 @@ mod tests {
             headroom_pct: 15,
             addr: addr(9002),
         };
-        assert!(choose_destination(&[tight_a, tight_b]).is_none());
+        let mut rng = SimpleRng::new(0);
+        assert!(choose_destination(&[tight_a, tight_b], &mut rng).is_none());
         // Empty view → None.
-        assert!(choose_destination(&[]).is_none());
+        assert!(choose_destination(&[], &mut rng).is_none());
     }
 
     #[test]
@@ -983,7 +1074,7 @@ mod tests {
             addr: addr(9001),
         }];
         let mut sent = false;
-        let attempt = attempt_transport(&healthy, &cands, true, |_| {
+        let attempt = attempt_transport(&healthy, &cands, true, 0, |_| {
             sent = true;
             Ok(ConfirmOutcome::Accepted)
         });
@@ -999,7 +1090,7 @@ mod tests {
             addr: addr(9001),
         }];
         let mut sent = false;
-        let attempt = attempt_transport(&pressed, &cands, true, |_| {
+        let attempt = attempt_transport(&pressed, &cands, true, 0, |_| {
             sent = true;
             Ok(ConfirmOutcome::Accepted)
         });
@@ -1016,7 +1107,7 @@ mod tests {
             addr: addr(9001),
         }];
         let mut sent = false;
-        let attempt = attempt_transport(&pressed, &cands, false, |_| {
+        let attempt = attempt_transport(&pressed, &cands, false, 0, |_| {
             sent = true;
             Ok(ConfirmOutcome::Accepted)
         });
@@ -1032,7 +1123,7 @@ mod tests {
             addr: addr(9099),
         }];
         let mut sent_addr = None;
-        let attempt = attempt_transport(&pressed, &cands, true, |a| {
+        let attempt = attempt_transport(&pressed, &cands, true, 0, |a| {
             sent_addr = Some(a);
             Ok(ConfirmOutcome::Accepted)
         });
@@ -1050,7 +1141,7 @@ mod tests {
             headroom_pct: 90,
             addr: addr(9001),
         }];
-        let attempt = attempt_transport(&pressed, &cands, true, |_| {
+        let attempt = attempt_transport(&pressed, &cands, true, 0, |_| {
             Err(TransportError::Refused)
         });
         match attempt {
