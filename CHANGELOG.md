@@ -3,6 +3,33 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.29.0] - 2026-06-02
+
+Resource-aware self-replication: a unit senses its host's load, refuses to grow past a wall, and can relocate itself to another coordinate that has room — choosing frugally and never giving up its only copy until a live copy is confirmed elsewhere. See [docs/self-replication.md](docs/self-replication.md) for the full arc and the principles it holds.
+
+### Added
+- `src/resources.rs` — a zero-dependency host resource reader. On Linux it reads `/proc/meminfo` (MemTotal, MemAvailable), `/proc/loadavg` (1-minute), and the logical CPU count (`/proc/cpuinfo`, falling back to `/proc/stat`). `HostResources::measure()` returns a clearly-marked **unavailable** reading on non-Linux / wasm32 rather than guessing. Utilization is the **binding constraint** — `max(memory_fraction, load_one / n_cpus)` — so whichever resource is tightest sets the pressure; `headroom = 1 - utilization`.
+- **The 80% ceiling.** `CEILING_UTILIZATION = 0.80` is the single source of truth, and its only role is **refusal**: the colony never grows *toward* it. `HostResources::has_headroom()` is the gate (`valid && utilization < CEILING`) and **fails closed** — an unavailable reading returns false, because a coordinate that can't measure itself must not replicate.
+- `SpawnState::can_spawn_within(&res)` layers the ceiling refusal on top of the existing quarantine / max_children / cooldown guards (none removed); the real `SPAWN` path now gates on it, so spawning refuses at/over 80% and on unmeasurable hosts.
+- **Emergent local replication rule.** `MultiUnitHost::senses_unmet_demand()` (work waiting AND every unit busy) + `replication_decision()` (replicate iff demand ∧ headroom). There is no coordinator, quorum, global counter, or target population — minimum-sufficient population is emergent from this local rule plus energy metabolism. A unit with no work falls through to `GP-EVOLVE` (`evolve_one_unworked()`) rather than sitting idle; surplus self-resolves through starvation, with no reclaim/cull logic.
+- `src/transport.rs` — unit self-transport with **confirm-before-release** ("transporter") semantics. The complete self travels as a serialized `VmSnapshot` (USAV: dictionary incl. evolved `SOL-*` antibodies, memory, goals, fitness, code_strings); the binary and prelude do **not** travel — every coordinate already has them, so the receiving unit process is the transporter pad. Length-prefixed TCP framing in the style of `spawn.rs` (`UTPT` transport frame, `UTPC` confirm frame); never on the UDP gossip wire. The destination refuses without headroom (fail closed) and echoes an accepted/refused confirm. The origin releases **only** on `Ok(Accepted)` — a refused / timed-out / malformed / absent confirm leaves it alive exactly as it was. No unit is ever lost in transit.
+- **Sufficient-first placement.** Heartbeats now gossip a peer's advertised headroom (a single `0..=100` byte, appended after fitness, backward-compatible). `choose_destination()` returns the **first** peer that advertises sufficient room — not the emptiest — which is frugal, mirrors minimum-sufficient, and avoids a thundering herd. A coordinate is "mislocated" when its own `has_headroom()` is false; that local pressure is the honest trigger.
+- **`TRANSPORT` Forth word** — unit-invoked and GP-mutable like `COURT`/`SAY!`, **not** a host-driven scheduler. Calling it senses local mislocation → chooses a sufficient-first destination → relocates with confirm-before-release; not mislocated or no sufficient destination is a safe no-op. `TRANSPORT_COST = 150` (full self-replication, just below `SPAWN_COST` since no binary travels), charged with no-op-on-starve semantics like `SAY!`: a starving unit cannot flee — which is metabolically honest.
+- 62 new tests across resources, spawn, transport, mesh gossip round-trip, node placement, and the `TRANSPORT` word. Total native test count: 363.
+
+### Changed
+- `src/mesh.rs`: `PeerInfo` and `MeshState` carry a `headroom` byte; `MeshNode::set_headroom` / `peer_resource_view` surface it. The heartbeat wire gains one trailing byte; older peers that omit it are read as headroom 0 (fail closed).
+- `VM` gains a `transported_out` flag, set after a confirmed self-transport so a host/main loop can reap the released origin.
+- VERSION → v0.29.0; banner and web demo title updated.
+
+### Design principles held
+- **Honesty is selected, not enforced.** Placement trusts a peer's advertised headroom. A peer that lied refuses at the transport layer, the origin stays put, and that is the whole consequence — no detection, no flag, no blacklist.
+- **80% is a refusal wall, not a target.** Nothing anywhere grows toward it or steers to it.
+- **No coordinator.** Each unit reads only its own gossiped view and runs the local rule; there is no global aggregation, scheduler, or population target.
+- **Confirm before release.** A copy is given up only against a confirmed-living copy, so no unit is lost in transit.
+- **Fail closed.** A coordinate that cannot measure its own resources neither replicates nor accepts a transport.
+- **Zero new dependencies.** Cargo.lock still contains only the `unit` crate.
+
 ## [0.28.0] - 2026-04-28
 
 ### Added

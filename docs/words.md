@@ -143,6 +143,7 @@
 | `SPAWN` `SPAWN-N` | local replication |
 | `PACKAGE` `PACKAGE-SIZE` | build UREP package |
 | `REPLICATE-TO"` | remote replication |
+| `TRANSPORT` | self-relocate to a sufficient-first destination with confirm-before-release (costs 150; no-op when not mislocated, no destination, or starving). Unit-invoked, GP-mutable. See [self-replication.md](self-replication.md) |
 | `CHILDREN` `FAMILY` `GENERATION` `KILL-CHILD` | lineage |
 | `ACCEPT-REPLICATE` `DENY-REPLICATE` `QUARANTINE` `MAX-CHILDREN` | safety |
 

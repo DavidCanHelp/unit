@@ -12,7 +12,7 @@
 
 ```
 $ unit
-unit v0.28.0 -- seed online
+unit v0.29.0 -- seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
 > 2 3 + .
 5  ok
@@ -276,11 +276,12 @@ The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 
 ## Documentation
 
-- [docs/words.md](docs/words.md) — complete word reference (315 words)
+- [docs/words.md](docs/words.md) — complete word reference (316 words)
 - [docs/protocol.md](docs/protocol.md) — S-expression wire format and mesh protocol
 - [docs/operations.md](docs/operations.md) — monitoring, goals, trust, persistence, swarm mode
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — two-tier deployment design rationale and bench results
 - [docs/signaling.md](docs/signaling.md) — inter-unit signaling design (v0.28)
+- [docs/self-replication.md](docs/self-replication.md) — resource-aware self-replication: the 80% ceiling, emergent local rule, confirm-before-release transport, sufficient-first placement (v0.29)
 
 ## Binary Sizes
 
