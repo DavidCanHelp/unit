@@ -3332,7 +3332,11 @@ impl VM {
             ));
             return;
         }
-        if let Err(e) = self.spawn_state.can_spawn() {
+        // Binding-constraint ceiling: refuse to replicate onto a host at/over
+        // 80% utilization, and fail closed if the host can't be measured. The
+        // pre-existing quarantine/max_children/cooldown guards still apply.
+        let res = crate::resources::HostResources::measure();
+        if let Err(e) = self.spawn_state.can_spawn_within(&res) {
             self.emit_str(&format!("SPAWN: {}\n", e));
             return;
         }

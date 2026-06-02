@@ -45,6 +45,13 @@ pub struct GoalResult {
 pub struct MultiUnitHost {
     pub units: Vec<UnitSlot>,
     cap: usize,
+    /// Backlog of goals that arrived with no idle unit to take them — the
+    /// minimal honest demand signal. The synchronous dispatch path
+    /// (`execute_goal`) serves each goal immediately, so without this counter
+    /// the host has no record of work it *couldn't* place. It is the "work
+    /// waiting" half of [`senses_unmet_demand`](Self::senses_unmet_demand);
+    /// the "no idle unit" half is read from the `busy` flags directly.
+    pub pending_goals: usize,
     /// Per-host environmental signal field — the second signaling layer.
     /// MARK! deposits into it (via outbox routing); SENSE reads from it
     /// (via per-VM env_view caches refreshed between evals). Native-only
@@ -58,6 +65,7 @@ impl MultiUnitHost {
         MultiUnitHost {
             units: Vec::new(),
             cap,
+            pending_goals: 0,
             #[cfg(not(target_arch = "wasm32"))]
             env_field: crate::signaling::EnvironmentalField::new(),
         }
@@ -288,6 +296,60 @@ impl MultiUnitHost {
             }
         }
         taught
+    }
+
+    /// True iff this host senses unmet demand it cannot currently serve:
+    /// there is work waiting (`pending_goals > 0`) AND no idle unit to take it
+    /// (every unit is busy). Both halves come from existing dispatch state —
+    /// `pending_goals` and the per-unit `busy` flags — not from any new global
+    /// signal. An empty host senses nothing.
+    ///
+    /// This is the demand half of the local replication rule: if any unit is
+    /// idle, the colony can already serve its load and must not replicate.
+    pub fn senses_unmet_demand(&self) -> bool {
+        self.pending_goals > 0
+            && !self.units.is_empty()
+            && self.units.iter().all(|u| u.busy)
+    }
+
+    /// The local replication rule every coordinate runs. It replicates one
+    /// unit IFF there is unmet demand this host can serve AND the spawn guard
+    /// (quarantine / max_children / cooldown) plus the binding-constraint
+    /// ceiling both permit it.
+    ///
+    /// There is no coordinator, no quorum, no global counter, and no target
+    /// population: just `demand ∧ headroom`, evaluated from this host's own
+    /// state. Returns `Ok(())` when the rule fires; `Err(reason)` otherwise —
+    /// `"no unmet demand"` when the colony can already serve its load, or the
+    /// guard/ceiling refusal string from
+    /// [`SpawnState::can_spawn_within`](crate::spawn::SpawnState::can_spawn_within).
+    pub fn replication_decision(
+        &self,
+        res: &crate::resources::HostResources,
+        spawn_state: &crate::spawn::SpawnState,
+    ) -> Result<(), String> {
+        if !self.senses_unmet_demand() {
+            return Err("no unmet demand".into());
+        }
+        spawn_state.can_spawn_within(res)
+    }
+
+    /// The no-work fall-through: a unit with no assigned goal speculatively
+    /// evolves against open challenges rather than sitting idle. Routes through
+    /// the existing `GP-EVOLVE` VM word — which is energy-gated there, so a
+    /// unit that can't pay starves — rather than duplicating the evolution
+    /// loop. Returns the index of the unit set to work, or `None` if every
+    /// unit is already busy (nothing idle to put to work).
+    ///
+    /// Surplus self-resolves through that energy metabolism; this adds no
+    /// reclaim or cull logic.
+    pub fn evolve_one_unworked(&mut self) -> Option<usize> {
+        let idx = self.units.iter().position(|u| !u.busy)?;
+        let slot = &mut self.units[idx];
+        slot.busy = true;
+        slot.vm.eval("GP-EVOLVE");
+        slot.busy = false;
+        Some(idx)
     }
 }
 
@@ -941,5 +1003,105 @@ mod tests {
         assert_eq!(h.units[1].vm.inbox.iter().next().unwrap().value, 7);
         // Environmental went to the field.
         assert_eq!(h.env_field.sense("sorting"), 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Emergent local replication rule (resource-aware self-replication)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn senses_unmet_demand_false_when_idle_unit_exists() {
+        let mut h = MultiUnitHost::new(3);
+        h.spawn_n(3);
+        h.pending_goals = 1;
+        h.units[0].busy = true;
+        h.units[1].busy = true;
+        // Unit 2 is idle — the colony can serve the waiting goal itself.
+        assert!(!h.senses_unmet_demand());
+    }
+
+    #[test]
+    fn senses_unmet_demand_false_when_no_work_waiting() {
+        let mut h = MultiUnitHost::new(3);
+        h.spawn_n(2);
+        h.units[0].busy = true;
+        h.units[1].busy = true;
+        // All busy, but nothing is waiting — no demand.
+        assert_eq!(h.pending_goals, 0);
+        assert!(!h.senses_unmet_demand());
+    }
+
+    #[test]
+    fn senses_unmet_demand_true_only_when_all_busy_with_waiting_work() {
+        let mut h = MultiUnitHost::new(3);
+        h.spawn_n(2);
+        h.units[0].busy = true;
+        h.units[1].busy = true;
+        h.pending_goals = 1;
+        assert!(h.senses_unmet_demand());
+    }
+
+    #[test]
+    fn senses_unmet_demand_false_on_empty_host() {
+        let mut h = MultiUnitHost::new(3);
+        h.pending_goals = 5; // demand recorded, but no units to be busy
+        assert!(!h.senses_unmet_demand());
+    }
+
+    #[test]
+    fn replication_decision_fires_only_on_demand_and_headroom() {
+        use crate::resources::HostResources;
+        use crate::spawn::SpawnState;
+
+        let mut h = MultiUnitHost::new(3);
+        h.spawn_n(2);
+        let healthy = HostResources::from_parts(1000, 500, 0.0, 4); // 50% < ceiling
+        let spawn = SpawnState::new();
+
+        // No demand yet → rule does not fire, regardless of headroom.
+        assert_eq!(
+            h.replication_decision(&healthy, &spawn).unwrap_err(),
+            "no unmet demand"
+        );
+
+        // Now: all busy with work waiting AND headroom → the rule fires.
+        h.units[0].busy = true;
+        h.units[1].busy = true;
+        h.pending_goals = 1;
+        assert!(h.replication_decision(&healthy, &spawn).is_ok());
+
+        // Same demand, but host over the ceiling → refuse (never a target).
+        let over = HostResources::from_parts(1000, 50, 0.0, 4); // 95% used
+        let err = h.replication_decision(&over, &spawn).unwrap_err();
+        assert!(err.contains("ceiling"), "expected ceiling refusal: {err}");
+
+        // Demand + headroom but a pre-existing guard set → still refuse.
+        let mut quarantined = SpawnState::new();
+        quarantined.quarantine = true;
+        let err = h.replication_decision(&healthy, &quarantined).unwrap_err();
+        assert!(err.contains("quarantine"), "expected quarantine: {err}");
+    }
+
+    #[test]
+    fn no_work_path_invokes_evolve() {
+        let mut h = MultiUnitHost::new(3);
+        h.spawn_n(2);
+        // A fresh unit has no evolution state.
+        assert!(h.units[0].vm.evolution.is_none());
+        // The no-work fall-through routes an idle unit into GP-EVOLVE...
+        let idx = h.evolve_one_unworked().expect("an idle unit exists");
+        // ...which initializes evolution state — proof the path ran evolve.
+        assert!(h.units[idx].vm.evolution.is_some());
+        assert!(!h.units[idx].busy, "unit released after evolving");
+    }
+
+    #[test]
+    fn no_work_path_returns_none_when_all_busy() {
+        let mut h = MultiUnitHost::new(2);
+        h.spawn_n(2);
+        h.units[0].busy = true;
+        h.units[1].busy = true;
+        // Nothing idle to put to work.
+        assert_eq!(h.evolve_one_unworked(), None);
     }
 }

@@ -158,6 +158,27 @@ impl SpawnState {
         }
         Ok(())
     }
+
+    /// Like [`can_spawn`](Self::can_spawn) but ALSO refuses when the host has
+    /// no resource headroom — the binding-constraint ceiling.
+    ///
+    /// Every existing guard (quarantine, max_children, cooldown) still applies;
+    /// this layers one additional refusal on top via
+    /// [`HostResources::has_headroom`](crate::resources::HostResources::has_headroom).
+    /// Because `has_headroom` fails closed, an unavailable reading (no `/proc`,
+    /// a parse failure, or wasm32) refuses too: a coordinate that cannot
+    /// measure its host must not replicate. The ceiling is a wall, not a
+    /// target — see [`CEILING_UTILIZATION`](crate::resources::CEILING_UTILIZATION).
+    pub fn can_spawn_within(
+        &self,
+        res: &crate::resources::HostResources,
+    ) -> Result<(), String> {
+        self.can_spawn()?;
+        if !res.has_headroom() {
+            return Err("ceiling: host at/over 80%".into());
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -314,4 +335,69 @@ pub fn start_replication_listener(port: u16) -> Result<std::sync::mpsc::Receiver
     });
 
     Ok(rx)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resources::HostResources;
+
+    // A reading with ample headroom (50% binding constraint, under the 80%
+    // ceiling) and one that's over the ceiling (90% memory used).
+    fn under_ceiling() -> HostResources {
+        HostResources::from_parts(1000, 500, 0.0, 4)
+    }
+    fn over_ceiling() -> HostResources {
+        HostResources::from_parts(1000, 100, 0.0, 4)
+    }
+
+    #[test]
+    fn can_spawn_within_allows_when_healthy_and_under_ceiling() {
+        let s = SpawnState::new();
+        assert!(s.can_spawn().is_ok());
+        assert!(s.can_spawn_within(&under_ceiling()).is_ok());
+    }
+
+    #[test]
+    fn can_spawn_within_refuses_over_ceiling() {
+        let s = SpawnState::new();
+        // The pre-existing guards are all clear...
+        assert!(s.can_spawn().is_ok());
+        // ...but the ceiling refuses on its own.
+        let err = s.can_spawn_within(&over_ceiling()).unwrap_err();
+        assert!(err.contains("ceiling"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn can_spawn_within_fails_closed_on_unavailable() {
+        let s = SpawnState::new();
+        // Unmeasurable host (no /proc, wasm32) → refuse.
+        let err = s.can_spawn_within(&HostResources::unavailable()).unwrap_err();
+        assert!(err.contains("ceiling"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn can_spawn_within_still_honors_preexisting_guards() {
+        // Quarantine refuses even with ample headroom.
+        let mut q = SpawnState::new();
+        q.quarantine = true;
+        let err = q.can_spawn_within(&under_ceiling()).unwrap_err();
+        assert!(err.contains("quarantine"), "expected quarantine: {err}");
+
+        // max_children refuses even with ample headroom.
+        let mut full = SpawnState::new();
+        full.max_children = 1;
+        full.children.push(ChildInfo {
+            pid: 1,
+            port: 0,
+            node_id: [0u8; 8],
+            spawned_at: Instant::now(),
+        });
+        let err = full.can_spawn_within(&under_ceiling()).unwrap_err();
+        assert!(err.contains("max children"), "expected max children: {err}");
+    }
 }
