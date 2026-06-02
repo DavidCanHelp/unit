@@ -94,6 +94,17 @@ impl HostResources {
         self.valid && self.utilization < CEILING_UTILIZATION
     }
 
+    /// Encodes this reading's headroom as a bounded `0..=100` percentage for
+    /// gossip advertisement — a few bytes a peer can read to judge whether we
+    /// have room. An unavailable reading advertises `0` (no room), so a
+    /// coordinate that can't measure itself fails closed on the wire too.
+    pub fn advertised_headroom_pct(&self) -> u8 {
+        if !self.valid {
+            return 0;
+        }
+        (self.headroom * 100.0).round().clamp(0.0, 100.0) as u8
+    }
+
     /// Samples the current host's resources.
     ///
     /// On Linux this reads `/proc`; on any other platform (other native OSes,
@@ -174,6 +185,22 @@ impl HostResources {
             headroom,
         }
     }
+}
+
+/// True iff an advertised headroom percentage (`0..=100`) indicates a peer
+/// that is under the ceiling with room — i.e. *sufficient* to accept a unit.
+///
+/// This mirrors [`HostResources::has_headroom`] on the wire: `has_headroom` is
+/// `utilization < CEILING`, equivalently `headroom > 1 - CEILING`, so a peer
+/// is sufficient exactly when its advertised headroom fraction exceeds
+/// `1 - CEILING_UTILIZATION`. [`CEILING_UTILIZATION`] stays the single source
+/// of truth — there is no second threshold to drift.
+pub fn headroom_pct_sufficient(pct: u8) -> bool {
+    // Computed in integer percent to mirror `has_headroom`'s strict
+    // `utilization < CEILING` exactly at the boundary, avoiding float drift
+    // (`1.0 - 0.80` is `0.199999…`, which would wrongly pass `pct == 20`).
+    let min_pct = ((1.0 - CEILING_UTILIZATION) * 100.0).round() as u8;
+    pct > min_pct
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +447,29 @@ intr 12345
     fn test_has_headroom_unavailable_fails_closed() {
         // A coordinate that cannot measure itself must not replicate.
         assert!(!HostResources::unavailable().has_headroom());
+    }
+
+    #[test]
+    fn test_advertised_headroom_pct() {
+        // 50% headroom → advertises 50.
+        let r = HostResources::from_parts(1000, 500, 0.0, 4);
+        assert_eq!(r.advertised_headroom_pct(), 50);
+        // Unavailable advertises 0 — fail closed on the wire.
+        assert_eq!(HostResources::unavailable().advertised_headroom_pct(), 0);
+    }
+
+    #[test]
+    fn test_headroom_pct_sufficient_tracks_ceiling() {
+        // Ceiling is 80% utilization → need headroom > 20% to be sufficient.
+        assert!(!headroom_pct_sufficient(20)); // exactly at ceiling → not sufficient
+        assert!(headroom_pct_sufficient(21));
+        assert!(headroom_pct_sufficient(50));
+        assert!(!headroom_pct_sufficient(0)); // unavailable advert → never sufficient
+        assert!(!headroom_pct_sufficient(10));
+        // Consistency: a reading that has_headroom advertises a sufficient pct.
+        let healthy = HostResources::from_parts(1000, 500, 0.0, 4);
+        assert!(healthy.has_headroom());
+        assert!(headroom_pct_sufficient(healthy.advertised_headroom_pct()));
     }
 
     #[test]

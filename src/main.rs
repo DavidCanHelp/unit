@@ -3595,7 +3595,7 @@ impl VM {
     // Persistence primitives
     // -----------------------------------------------------------------------
 
-    fn make_snapshot(&self) -> persist::VmSnapshot {
+    pub(crate) fn make_snapshot(&self) -> persist::VmSnapshot {
         let node_id = self.node_id_cache.unwrap_or([0u8; 8]);
         let goals = self
             .mesh
@@ -3610,6 +3610,69 @@ impl VM {
             goals,
             fitness: self.fitness.clone(),
             code_strings: self.code_strings.clone(),
+        }
+    }
+
+    /// `TRANSPORT` ( -- ) — the unit's chosen attempt to relocate itself to
+    /// another coordinate, with confirm-before-release. Unit-invoked and
+    /// GP-mutable like COURT/SAY!, NOT host-driven: the host offers the
+    /// capability; the unit's own evolved code decides whether/when to flee
+    /// local resource pressure. There is no host-side relocation scheduler.
+    ///
+    /// Sequence: sense local mislocation (over the ceiling) → sufficient-first
+    /// destination from the gossiped peer view → if affordable, capture the
+    /// complete self and transport it. The origin is released (marks
+    /// `transported_out`) ONLY on a confirmed live copy. A starving unit can't
+    /// afford the cost and no-ops — it cannot flee. Not mislocated, or no
+    /// sufficient destination, is a safe no-op: the unit stays.
+    ///
+    /// On wasm32 the gossiped view is empty (no mesh) so this naturally
+    /// no-ops, mirroring the MARK!/SENSE shims.
+    fn prim_transport(&mut self) {
+        let local = crate::resources::HostResources::measure();
+        // The gossiped candidate view — peers and their advertised headroom.
+        // A unit reads only its own view; no coordinator, no aggregation.
+        let candidates: Vec<crate::transport::Candidate> = self
+            .mesh
+            .as_ref()
+            .map(|m| {
+                m.peer_resource_view()
+                    .into_iter()
+                    .map(|(_, _, headroom, addr)| crate::transport::Candidate {
+                        headroom_pct: headroom,
+                        addr,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let can_afford = self.energy.can_afford(energy::TRANSPORT_COST);
+
+        // Capture + ship lazily inside the closure: we only serialize the
+        // complete self when we will actually transport (mislocated, a
+        // sufficient destination exists, and the cost is affordable).
+        let attempt =
+            crate::transport::attempt_transport(&local, &candidates, can_afford, |addr| {
+                let payload = persist::serialize_snapshot(&self.make_snapshot());
+                crate::transport::send_transport(&addr.to_string(), &payload)
+            });
+
+        match attempt {
+            // Content where we are, nowhere sufficient to go, or starving:
+            // safe no-ops, no energy charged.
+            crate::transport::TransportAttempt::NotMislocated
+            | crate::transport::TransportAttempt::NoDestination
+            | crate::transport::TransportAttempt::CannotAfford => {}
+            crate::transport::TransportAttempt::Attempted(outcome) => {
+                // We shipped — charge the metabolic cost of the attempt.
+                let _ = self.energy.spend(energy::TRANSPORT_COST, "transport");
+                if crate::transport::should_release(&outcome) {
+                    // A confirmed live copy exists elsewhere — release origin.
+                    self.transported_out = true;
+                    self.emit_str("transported: confirmed live copy, origin released\n");
+                } else if let Err(e) = outcome {
+                    self.emit_str(&format!("transport failed ({}); staying put\n", e));
+                }
+            }
         }
     }
 

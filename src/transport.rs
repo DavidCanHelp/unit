@@ -37,6 +37,7 @@
 //! logic compile everywhere and are deterministically unit-tested.
 
 use crate::mesh::NodeId;
+use std::net::SocketAddr;
 
 // ---------------------------------------------------------------------------
 // Wire constants
@@ -282,6 +283,98 @@ pub fn handle_transport_frame(
             snapshot: None,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Placement — sufficient-first destination choice + the relocate orchestrator
+// ---------------------------------------------------------------------------
+
+/// A candidate destination from the local gossiped view: a peer's advertised
+/// headroom (`0..=100`) and where to reach it. The unit reads only its own
+/// gossiped view — no coordinator, no global aggregation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    /// The peer's advertised headroom percentage (`0..=100`).
+    pub headroom_pct: u8,
+    /// Where to open the transport connection.
+    pub addr: SocketAddr,
+}
+
+/// Sufficient-FIRST placement: returns the FIRST candidate whose advertised
+/// headroom is sufficient (under the ceiling with room), in gossip-view order.
+///
+/// Deliberately NOT the emptiest peer. Taking the first that fits is frugal —
+/// it mirrors minimum-sufficient and avoids a thundering herd all piling onto
+/// whichever peer currently looks emptiest. Returns `None` if no peer
+/// advertises sufficient room (the unit then stays put).
+pub fn choose_destination(candidates: &[Candidate]) -> Option<&Candidate> {
+    candidates
+        .iter()
+        .find(|c| crate::resources::headroom_pct_sufficient(c.headroom_pct))
+}
+
+/// The mislocation sense: a coordinate is mislocated when it is over the
+/// ceiling — i.e. it has no local headroom. This is the honest trigger (local
+/// resource pressure), derived from the existing reading; there is no separate
+/// "mislocation score".
+pub fn is_mislocated(local: &crate::resources::HostResources) -> bool {
+    !local.has_headroom()
+}
+
+/// Whether a transport outcome permits the origin to release its copy. Release
+/// happens SOLELY on `Ok(ConfirmOutcome::Accepted)` — confirm-before-release
+/// carried up to the placement layer. Refused / timeout / connection / garbage
+/// all map to `Err`, so the origin is never retired without a confirmed-living
+/// copy elsewhere.
+pub fn should_release(outcome: &Result<ConfirmOutcome, TransportError>) -> bool {
+    matches!(outcome, Ok(ConfirmOutcome::Accepted))
+}
+
+/// The result of an attempted self-relocation, before any release/retire.
+#[derive(Debug)]
+pub enum TransportAttempt {
+    /// Local coordinate has headroom — not mislocated. No cost, unit stays.
+    NotMislocated,
+    /// No peer advertises sufficient room. No cost, unit stays.
+    NoDestination,
+    /// Mislocated with a destination, but the unit can't pay the energy cost.
+    /// A starving unit cannot flee. No cost charged, unit stays.
+    CannotAfford,
+    /// Mislocated, a destination chosen, affordable — `send` was invoked and
+    /// this is its outcome. The caller charges energy for the attempt and
+    /// releases the origin iff [`should_release`] of this outcome.
+    Attempted(Result<ConfirmOutcome, TransportError>),
+}
+
+/// The local relocation rule, as a pure orchestrator over injected inputs so
+/// it tests without sockets or a live VM. It composes the pieces in order:
+/// mislocation sense → sufficient-first destination → affordability → send.
+///
+/// `send` is invoked at most once, only when the unit is mislocated, a
+/// sufficient destination exists, and the cost is affordable. `send` receives
+/// the chosen destination address and performs the actual transport (the real
+/// [`send_transport`] in production, a stub in tests). The caller decides what
+/// to charge and whether to retire based on the returned [`TransportAttempt`].
+pub fn attempt_transport<S>(
+    local: &crate::resources::HostResources,
+    candidates: &[Candidate],
+    can_afford: bool,
+    send: S,
+) -> TransportAttempt
+where
+    S: FnOnce(SocketAddr) -> Result<ConfirmOutcome, TransportError>,
+{
+    if !is_mislocated(local) {
+        return TransportAttempt::NotMislocated;
+    }
+    let dest = match choose_destination(candidates) {
+        Some(d) => d,
+        None => return TransportAttempt::NoDestination,
+    };
+    if !can_afford {
+        return TransportAttempt::CannotAfford;
+    }
+    TransportAttempt::Attempted(send(dest.addr))
 }
 
 // ---------------------------------------------------------------------------
@@ -732,5 +825,156 @@ mod tests {
         let connect_outcome: Result<ConfirmOutcome, TransportError> =
             Err(TransportError::Connect("refused".into()));
         assert!(!would_release(&connect_outcome));
+    }
+
+    // ----- placement: sufficient-first choice + the relocate orchestrator -----
+
+    fn addr(port: u16) -> SocketAddr {
+        format!("127.0.0.1:{}", port).parse().unwrap()
+    }
+
+    #[test]
+    fn choose_destination_takes_first_sufficient_not_emptiest() {
+        // Peer A is sufficient (40%) and earlier; peer B has MORE headroom
+        // (90%) but is later. Sufficient-first must pick A, not the emptiest B.
+        let a = Candidate {
+            headroom_pct: 40,
+            addr: addr(9001),
+        };
+        let b = Candidate {
+            headroom_pct: 90,
+            addr: addr(9002),
+        };
+        let view = [a, b];
+        let chosen = choose_destination(&view).unwrap();
+        assert_eq!(chosen.addr, addr(9001), "must take the first that fits");
+    }
+
+    #[test]
+    fn choose_destination_skips_insufficient_peers() {
+        // First peer is over the ceiling (10% headroom); second is sufficient.
+        let tight = Candidate {
+            headroom_pct: 10,
+            addr: addr(9001),
+        };
+        let ok = Candidate {
+            headroom_pct: 35,
+            addr: addr(9002),
+        };
+        let view = [tight, ok];
+        let chosen = choose_destination(&view).unwrap();
+        assert_eq!(chosen.addr, addr(9002));
+    }
+
+    #[test]
+    fn choose_destination_none_when_no_peer_sufficient() {
+        let tight_a = Candidate {
+            headroom_pct: 5,
+            addr: addr(9001),
+        };
+        let tight_b = Candidate {
+            headroom_pct: 15,
+            addr: addr(9002),
+        };
+        assert!(choose_destination(&[tight_a, tight_b]).is_none());
+        // Empty view → None.
+        assert!(choose_destination(&[]).is_none());
+    }
+
+    #[test]
+    fn is_mislocated_only_when_local_lacks_headroom() {
+        // Local has room → not mislocated; a unit with room never tries to leave.
+        let healthy = HostResources::from_parts(1000, 500, 0.0, 4);
+        assert!(!is_mislocated(&healthy));
+        // Local over the ceiling → mislocated.
+        let pressed = HostResources::from_parts(1000, 50, 0.0, 4);
+        assert!(is_mislocated(&pressed));
+        // Unavailable reading fails closed → counts as mislocated (can't stay
+        // confident it has room) but with no measurable destination it no-ops.
+        assert!(is_mislocated(&HostResources::unavailable()));
+    }
+
+    #[test]
+    fn attempt_transport_not_mislocated_is_noop() {
+        let healthy = HostResources::from_parts(1000, 500, 0.0, 4);
+        let cands = [Candidate {
+            headroom_pct: 90,
+            addr: addr(9001),
+        }];
+        let mut sent = false;
+        let attempt = attempt_transport(&healthy, &cands, true, |_| {
+            sent = true;
+            Ok(ConfirmOutcome::Accepted)
+        });
+        assert!(matches!(attempt, TransportAttempt::NotMislocated));
+        assert!(!sent, "must not transport when not mislocated");
+    }
+
+    #[test]
+    fn attempt_transport_no_destination_is_noop() {
+        let pressed = HostResources::from_parts(1000, 50, 0.0, 4);
+        let cands = [Candidate {
+            headroom_pct: 5,
+            addr: addr(9001),
+        }];
+        let mut sent = false;
+        let attempt = attempt_transport(&pressed, &cands, true, |_| {
+            sent = true;
+            Ok(ConfirmOutcome::Accepted)
+        });
+        assert!(matches!(attempt, TransportAttempt::NoDestination));
+        assert!(!sent);
+    }
+
+    #[test]
+    fn attempt_transport_cannot_afford_does_not_send() {
+        // Mislocated with a sufficient dest, but starving → no send, no charge.
+        let pressed = HostResources::from_parts(1000, 50, 0.0, 4);
+        let cands = [Candidate {
+            headroom_pct: 90,
+            addr: addr(9001),
+        }];
+        let mut sent = false;
+        let attempt = attempt_transport(&pressed, &cands, false, |_| {
+            sent = true;
+            Ok(ConfirmOutcome::Accepted)
+        });
+        assert!(matches!(attempt, TransportAttempt::CannotAfford));
+        assert!(!sent, "a starving unit cannot flee");
+    }
+
+    #[test]
+    fn attempt_transport_sends_when_mislocated_afford_and_dest_exists() {
+        let pressed = HostResources::from_parts(1000, 50, 0.0, 4);
+        let cands = [Candidate {
+            headroom_pct: 90,
+            addr: addr(9099),
+        }];
+        let mut sent_addr = None;
+        let attempt = attempt_transport(&pressed, &cands, true, |a| {
+            sent_addr = Some(a);
+            Ok(ConfirmOutcome::Accepted)
+        });
+        assert_eq!(sent_addr, Some(addr(9099)));
+        match attempt {
+            TransportAttempt::Attempted(o) => assert!(should_release(&o)),
+            other => panic!("expected Attempted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attempt_transport_err_does_not_permit_release() {
+        let pressed = HostResources::from_parts(1000, 50, 0.0, 4);
+        let cands = [Candidate {
+            headroom_pct: 90,
+            addr: addr(9001),
+        }];
+        let attempt = attempt_transport(&pressed, &cands, true, |_| {
+            Err(TransportError::Refused)
+        });
+        match attempt {
+            TransportAttempt::Attempted(o) => assert!(!should_release(&o)),
+            other => panic!("expected Attempted, got {other:?}"),
+        }
     }
 }

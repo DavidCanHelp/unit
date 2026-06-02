@@ -531,4 +531,66 @@ mod tests {
         assert!(output.contains("environment:"));
         assert!(output.contains("normal")); // default environment
     }
+
+    // -----------------------------------------------------------------------
+    // TRANSPORT word — unit-invoked self-relocation (energy + safe no-op)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_transport_word_safe_noop_without_destination() {
+        // A bare unit has no mesh, so the gossiped view is empty → no
+        // sufficient destination → TRANSPORT is a safe no-op. It must not
+        // release the origin, spend energy, or disturb the stack.
+        let mut vm = crate::vm::VM::new();
+        vm.eval("42"); // sentinel on the stack
+        let energy_before = vm.energy.energy;
+        vm.eval("TRANSPORT");
+        assert!(
+            !vm.transported_out,
+            "must never release without a confirmed live copy"
+        );
+        assert_eq!(
+            vm.energy.energy, energy_before,
+            "a no-op transport must not spend energy"
+        );
+        let dot = vm.eval(".");
+        assert!(dot.contains("42"), "stack sentinel lost: {:?}", dot);
+    }
+
+    #[test]
+    fn test_transport_word_starving_unit_cannot_flee() {
+        // A genuinely starving unit sits near the hard energy floor, so it
+        // cannot afford TRANSPORT_COST (which would push it past the floor).
+        // `can_afford` mirrors SAY!/SPAWN — bounded by the floor, not by
+        // `energy >= cost`. Such a unit's TRANSPORT no-ops, spends nothing, and
+        // leaves the unit (and stack) exactly as they were: it cannot flee.
+        let mut vm = crate::vm::VM::new();
+        vm.energy.energy = -400; // starved, near the -500 hard floor
+        assert!(
+            !vm.energy.can_afford(TRANSPORT_COST),
+            "a starved unit must not be able to afford transport"
+        );
+        vm.eval("7");
+        let energy_before = vm.energy.energy;
+        vm.eval("TRANSPORT");
+        assert!(!vm.transported_out, "a starving unit must not be released");
+        assert_eq!(
+            vm.energy.energy, energy_before,
+            "a starving unit must not spend on a no-op"
+        );
+        let dot = vm.eval(".");
+        assert!(dot.contains('7'), "stack sentinel lost: {:?}", dot);
+    }
+
+    #[test]
+    fn test_transport_cost_is_heavy_class() {
+        // TRANSPORT is full self-replication: heavier than the cheap per-message
+        // signals, in the same class as SPAWN (just below it — no binary
+        // travels). Bound to locals so this isn't a constant-only assertion.
+        let costs = [SAY_COST, MARK_COST, TRANSPORT_COST, SPAWN_COST];
+        let (say, mark, transport, spawn) = (costs[0], costs[1], costs[2], costs[3]);
+        assert!(transport > say, "transport must cost more than SAY!");
+        assert!(transport > mark, "transport must cost more than MARK!");
+        assert!(transport <= spawn, "transport is in the SPAWN heavy class");
+    }
 }

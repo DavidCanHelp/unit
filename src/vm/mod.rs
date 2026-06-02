@@ -150,6 +150,7 @@ pub(crate) const P_ACCEPT_REPL: usize = 229;
 pub(crate) const P_DENY_REPL: usize = 230;
 pub(crate) const P_QUARANTINE: usize = 231;
 pub(crate) const P_MAX_CHILDREN: usize = 232;
+pub(crate) const P_TRANSPORT: usize = 233;
 // Task decomposition
 pub(crate) const P_SUBTASK: usize = 210;
 pub(crate) const P_FORK: usize = 211;
@@ -347,6 +348,10 @@ pub struct VM {
     pub fitness: crate::features::fitness::FitnessTracker,
     // --- Spawn ---
     pub spawn_state: crate::spawn::SpawnState,
+    /// Set true after a successful self-transport (a confirmed live copy now
+    /// exists on another coordinate). The origin is released: a host/main loop
+    /// observing this reaps the retired unit. See `prim_transport`.
+    pub transported_out: bool,
     // --- Monitoring ---
     pub monitor: crate::features::monitor::MonitorState,
     // --- WebSocket bridge ---
@@ -437,6 +442,7 @@ impl VM {
             rng: crate::features::mutation::SimpleRng::new(0), // re-seeded from node ID in main()
             fitness: crate::features::fitness::FitnessTracker::new(),
             spawn_state: crate::spawn::SpawnState::new(),
+            transported_out: false,
             monitor: crate::features::monitor::MonitorState::new(),
             ws_state: None,
             ws_events: None,
@@ -605,6 +611,7 @@ impl VM {
             ("DENY-REPLICATE", P_DENY_REPL, false),
             ("QUARANTINE", P_QUARANTINE, false),
             ("MAX-CHILDREN", P_MAX_CHILDREN, false),
+            ("TRANSPORT", P_TRANSPORT, false),
             // Task decomposition
             // Monitoring & Ops
             ("WATCH\"", P_WATCH_URL, true),
@@ -1093,6 +1100,7 @@ impl VM {
             // Spawn / Replication
             P_SPAWN => self.prim_spawn(),
             P_SPAWN_N => self.prim_spawn_n(),
+            P_TRANSPORT => self.prim_transport(),
             P_PACKAGE => self.prim_package(),
             P_PACKAGE_SIZE => self.prim_package_size(),
             P_CHILDREN => self.prim_children(),

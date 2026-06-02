@@ -33,6 +33,14 @@ pub const SAY_COST: i64 = 3;
 /// Energy cost for MARK! — environmental signal deposit (v0.28). Costs
 /// more than SAY! because the effect persists across ticks.
 pub const MARK_COST: i64 = 5;
+/// Energy cost for TRANSPORT — self-relocation to another coordinate. This is
+/// full self-replication (capture the complete self + ship it over the wire),
+/// so it sits in the same heavy class as `SPAWN_COST` rather than the cheap
+/// per-message signals. Slightly below `SPAWN_COST` because no binary travels
+/// (every coordinate already has it) — only the USAV self-state does. A unit
+/// that can't afford this no-ops: a starving unit cannot flee, which is
+/// metabolically honest.
+pub const TRANSPORT_COST: i64 = 150;
 /// Energy level at or below which the unit becomes throttled.
 pub const STARVATION_THRESHOLD: i64 = 0;
 

@@ -200,6 +200,9 @@ pub(crate) struct PeerInfo {
     pub(crate) capacity: u32,
     pub(crate) peer_count: u16,
     pub(crate) fitness: i64,
+    /// Peer's advertised resource headroom (`0..=100`), from its heartbeat.
+    /// 0 for peers not yet heard from or learned via transitive gossip.
+    pub(crate) headroom: u8,
     pub(crate) last_seen: Instant,
 }
 
@@ -374,6 +377,11 @@ pub(crate) struct MeshState {
     load: u32,
     /// This node's capacity threshold.
     capacity: u32,
+    /// This node's advertised resource headroom (`0..=100`), gossiped in the
+    /// heartbeat so peers can judge whether we have room for a transported
+    /// unit. Set from a `HostResources` reading; 0 means "no room" (also the
+    /// fail-closed default before the first measurement).
+    headroom: u8,
     /// Log of recent mesh events (ring buffer, for MESH-STATUS).
     event_log: VecDeque<String>,
     /// Goal and task registry, shared across the mesh via gossip.
@@ -603,6 +611,7 @@ impl MeshNode {
             last_proposal_time: None,
             load: 0,
             capacity: DEFAULT_CAPACITY,
+            headroom: 0,
             event_log: VecDeque::new(),
             goals: GoalRegistry::new(&id),
             fitness: 0,
@@ -644,6 +653,7 @@ impl MeshNode {
                         capacity: 0,
                         peer_count: 0,
                         fitness: 0,
+                        headroom: 0,
                         last_seen: Instant::now(),
                     },
                 );
@@ -731,6 +741,18 @@ impl MeshNode {
         self.state.lock().unwrap().load = load;
     }
 
+    /// This node's advertised resource headroom (`0..=100`).
+    pub fn headroom(&self) -> u8 {
+        self.state.lock().unwrap().headroom
+    }
+
+    /// Set this node's advertised resource headroom (`0..=100`), gossiped in
+    /// subsequent heartbeats so peers can judge whether we have room for a
+    /// transported unit. Callers derive it from a `HostResources` reading.
+    pub fn set_headroom(&self, headroom: u8) {
+        self.state.lock().unwrap().headroom = headroom;
+    }
+
     /// Send one heartbeat synchronously (out-of-band of the network thread's
     /// 2s timer). Used by the multi-unit bridge after spawning units so peers
     /// learn the new unit count quickly, and by tests to avoid sleeping.
@@ -761,6 +783,18 @@ impl MeshNode {
     pub fn peer_unit_counts(&self) -> Vec<(NodeId, u32, SocketAddr)> {
         let st = self.state.lock().unwrap();
         st.peers.iter().map(|p| (p.id, p.load, p.addr)).collect()
+    }
+
+    /// Per-peer (id, load, advertised headroom `0..=100`, addr) — the gossiped
+    /// resource view a unit reads to choose a transport destination. This is
+    /// the only resource information a unit consults; there is no coordinator
+    /// or global aggregation. Returned in arbitrary HashMap order.
+    pub fn peer_resource_view(&self) -> Vec<(NodeId, u32, u8, SocketAddr)> {
+        let st = self.state.lock().unwrap();
+        st.peers
+            .iter()
+            .map(|p| (p.id, p.load, p.headroom, p.addr))
+            .collect()
     }
 
     /// Evict peers whose `last_seen` is older than `threshold`. Returns the
@@ -1252,6 +1286,7 @@ impl MeshNode {
                 capacity: 0,
                 peer_count: 0,
                 fitness: 0,
+                headroom: 0,
                 last_seen: Instant::now(),
             },
         );
@@ -1375,6 +1410,7 @@ impl MeshNode {
                             capacity: 0,
                             peer_count: 0,
                             fitness: 0,
+                            headroom: 0,
                             last_seen: Instant::now(),
                         },
                     );
@@ -1782,6 +1818,7 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
     let port = st.port;
     let load = st.load;
     let capacity = st.capacity;
+    let headroom = st.headroom;
     let peer_count = st.peers.len() as u16;
     let fanout = st.gossip_fanout;
     let mut rng_state = st.gossip_rng;
@@ -1823,6 +1860,10 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
     }
     // Fitness score appended after gossip addresses.
     write_i64(&mut buf, fitness);
+    // Advertised resource headroom (0..=100) appended after fitness. Kept at
+    // the tail so older peers that stop parsing earlier still read the rest;
+    // a peer that omits it is read as headroom 0 (fail closed).
+    write_u8(&mut buf, headroom);
 
     for addr in &delivery_addrs {
         tracked_send_to(socket, &buf, addr);
@@ -1973,7 +2014,8 @@ fn handle_heartbeat(
             load,
             capacity,
             peer_count,
-            fitness: 0, // updated below from heartbeat data
+            fitness: 0,  // updated below from heartbeat data
+            headroom: 0, // updated below from heartbeat data
             last_seen: Instant::now(),
         },
     );
@@ -2027,6 +2069,7 @@ fn handle_heartbeat(
                     capacity: 0,
                     peer_count: 0,
                     fitness: 0,
+                    headroom: 0,
                     last_seen: Instant::now(),
                 },
             );
@@ -2038,6 +2081,13 @@ fn handle_heartbeat(
     if let Some(fitness) = read_i64(data, pos) {
         if let Some(peer) = st.peers.get_mut(&sender_id) {
             peer.fitness = fitness;
+        }
+    }
+    // Parse advertised headroom (appended after fitness, backward-compatible:
+    // a peer that doesn't send it leaves the field at its 0 default).
+    if let Some(headroom) = read_u8(data, pos) {
+        if let Some(peer) = st.peers.get_mut(&sender_id) {
+            peer.headroom = headroom;
         }
     }
 }
@@ -3118,6 +3168,7 @@ mod peer_table_tests {
             capacity: 0,
             peer_count: 0,
             fitness: 0,
+            headroom: 0,
             last_seen: Instant::now(),
         }
     }

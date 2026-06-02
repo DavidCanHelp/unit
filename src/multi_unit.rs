@@ -383,6 +383,9 @@ pub struct RemoteProcess {
     pub host_id: NodeId,
     pub host_id_hex: String,
     pub units_hosted: u32,
+    /// The peer's advertised resource headroom (`0..=100`), gossiped via the
+    /// heartbeat. The input to sufficient-first placement.
+    pub advertised_headroom: u8,
     pub addr: SocketAddr,
 }
 
@@ -451,13 +454,23 @@ impl MultiUnitNode {
         for slot in self.host.units.iter_mut() {
             slot.vm.eval(&format!("{} _SIBLINGS !", siblings));
         }
-        // Advertise unit count via the heartbeat `load` field. Trigger one
-        // heartbeat now so peers learn quickly.
+        // Advertise unit count + current resource headroom via the heartbeat,
+        // then trigger one now so peers learn quickly.
         if let Some(ref m) = self.mesh {
             m.set_load(self.host.len() as u32);
+            m.set_headroom(crate::resources::HostResources::measure().advertised_headroom_pct());
             m.force_heartbeat();
         }
         count
+    }
+
+    /// Re-measure this coordinate's resources and re-advertise its headroom on
+    /// the heartbeat. Cheap; callers can invoke on tick so the gossiped view
+    /// stays current as load changes. No-op without a mesh.
+    pub fn advertise_resources(&self) {
+        if let Some(ref m) = self.mesh {
+            m.set_headroom(crate::resources::HostResources::measure().advertised_headroom_pct());
+        }
     }
 
     /// Snapshot of remote processes seen via the mesh, with their advertised
@@ -468,13 +481,14 @@ impl MultiUnitNode {
             None => return Vec::new(),
         };
         let my_id = *mesh.id();
-        mesh.peer_unit_counts()
+        mesh.peer_resource_view()
             .into_iter()
-            .filter(|(id, _, _)| *id != my_id)
-            .map(|(id, load, addr)| RemoteProcess {
+            .filter(|(id, _, _, _)| *id != my_id)
+            .map(|(id, load, headroom, addr)| RemoteProcess {
                 host_id: id,
                 host_id_hex: mesh::id_to_hex(&id),
                 units_hosted: load,
+                advertised_headroom: headroom,
                 addr,
             })
             .collect()
@@ -508,6 +522,58 @@ impl MultiUnitNode {
         );
         mesh.send_sexp_to(addr, &sexp);
         true
+    }
+
+    /// True iff THIS coordinate is mislocated: it is over the ceiling — local
+    /// `has_headroom()` is false. The honest trigger is local resource
+    /// pressure; there is no separate mislocation score. A coordinate with
+    /// local headroom is content and never tries to relocate its units.
+    pub fn is_mislocated(&self, local: &crate::resources::HostResources) -> bool {
+        crate::transport::is_mislocated(local)
+    }
+
+    /// Sufficient-first destination from this node's own gossiped resource
+    /// view: the FIRST peer that advertises enough headroom to hold a unit, in
+    /// gossip-view order — not the emptiest. Frugal, mirrors minimum-sufficient,
+    /// avoids a thundering herd. `None` if no peer advertises sufficient room.
+    pub fn choose_destination(&self) -> Option<RemoteProcess> {
+        self.remote_processes()
+            .into_iter()
+            .find(|p| crate::resources::headroom_pct_sufficient(p.advertised_headroom))
+    }
+
+    /// Relocate unit `idx` to `dest_addr`, performing the actual transport via
+    /// the injected `send` closure (the real
+    /// [`send_transport`](crate::transport::send_transport) in production, a
+    /// stub in tests). It captures the unit's complete self as serialized USAV
+    /// bytes and hands them to `send`.
+    ///
+    /// Confirm-before-release at the placement layer: the origin slot is
+    /// retired (removed from the host) ONLY on `Ok(ConfirmOutcome::Accepted)` —
+    /// a confirmed live copy on the destination. On any `Err` the slot is
+    /// retained, untouched; the unit keeps running exactly as it was. A peer
+    /// that lied about its headroom simply refuses at the transport layer, so
+    /// `send` returns `Err` and the unit stays — no detection, no blacklist.
+    pub fn relocate_unit_with<S>(
+        &mut self,
+        idx: usize,
+        send: S,
+    ) -> Result<crate::transport::ConfirmOutcome, crate::transport::TransportError>
+    where
+        S: FnOnce(&[u8]) -> Result<crate::transport::ConfirmOutcome, crate::transport::TransportError>,
+    {
+        if idx >= self.host.units.len() {
+            return Err(crate::transport::TransportError::Io("no such unit".into()));
+        }
+        // Capture the complete self (USAV bytes) — the transport payload.
+        let snap = self.host.units[idx].vm.make_snapshot();
+        let payload = crate::persist::serialize_snapshot(&snap);
+        let outcome = send(&payload);
+        if crate::transport::should_release(&outcome) {
+            // Released: a live copy exists elsewhere. Retire the origin slot.
+            self.host.units.remove(idx);
+        }
+        outcome
     }
 
     /// Drain any pending mesh messages. For each `(host-msg :to <us> ...)`
@@ -709,6 +775,98 @@ mod bridge_tests {
                 out
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Resource-aware placement (PART A gossip + PART B sufficient-first)
+    // -----------------------------------------------------------------------
+
+    /// Force a few more heartbeats from `b` so `a` re-learns its advertisement.
+    fn settle_heartbeats(a: &MultiUnitNode, b: &MultiUnitNode) {
+        for _ in 0..3 {
+            b.mesh.as_ref().unwrap().force_heartbeat();
+            a.mesh.as_ref().unwrap().force_heartbeat();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn gossiped_headroom_surfaces_on_remote_processes() {
+        let (mut a, b) = pair(1, 1);
+        // b advertises a known headroom; round-trip it through the heartbeat.
+        b.mesh.as_ref().unwrap().set_headroom(57);
+        settle_heartbeats(&a, &b);
+        let _ = a.drain_and_dispatch();
+        let b_id = b.host_id().unwrap();
+        let entry = a
+            .remote_processes()
+            .into_iter()
+            .find(|r| r.host_id == b_id)
+            .expect("b not visible from a");
+        assert_eq!(
+            entry.advertised_headroom, 57,
+            "advertised headroom must round-trip the heartbeat"
+        );
+    }
+
+    #[test]
+    fn node_choose_destination_picks_sufficient_peer() {
+        let (mut a, b) = pair(1, 1);
+        b.mesh.as_ref().unwrap().set_headroom(60); // > 20 → sufficient
+        settle_heartbeats(&a, &b);
+        let _ = a.drain_and_dispatch();
+        let dest = a.choose_destination().expect("b advertises room");
+        assert_eq!(dest.host_id, b.host_id().unwrap());
+    }
+
+    #[test]
+    fn node_choose_destination_none_when_no_peer_sufficient() {
+        let (mut a, b) = pair(1, 1);
+        b.mesh.as_ref().unwrap().set_headroom(5); // < 20 → insufficient
+        settle_heartbeats(&a, &b);
+        let _ = a.drain_and_dispatch();
+        assert!(
+            a.choose_destination().is_none(),
+            "no peer advertises sufficient room"
+        );
+    }
+
+    #[test]
+    fn node_is_mislocated_tracks_local_headroom() {
+        let a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        let healthy = crate::resources::HostResources::from_parts(1000, 500, 0.0, 4);
+        assert!(!a.is_mislocated(&healthy), "with room a unit never flees");
+        let pressed = crate::resources::HostResources::from_parts(1000, 50, 0.0, 4);
+        assert!(a.is_mislocated(&pressed), "over the ceiling → mislocated");
+    }
+
+    #[test]
+    fn relocate_retires_origin_only_on_confirmed_copy() {
+        use crate::transport::{ConfirmOutcome, TransportError};
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(3);
+        assert_eq!(a.host.len(), 3);
+
+        // Transport REFUSED (or any Err) → origin slot retained, untouched.
+        let out = a.relocate_unit_with(1, |_payload| Err(TransportError::Refused));
+        assert!(out.is_err());
+        assert_eq!(
+            a.host.len(),
+            3,
+            "a refused/failed transport must NOT retire the origin"
+        );
+
+        // Transport ACCEPTED → confirmed live copy → origin slot retired.
+        let out = a.relocate_unit_with(1, |payload| {
+            assert!(!payload.is_empty(), "the complete self must be captured");
+            Ok(ConfirmOutcome::Accepted)
+        });
+        assert!(matches!(out, Ok(ConfirmOutcome::Accepted)));
+        assert_eq!(
+            a.host.len(),
+            2,
+            "confirmed live copy → origin slot retired (released)"
+        );
     }
 }
 
