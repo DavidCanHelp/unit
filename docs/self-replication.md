@@ -164,15 +164,62 @@ evolutionarily stable strategy is an empirical question the system is built to
 - **Zero new dependencies.** The whole surface is hand-rolled; `Cargo.lock` still
   contains only the `unit` crate.
 
-## What v0.29 deliberately does not do
+## Multi-machine validation (v0.30)
 
-- **No host-side relocation loop.** Nothing forcibly moves units on a timer;
-  `TRANSPORT` is unit-invoked. In the multi-unit colony, the node exposes
-  `choose_destination` / `relocate_unit_with` for the placement layer, but the
-  decision to flee belongs to evolved unit code, not a scheduler.
+Everything above shipped in v0.29 as unit-tested mechanism. v0.30 added the
+persistent run loop (`unit --multi-unit N --port P --peers ...` is now a living
+node, not a 5-second discovery demo) and put the whole arc on real hardware for
+the first time. This section is what was *observed*, not claimed.
+
+**Setup.** Three DigitalOcean droplets, SFO3, 512 MB RAM each, Ubuntu 24.04,
+built from source, peered into one mesh.
+
+**What happened.** A 2000-unit colony was started on one box. Its periodic
+resource line read **86.4% memory utilization — OVER-CEILING**. The node sensed
+itself **MISLOCATED** (`!has_headroom()` on a real `/proc` reading, not a
+fail-closed guess), and from its gossiped peer view chose peers advertising
+sufficient headroom (~**73%** free). It then transported units **one per tick**,
+with confirm-before-release holding across real UDP gossip + TCP transport: the
+origin slot was retired only after the destination confirmed a live copy, so the
+unit count drained incrementally — **2000 → 1987 → …** — toward the two peers,
+never dropping a unit in transit.
+
+**The arrivals were alive.** The receiving box's unit count rose (e.g. **3 → 8**)
+and the transported units **resumed evolving** on landing — the complete self
+(dictionary, evolved antibodies, fitness, code_strings) travelled and ran, not an
+inert blob.
+
+**Honesty was selected, not policed.** As the overloaded box shed load its
+advertised headroom fell — gossiped honestly all the way down to **14%** — and
+the other nodes simply **stopped choosing it** as a destination. No detection, no
+blacklist; an over-full box just isn't sufficient-first anymore.
+
+**The bug only a real network could surface.** Multi-machine testing immediately
+exposed that the mesh UDP socket and the transport TCP listener were bound to
+`127.0.0.1`. On a single host that "works" — and worse, `--peers` seed entries
+populate the peer table at startup and survived the old demo's 5-second window
+(shorter than the 15-second peer timeout), so cross-machine discovery *looked*
+fine. It wasn't: a loopback-bound socket never receives datagrams destined for
+the host's routable IP. The fix was to bind both peer-traffic sockets to
+`0.0.0.0` (the HTTP bridge stays localhost-only by design). A single-host test
+could not have caught this; the persistent loop on three boxes caught it in the
+first minute.
+
+## What this deliberately does not do
+
+- **No *central* coordinator.** This is the load-bearing one. In v0.30 the
+  persistent node *does* run the local rule on a tick — it is not purely
+  unit-invoked anymore — but each node evaluates that rule against **its own**
+  gossiped view and **its own** measured pressure, deciding independently. There
+  is no global scheduler, no quorum, no authority placing units across the mesh.
+  The three-droplet run drained one box while two others independently judged
+  themselves sufficient and accepted arrivals; nothing orchestrated that. The
+  `TRANSPORT` Forth word remains for genuinely unit-invoked, GP-evolvable
+  relocation; the tick loop is the always-on per-node driver layered beside it.
 - **No reclaim or cull.** Surplus resolves through starvation, not through a
   reaper.
-- **No liar detection.** See above — by design.
+- **No liar detection.** Honesty is selected, not policed — observed live as the
+  full box's advertised headroom fell and peers simply stopped choosing it.
 
 ## Map to the code
 

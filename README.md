@@ -204,46 +204,47 @@ semantics are fate-shared at the host level — if a process dies, its
 units die with it. Reach for this when scale matters more than
 fork-level isolation.
 
-Two processes, each running 5 in-process units, peered on loopback:
+`--multi-unit N --port P` launches a **persistent resource-aware node**, not a
+one-shot demo. After a brief startup discovery window it enters a steady tick
+loop and runs until killed (SIGINT/SIGTERM → clean shutdown). Each tick it:
+dispatches inbound mesh work; advances every unit's metabolism; runs any
+unworked unit through `GP-EVOLVE` (a unit with no work evolves rather than
+sitting idle); periodically measures host resources and re-advertises its real
+headroom on the heartbeat; and runs the local placement rule — if the host is
+over the 80% ceiling it senses itself **mislocated**, picks a
+sufficient-headroom peer from its gossiped view, and transports a unit there
+with **confirm-before-release** (the origin is retired only once the
+destination confirms a live copy). It is the live vehicle for
+[resource-aware self-replication](docs/self-replication.md).
 
 ```
-$ unit --multi-unit 5 --port 9001 --gossip-k 8 -q &
-$ unit --multi-unit 5 --port 9002 --peers 127.0.0.1:9001 --gossip-k 8 -q
-
-=== unit --multi-unit 5 --port 9002 ===
-host id: ebc1eacccc28ea52  port: 9002  units: 5
-
-listening for peers (5s)...
-[recv] from 15d15326e643aa64 → unit #0 → 42
-
---- discovered remote processes ---
-  host 15d15326e643aa64 @ 127.0.0.1:9001  units=5
-
---- per-unit Forth queries (unit #0) ---
-  HOST-ID            → ebc1eacccc28ea52
-  SIBLING-COUNT      → 4
-  MESH-PROCESS-COUNT → 1
-
---- cross-process send to 15d15326e643aa64 ---
-  sent: `21 2 * .`
+$ unit --multi-unit 2000 --port 9001 --peers <peerA>,<peerB> --gossip-k 8
+...
+[t] transport listener up on 0.0.0.0:11001 (mesh port + 2000)
+[t] node up — ticking every 1000ms (Ctrl-C / SIGTERM to stop)
+[t] RES util=86.4% (mem=86.4% load/cpu=0.31 cpus=1) headroom=13.6% OVER-CEILING units=2000 rss=...
+[t] MISLOCATED util=86.4% over ceiling → transport target 15d1…aa64 (headroom 73%)
+[t] TRANSPORT accepted, origin released — now hosting 1999 units
 ```
 
-Process A (port 9001) sent `21 2 * .` to B during its own discovery
-window; B's `[recv]` line shows it arrived, was dispatched to B's
-unit #0 via least-busy worker selection, and evaluated to `42`. B
-then sends back to A in the same way. Each unit can query its host
-identity, sibling count, and remote-process count from Forth via
-`HOST-ID`, `SIBLING-COUNT`, and `MESH-PROCESS-COUNT`.
+The transported self carries its full state — dictionary, evolved `SOL-*`
+antibodies, fitness, goals — and resumes evolving on arrival; the receiving
+node's unit count rises and the colony rebalances toward boxes with room. A
+peer that fills up gossips its falling headroom honestly and is simply no longer
+chosen — honesty is selected, not policed. Bounded-k gossip (`--gossip-k 8`)
+caps per-process heartbeat/chatter at O(k).
 
-Discovery is timing-dependent. The `[recv]` line only appears if A's
-5-second discovery window is still open when B announces itself. The
-`&` in the commands above starts A first so this usually wins; if
-you see no recv line, re-run with B started immediately after A.
+**Multi-machine validated (v0.30).** This was exercised on three DigitalOcean
+droplets (512 MB each): a 2000-unit box read 86.4% utilization, drained
+one-unit-per-tick toward two peers at ~73% headroom with no unit lost in
+transit, and the arrivals resumed evolving. Real multi-machine testing also
+surfaced (and fixed) a `127.0.0.1`→`0.0.0.0` socket-bind bug that single-host
+testing could never expose. See
+[docs/self-replication.md](docs/self-replication.md#multi-machine-validation-v030).
 
-Today's bench tops out at 10 000 aggregate units on single-host
-loopback. The architecture supports the path further; the next walls
-(in-process scheduler fairness, async eval, multi-machine validation)
-are explicit in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The single-host bench tops out around 10 000 aggregate units on loopback; the
+remaining walls (in-process scheduler fairness, async eval) are explicit in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Architecture
 

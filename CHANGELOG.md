@@ -3,6 +3,74 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.30.0] - 2026-06-02
+
+The v0.29 resource-aware self-replication surface, now driven by a persistent
+run loop and validated on real multi-machine hardware. `unit --multi-unit N
+--port P --peers ...` is no longer a 5-second discovery demo — it is a living
+node that ticks the full v0.29 behavior until killed. See
+[docs/self-replication.md](docs/self-replication.md#multi-machine-validation-v030).
+
+### Added
+- **Persistent resource-aware run loop** (`run_multi_unit_node`, replacing the
+  old `run_multi_unit_mesh_demo`). After the startup/discovery phase it ticks on
+  a steady ~1s interval until SIGINT/SIGTERM (handled via a zero-dependency raw
+  `signal(2)` FFI binding) requests a clean shutdown. Each tick: drains and
+  dispatches inbound mesh work; advances every unit's metabolism; runs each
+  unworked unit through one bounded `GP-EVOLVE` step; periodically measures
+  `HostResources` and re-advertises real headroom on the heartbeat; and runs the
+  local placement rule — over the 80% ceiling it senses mislocation, chooses a
+  sufficient-first peer from its gossiped view, and transports a unit with
+  confirm-before-release. The per-tick logic is factored into
+  `MultiUnitNode::tick`, unit-tested without sockets or sleeps.
+- **Inbound transport landing.** The node binds the transport TCP listener
+  (mesh port + 2000) and services it each tick: a received self is instantiated
+  as a live unit (full dictionary incl. evolved `SOL-*` antibodies, memory,
+  fitness, goals, code_strings) and resumes evolving.
+- **Timestamped one-line-per-event logging** (UTC `HH:MM:SS`, zero-dep) for
+  live-tailing on real boxes: `RES` (binding-constraint utilization, mem%,
+  load-per-cpu, headroom, UNDER/OVER-ceiling, unit count, RSS), `EVOLVE`,
+  `PEERS` (logged only on change), `MISLOCATED` (on crossing the ceiling), and
+  `TRANSPORT accepted/refused`.
+- **First multi-machine validation** — three DigitalOcean droplets (SFO3, 512 MB,
+  Ubuntu 24.04, source builds). A 2000-unit colony read 86.4% memory utilization
+  OVER-CEILING, sensed itself mislocated, and drained one-unit-per-tick toward
+  two peers at ~73% headroom with confirm-before-release holding across real
+  UDP/TCP (no unit lost in transit). The receiving box's unit count rose (3→8)
+  and arrived units resumed evolving. The overloaded box honestly gossiped its
+  falling headroom (to 14%) and peers correctly stopped choosing it — honesty
+  selected, not policed.
+
+### Fixed
+- **Cross-machine bind bug** (surfaced only by real multi-machine testing): the
+  mesh UDP gossip socket and the transport TCP listener bound to `127.0.0.1`,
+  which silently prevented all cross-machine operation — a loopback-bound socket
+  never receives datagrams destined for the host's routable IP. It went unnoticed
+  because `--peers` seed entries populate the peer table at startup and survived
+  the old 5-second demo (shorter than the 15s peer timeout), so discovery *looked*
+  fine. Both peer-traffic sockets now bind `0.0.0.0`. Left loopback by design:
+  the HTTP bridge (`--serve`, localhost-only for safety), the legacy UREP repl
+  listener, and the discovery beacon self-ping.
+- **Stack-underflow log flood.** The core stack ops (`vm/primitives.rs`) and
+  `SAY!`/`MARK!` printed "stack underflow" via raw `eprintln!`, bypassing the
+  `silent` flag. Sandboxed GP candidate evaluation runs many mutated programs
+  that underflow, which flooded stderr and drowned the run loop's logs; these
+  are now gated behind `!silent`.
+
+### Changed
+- `--gossip-k` bounded fan-out is now honored on the `--multi-unit --port` path
+  (the old demo ignored it).
+- VERSION → v0.30.0; prelude banner and web demo title/cache-bust updated.
+
+### Design principles held
+- **No central coordinator.** The node runs the local rule on a tick, but each
+  node decides from its own gossiped view and its own measured pressure; nothing
+  orchestrates placement across the mesh.
+- **Confirm before release; honesty selected, not policed; fail closed; 80% is a
+  refusal wall, not a target; a unit with no work evolves; the complete self
+  transports.** All carried unchanged from v0.29 — now observed on hardware.
+- **Zero new dependencies.** Cargo.lock still contains only the `unit` crate.
+
 ## [0.29.0] - 2026-06-02
 
 Resource-aware self-replication: a unit senses its host's load, refuses to grow past a wall, and can relocate itself to another coordinate that has room — choosing frugally and never giving up its only copy until a live copy is confirmed elsewhere. See [docs/self-replication.md](docs/self-replication.md) for the full arc and the principles it holds.
