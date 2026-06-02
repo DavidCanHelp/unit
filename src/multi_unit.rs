@@ -608,16 +608,30 @@ impl MultiUnitNode {
     }
 
     /// One tick of the persistent run loop, factored out so the loop body is
-    /// testable without sockets or sleeps. A later milestone adds the
-    /// ceiling-gated placement rule. Returns a [`TickReport`] of what happened.
+    /// testable without sockets or sleeps. Returns a [`TickReport`].
     ///
     /// In order: (a) drain and dispatch inbound mesh work; (b) advance each
     /// unit's metabolism one step; (c) every unworked (idle) unit runs one
-    /// bounded GP-EVOLVE step — the "a unit with no work evolves" principle.
+    /// bounded GP-EVOLVE step — the "a unit with no work evolves" principle;
+    /// (d) the local placement rule — if this host is mislocated (over the
+    /// ceiling per `local`), pick a unit and attempt a sufficient-first
+    /// transport with confirm-before-release.
+    ///
+    /// `local` is the host resource reading (caller-measured in production,
+    /// test-injected in tests). `transport` performs the actual relocation:
+    /// given the chosen destination and the serialized self, return the confirm
+    /// outcome (the real `send_transport` in production, a stub in tests). It is
+    /// invoked at most once, only when mislocated with a sufficient destination.
     /// GP-EVOLVE caps itself at a fixed batch of generations and is
-    /// energy-gated, so a tick can't run away and a starving unit simply
-    /// pauses rather than evolving for free.
-    pub fn tick(&mut self) -> TickReport {
+    /// energy-gated, so a tick can't run away and a starving unit pauses.
+    pub fn tick<S>(&mut self, local: &crate::resources::HostResources, transport: S) -> TickReport
+    where
+        S: FnOnce(
+            &RemoteProcess,
+            &[u8],
+        )
+            -> Result<crate::transport::ConfirmOutcome, crate::transport::TransportError>,
+    {
         // a. inbound mesh work.
         let dispatched = self.drain_and_dispatch();
 
@@ -644,11 +658,37 @@ impl MultiUnitNode {
             .max()
             .unwrap_or(0);
 
+        // d. local placement rule: relocate only when over the ceiling AND a
+        //    sufficient destination exists. Honesty selected, not policed — a
+        //    refused/failed transport leaves the origin unit in place.
+        let mislocated = self.is_mislocated(local);
+        let transport_outcome = if mislocated && !self.host.units.is_empty() {
+            match self.choose_destination() {
+                Some(dest) => {
+                    let target_hex = dest.host_id_hex.clone();
+                    let target_headroom = dest.advertised_headroom;
+                    // Move the youngest unit; over successive ticks this sheds
+                    // load incrementally rather than evacuating all at once.
+                    let idx = self.host.units.len() - 1;
+                    let outcome = self.relocate_unit_with(idx, |payload| transport(&dest, payload));
+                    Some(TickTransport::Attempted {
+                        target_hex,
+                        target_headroom,
+                        outcome,
+                    })
+                }
+                None => Some(TickTransport::NoDestination),
+            }
+        } else {
+            None
+        };
+
         TickReport {
             dispatched,
             evolved_units,
             best_fitness,
-            ..TickReport::default()
+            mislocated,
+            transport: transport_outcome,
         }
     }
 
@@ -945,14 +985,31 @@ mod bridge_tests {
         );
     }
 
+    // A reading with ample headroom (50% util, under the 80% ceiling) and one
+    // over the ceiling (95% util). from_parts is pub(crate).
+    fn under_ceiling_reading() -> crate::resources::HostResources {
+        crate::resources::HostResources::from_parts(1000, 500, 0.0, 4)
+    }
+    fn over_ceiling_reading() -> crate::resources::HostResources {
+        crate::resources::HostResources::from_parts(1000, 50, 0.0, 4)
+    }
+    // A transport stub that must never run (asserts the rule didn't fire).
+    fn never_transport(
+        _d: &RemoteProcess,
+        _p: &[u8],
+    ) -> Result<crate::transport::ConfirmOutcome, crate::transport::TransportError> {
+        panic!("transport must not be attempted");
+    }
+
     #[test]
     fn tick_on_lone_node_is_safe_noop() {
-        // A node with no peers and no inbound work: tick drains nothing,
-        // retires nothing, and does not panic.
+        // No peers, no inbound work, under ceiling: tick drains nothing,
+        // retires nothing, attempts no transport, and does not panic.
         let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
         a.spawn_n(2);
-        let report = a.tick();
+        let report = a.tick(&under_ceiling_reading(), never_transport);
         assert!(report.dispatched.is_empty());
+        assert!(!report.mislocated);
         assert!(report.transport.is_none());
         assert_eq!(a.host.len(), 2, "tick must not retire units with no work");
     }
@@ -964,7 +1021,7 @@ mod bridge_tests {
         // Fresh units have no evolution state.
         assert!(a.host.units[0].vm.evolution.is_none());
 
-        let report = a.tick();
+        let report = a.tick(&under_ceiling_reading(), never_transport);
 
         // Both idle units took the no-work fall-through into GP-EVOLVE.
         assert_eq!(report.evolved_units, 2, "every unworked unit evolves");
@@ -978,6 +1035,66 @@ mod bridge_tests {
             a.host.units[0].vm.energy.total_earned >= 1,
             "metabolism ticked (passive regen)"
         );
+    }
+
+    #[test]
+    fn tick_under_ceiling_never_transports() {
+        // Even with a sufficient peer visible, a host with local headroom is
+        // content and never relocates a unit.
+        let (mut a, b) = pair(1, 1);
+        b.mesh.as_ref().unwrap().set_headroom(60);
+        settle_heartbeats(&a, &b);
+        let _ = a.drain_and_dispatch();
+        let report = a.tick(&under_ceiling_reading(), never_transport);
+        assert!(!report.mislocated);
+        assert!(report.transport.is_none());
+        assert_eq!(a.host.len(), 1, "content host keeps its unit");
+    }
+
+    #[test]
+    fn tick_over_ceiling_with_sufficient_peer_transports() {
+        use crate::transport::ConfirmOutcome;
+        let (mut a, b) = pair(1, 1);
+        b.mesh.as_ref().unwrap().set_headroom(60); // > 20 → sufficient
+        settle_heartbeats(&a, &b);
+        let _ = a.drain_and_dispatch();
+        let b_id_hex = b.host_id_hex().unwrap();
+
+        // Over the ceiling + a sufficient peer → transport attempted. The
+        // injected stub confirms acceptance, so the origin slot is retired.
+        let report = a.tick(&over_ceiling_reading(), |dest, payload| {
+            assert_eq!(dest.host_id_hex, b_id_hex, "sufficient-first picked b");
+            assert!(!payload.is_empty(), "the complete self was captured");
+            Ok(ConfirmOutcome::Accepted)
+        });
+        assert!(report.mislocated, "over ceiling → mislocated");
+        match report.transport {
+            Some(TickTransport::Attempted {
+                target_hex,
+                target_headroom,
+                outcome,
+            }) => {
+                assert_eq!(target_hex, b.host_id_hex().unwrap());
+                assert_eq!(target_headroom, 60);
+                assert!(matches!(outcome, Ok(ConfirmOutcome::Accepted)));
+            }
+            other => panic!("expected Attempted, got {:?}", other.is_some()),
+        }
+        assert_eq!(a.host.len(), 0, "confirmed live copy → origin retired");
+    }
+
+    #[test]
+    fn tick_over_ceiling_no_sufficient_peer_stays_put() {
+        // Over the ceiling, but the only peer is itself tight → no destination,
+        // the unit stays. Honesty selected: we don't force a bad placement.
+        let (mut a, b) = pair(1, 1);
+        b.mesh.as_ref().unwrap().set_headroom(5); // insufficient
+        settle_heartbeats(&a, &b);
+        let _ = a.drain_and_dispatch();
+        let report = a.tick(&over_ceiling_reading(), never_transport);
+        assert!(report.mislocated);
+        assert!(matches!(report.transport, Some(TickTransport::NoDestination)));
+        assert_eq!(a.host.len(), 1, "no sufficient peer → unit stays");
     }
 }
 

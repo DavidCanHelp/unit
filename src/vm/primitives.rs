@@ -13,7 +13,9 @@ impl super::VM {
         if let Some(&val) = self.stack.last() {
             self.stack.push(val);
         } else {
-            eprintln!("stack underflow");
+            if !self.silent {
+                eprintln!("stack underflow");
+            }
         }
     }
 
@@ -24,7 +26,9 @@ impl super::VM {
     pub(crate) fn prim_swap(&mut self) {
         let len = self.stack.len();
         if len < 2 {
-            eprintln!("stack underflow");
+            if !self.silent {
+                eprintln!("stack underflow");
+            }
             return;
         }
         self.stack.swap(len - 1, len - 2);
@@ -33,7 +37,9 @@ impl super::VM {
     pub(crate) fn prim_over(&mut self) {
         let len = self.stack.len();
         if len < 2 {
-            eprintln!("stack underflow");
+            if !self.silent {
+                eprintln!("stack underflow");
+            }
             return;
         }
         self.stack.push(self.stack[len - 2]);
@@ -42,7 +48,9 @@ impl super::VM {
     pub(crate) fn prim_rot(&mut self) {
         let len = self.stack.len();
         if len < 3 {
-            eprintln!("stack underflow");
+            if !self.silent {
+                eprintln!("stack underflow");
+            }
             return;
         }
         let val = self.stack.remove(len - 3);

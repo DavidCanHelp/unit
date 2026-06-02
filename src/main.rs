@@ -4581,6 +4581,42 @@ const TICK_INTERVAL_MS: u64 = 1000;
 /// every this many ticks (so quiet ticks stay quiet; ~5s at 1s ticks).
 #[cfg(not(target_arch = "wasm32"))]
 const RESOURCE_MEASURE_EVERY_TICKS: u64 = 5;
+/// Transport TCP listener sits at the mesh UDP port + this offset (the repl
+/// listener already uses +1000; transport uses +2000 to avoid collision).
+#[cfg(not(target_arch = "wasm32"))]
+const TRANSPORT_PORT_OFFSET: u16 = 2000;
+
+/// Derive a peer's transport TCP address from its gossiped mesh UDP address:
+/// same IP, port + [`TRANSPORT_PORT_OFFSET`]. `None` if the port would
+/// overflow (transport then can't be attempted to that peer).
+#[cfg(not(target_arch = "wasm32"))]
+fn peer_transport_addr(dest: &crate::multi_unit::RemoteProcess) -> Option<String> {
+    let port = dest.addr.port().checked_add(TRANSPORT_PORT_OFFSET)?;
+    Some(format!("{}:{}", dest.addr.ip(), port))
+}
+
+/// Instantiate an inbound transported self as a new live unit on the host:
+/// build a fresh VM (prelude loaded), restore the complete self (dictionary
+/// incl. evolved antibodies, memory, fitness, code_strings), stamp a host-local
+/// id, and adopt it into the host. This is how a peer's transported unit lands.
+#[cfg(not(target_arch = "wasm32"))]
+fn land_transported_unit(node: &mut crate::multi_unit::MultiUnitNode, snap: persist::VmSnapshot) {
+    let mut vm = crate::vm::VM::new();
+    vm.silent = true;
+    vm.output_buffer = Some(String::new());
+    vm.load_prelude();
+    vm.output_buffer = None;
+    vm.silent = false;
+    let idx = node.host.units.len();
+    vm.node_id_cache = Some([0xC0, 0xFE, 0, 0, 0, 0, 0, idx as u8]);
+    vm.restore_snapshot(snap);
+    node.host.units.push(crate::multi_unit::UnitSlot {
+        vm,
+        busy: false,
+        tasks_completed: 0,
+        user_words: Vec::new(),
+    });
+}
 
 /// Shutdown signalling for the run loop. SIGINT/SIGTERM set a flag the loop
 /// polls each tick, so the node logs a clean shutdown rather than dying mid-
@@ -4716,6 +4752,31 @@ fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     }
 
     // ----- persistent run loop -----
+    // Bind the transport listener so inbound transports can land. It sits at
+    // mesh port + TRANSPORT_PORT_OFFSET on 0.0.0.0 and runs its own accept
+    // thread; we drain its channel each tick to instantiate received units.
+    let transport_port = mesh_port.wrapping_add(TRANSPORT_PORT_OFFSET);
+    let transport_rx = match crate::transport::start_transport_listener(transport_port) {
+        Ok(rx) => {
+            println!(
+                "[{}] transport listener up on 0.0.0.0:{} (mesh port + {})",
+                log_ts(),
+                transport_port,
+                TRANSPORT_PORT_OFFSET
+            );
+            Some(rx)
+        }
+        Err(e) => {
+            println!(
+                "[{}] WARN transport listener failed to bind port {}: {} — inbound transport disabled",
+                log_ts(),
+                transport_port,
+                e
+            );
+            None
+        }
+    };
+
     run_signals::install();
     println!(
         "[{}] node up — ticking every {}ms (Ctrl-C / SIGTERM to stop)",
@@ -4726,6 +4787,9 @@ fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     let mut tick_n: u64 = 0;
     // Last peer-headroom view, so we log the gossiped view only when it changes.
     let mut last_peer_view: Vec<(String, u8)> = Vec::new();
+    // Whether we were mislocated last tick, so the "MISLOCATED" line logs on
+    // crossing the ceiling rather than every tick while stuck over it.
+    let mut prev_mislocated = false;
     loop {
         if run_signals::requested() {
             println!(
@@ -4741,7 +4805,26 @@ fn run_multi_unit_node(n: usize, cli: &CliArgs) {
             m.force_heartbeat();
         }
 
-        let report = node.tick();
+        // Service the transport listener: land any inbound transported units.
+        if let Some(ref rx) = transport_rx {
+            while let Ok(snap) = rx.try_recv() {
+                land_transported_unit(&mut node, snap);
+                println!(
+                    "[{}] TRANSPORT inbound: landed a unit — now hosting {} units",
+                    log_ts(),
+                    node.host.len()
+                );
+            }
+        }
+
+        // Measure this host's resources each tick for the local rule (a cheap
+        // /proc read). The real transport sends to a peer's TCP listener.
+        let res = crate::resources::HostResources::measure();
+        let report = node.tick(&res, |dest, payload| match peer_transport_addr(dest) {
+            Some(addr) => crate::transport::send_transport(&addr, payload),
+            None => Err(crate::transport::TransportError::Connect("port overflow".into())),
+        });
+
         for ev in &report.dispatched {
             println!(
                 "[{}] RECV from {} → unit #{}: {}",
@@ -4752,10 +4835,58 @@ fn run_multi_unit_node(n: usize, cli: &CliArgs) {
             );
         }
 
-        // Periodically measure resources, re-advertise current headroom, and
-        // log the resource / evolve / peer lines. Quiet ticks stay silent.
+        // Placement logging — the local rule's outcome this tick. A transport
+        // attempt is a real event and always logs; bare mislocation (no
+        // destination) logs only on crossing the ceiling so a stuck-over-ceiling
+        // host doesn't spam every tick (the periodic RES line shows the status).
+        let util_str = if res.is_available() {
+            format!("util={:.1}% over ceiling", res.utilization * 100.0)
+        } else {
+            "unmeasurable (fail-closed)".to_string()
+        };
+        match &report.transport {
+            // Bare mislocation logs only on crossing the ceiling (not every
+            // tick); when prev_mislocated this falls through to the no-op arm.
+            Some(crate::multi_unit::TickTransport::NoDestination) if !prev_mislocated => {
+                println!(
+                    "[{}] MISLOCATED {} — no peer with sufficient headroom, staying put",
+                    log_ts(),
+                    util_str
+                );
+            }
+            Some(crate::multi_unit::TickTransport::Attempted {
+                target_hex,
+                target_headroom,
+                outcome,
+            }) => {
+                println!(
+                    "[{}] MISLOCATED {} → transport target {} (headroom {}%)",
+                    log_ts(),
+                    util_str,
+                    target_hex,
+                    target_headroom
+                );
+                match outcome {
+                    Ok(_) => println!(
+                        "[{}] TRANSPORT accepted, origin released — now hosting {} units",
+                        log_ts(),
+                        node.host.len()
+                    ),
+                    Err(e) => println!(
+                        "[{}] TRANSPORT refused/failed, staying put ({})",
+                        log_ts(),
+                        e
+                    ),
+                }
+            }
+            // No transport this tick, or mislocation already logged on entry.
+            _ => {}
+        }
+        prev_mislocated = report.mislocated;
+
+        // Periodically re-advertise current headroom and log the resource /
+        // evolve / peer lines. Quiet ticks stay silent.
         if tick_n.is_multiple_of(RESOURCE_MEASURE_EVERY_TICKS) {
-            let res = crate::resources::HostResources::measure();
             // Re-advertise current headroom so peers see real, current capacity.
             if let Some(ref m) = node.mesh {
                 m.set_headroom(res.advertised_headroom_pct());

@@ -1673,7 +1673,12 @@ impl VM {
     /// failure-as-silence behavior of SEND under network failure.
     pub(crate) fn prim_say_bang(&mut self) {
         if self.stack.is_empty() {
-            eprintln!("stack underflow");
+            // Respect the silent flag: sandboxed GP candidate evaluation sets
+            // silent=true and runs many mutated programs, which would otherwise
+            // flood stderr with underflow noise (and drown the run loop's logs).
+            if !self.silent {
+                eprintln!("stack underflow");
+            }
             return;
         }
         if !self.energy.can_afford(crate::energy::SAY_COST) {
@@ -1714,7 +1719,11 @@ impl VM {
     /// Native only; wasm32 shims to a one-line notice.
     pub(crate) fn prim_mark_bang(&mut self) {
         if self.stack.is_empty() {
-            eprintln!("stack underflow");
+            // Gated like SAY! — suppress underflow noise during silent
+            // (sandboxed / GP) evaluation so it can't drown the run loop logs.
+            if !self.silent {
+                eprintln!("stack underflow");
+            }
             return;
         }
         #[cfg(target_arch = "wasm32")]
