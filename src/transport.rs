@@ -300,14 +300,35 @@ pub struct Candidate {
     pub addr: SocketAddr,
 }
 
-/// Sufficient-FIRST placement: returns the FIRST candidate whose advertised
-/// headroom is sufficient (under the ceiling with room), in gossip-view order.
+/// Two-tier placement: returns the destination for a relocating unit, or `None`
+/// if no peer can take one.
 ///
-/// Deliberately NOT the emptiest peer. Taking the first that fits is frugal —
-/// it mirrors minimum-sufficient and avoids a thundering herd all piling onto
-/// whichever peer currently looks emptiest. Returns `None` if no peer
-/// advertises sufficient room (the unit then stays put).
+/// **Tier 1 — spread under abundance.** If any candidate is *abundantly* free
+/// (headroom ≥
+/// [`ABUNDANT_HEADROOM_PCT`](crate::resources::ABUNDANT_HEADROOM_PCT)), pick the
+/// emptiest such peer. When there's a clearly-emptier home, send the unit there:
+/// this corrects the load skew pure first-sufficient produced in the v0.30 soak
+/// (one peer filling while another sat near-idle).
+///
+/// **Tier 2 — frugal default.** Otherwise take the FIRST peer that is merely
+/// sufficient, in gossip-view order. This is the original herd-avoiding rule:
+/// when no peer is abundantly free, *not* chasing the marginally-emptiest peer
+/// keeps every sender from piling onto the same box. Returns `None` if no peer
+/// is even sufficient (the unit stays put).
+///
+/// The two thresholds live in `resources.rs` as the single source of truth; the
+/// node-side `MultiUnitNode::choose_destination` mirrors this exact rule over
+/// the live gossip view.
 pub fn choose_destination(candidates: &[Candidate]) -> Option<&Candidate> {
+    // Tier 1: the emptiest among abundantly-free peers, if any.
+    if let Some(best) = candidates
+        .iter()
+        .filter(|c| crate::resources::headroom_pct_abundant(c.headroom_pct))
+        .max_by_key(|c| c.headroom_pct)
+    {
+        return Some(best);
+    }
+    // Tier 2: the first merely-sufficient peer (herd-avoiding).
     candidates
         .iter()
         .find(|c| crate::resources::headroom_pct_sufficient(c.headroom_pct))
@@ -840,20 +861,74 @@ mod tests {
     }
 
     #[test]
-    fn choose_destination_takes_first_sufficient_not_emptiest() {
-        // Peer A is sufficient (40%) and earlier; peer B has MORE headroom
-        // (90%) but is later. Sufficient-first must pick A, not the emptiest B.
+    fn choose_destination_first_sufficient_when_none_abundant() {
+        // All peers are merely sufficient (>20% but <50% headroom) — none
+        // abundant. Herd-avoidance preserved: take the FIRST sufficient in
+        // gossip order, NOT the emptiest, so senders don't pile onto one box.
+        let a = Candidate {
+            headroom_pct: 30,
+            addr: addr(9001),
+        };
+        let b = Candidate {
+            headroom_pct: 45, // more headroom but still not abundant
+            addr: addr(9002),
+        };
+        let c = Candidate {
+            headroom_pct: 35,
+            addr: addr(9003),
+        };
+        let view = [a, b, c];
+        let chosen = choose_destination(&view).unwrap();
+        assert_eq!(
+            chosen.addr,
+            addr(9001),
+            "no abundant peer → first-sufficient (herd-avoiding)"
+        );
+    }
+
+    #[test]
+    fn choose_destination_prefers_abundant_over_earlier_sufficient() {
+        // A is sufficient-but-not-abundant and earlier; B is abundant and later.
+        // The abundant peer wins despite being later — a clearly-emptier home.
         let a = Candidate {
             headroom_pct: 40,
             addr: addr(9001),
         };
         let b = Candidate {
-            headroom_pct: 90,
+            headroom_pct: 70,
             addr: addr(9002),
         };
         let view = [a, b];
         let chosen = choose_destination(&view).unwrap();
-        assert_eq!(chosen.addr, addr(9001), "must take the first that fits");
+        assert_eq!(
+            chosen.addr,
+            addr(9002),
+            "an abundant peer is preferred over an earlier merely-sufficient one"
+        );
+    }
+
+    #[test]
+    fn choose_destination_picks_emptiest_among_abundant() {
+        // Several abundant peers → the emptiest (most headroom) wins.
+        let a = Candidate {
+            headroom_pct: 55,
+            addr: addr(9001),
+        };
+        let b = Candidate {
+            headroom_pct: 80,
+            addr: addr(9002),
+        };
+        let c = Candidate {
+            headroom_pct: 60,
+            addr: addr(9003),
+        };
+        let view = [a, b, c];
+        let chosen = choose_destination(&view).unwrap();
+        assert_eq!(
+            chosen.addr,
+            addr(9002),
+            "emptiest abundant peer wins when several are abundant"
+        );
     }
 
     #[test]

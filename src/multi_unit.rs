@@ -563,12 +563,24 @@ impl MultiUnitNode {
         crate::transport::is_mislocated(local)
     }
 
-    /// Sufficient-first destination from this node's own gossiped resource
-    /// view: the FIRST peer that advertises enough headroom to hold a unit, in
-    /// gossip-view order — not the emptiest. Frugal, mirrors minimum-sufficient,
-    /// avoids a thundering herd. `None` if no peer advertises sufficient room.
+    /// Two-tier destination from this node's own gossiped resource view,
+    /// mirroring [`transport::choose_destination`](crate::transport::choose_destination):
+    /// if any peer is *abundantly* free, pick the emptiest such peer (spread
+    /// load toward a clearly-emptier home); otherwise take the FIRST merely-
+    /// sufficient peer in gossip order (frugal, herd-avoiding). `None` if no
+    /// peer advertises sufficient room. The thresholds live in `resources.rs`.
     pub fn choose_destination(&self) -> Option<RemoteProcess> {
-        self.remote_processes()
+        let remotes = self.remote_processes();
+        // Tier 1: emptiest among the abundantly-free peers.
+        if let Some(best) = remotes
+            .iter()
+            .filter(|p| crate::resources::headroom_pct_abundant(p.advertised_headroom))
+            .max_by_key(|p| p.advertised_headroom)
+        {
+            return Some(best.clone());
+        }
+        // Tier 2: first merely-sufficient peer.
+        remotes
             .into_iter()
             .find(|p| crate::resources::headroom_pct_sufficient(p.advertised_headroom))
     }

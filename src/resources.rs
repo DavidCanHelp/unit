@@ -203,6 +203,27 @@ pub fn headroom_pct_sufficient(pct: u8) -> bool {
     pct > min_pct
 }
 
+/// A second, higher headroom threshold above sufficiency, for two-tier
+/// placement.
+///
+/// Sufficiency (≈`1 - CEILING` ≈ 20% headroom) is the bar to accept a unit at
+/// all. Abundance is the bar to be *preferred* when a clearly-emptier home
+/// exists. The two tiers split the difference between two failure modes:
+/// pure first-sufficient concentrates load onto the first adequate peer
+/// (observed in the v0.30 soak — one peer filled while another sat near-idle),
+/// while pure most-headroom reintroduces a thundering herd onto whichever peer
+/// looks marginally best. So placement stays first-sufficient (frugal, herd-
+/// avoiding) under light load, and only chases the emptiest peer when some peer
+/// is *abundantly* free — i.e. has enough slack to absorb a spread without
+/// itself crowding.
+pub const ABUNDANT_HEADROOM_PCT: u8 = 50;
+
+/// True iff an advertised headroom percentage (`0..=100`) is *abundant* — at
+/// or above [`ABUNDANT_HEADROOM_PCT`]. See it for the two-tier rationale.
+pub fn headroom_pct_abundant(pct: u8) -> bool {
+    pct >= ABUNDANT_HEADROOM_PCT
+}
+
 // ---------------------------------------------------------------------------
 // Parsing — pure functions, deterministic and platform-independent so they
 // can be unit-tested against fixed sample text on any machine.
@@ -470,6 +491,21 @@ intr 12345
         let healthy = HostResources::from_parts(1000, 500, 0.0, 4);
         assert!(healthy.has_headroom());
         assert!(headroom_pct_sufficient(healthy.advertised_headroom_pct()));
+    }
+
+    #[test]
+    fn test_headroom_pct_abundant_is_above_sufficiency() {
+        // Abundance is a strictly higher bar than sufficiency.
+        assert!(!headroom_pct_abundant(49));
+        assert!(headroom_pct_abundant(ABUNDANT_HEADROOM_PCT)); // 50 → abundant
+        assert!(headroom_pct_abundant(80));
+        // A merely-sufficient peer (just over 20%) is NOT abundant.
+        assert!(headroom_pct_sufficient(30));
+        assert!(!headroom_pct_abundant(30));
+        // Everything abundant is also sufficient.
+        for pct in ABUNDANT_HEADROOM_PCT..=100 {
+            assert!(headroom_pct_sufficient(pct), "abundant {pct} must be sufficient");
+        }
     }
 
     #[test]
