@@ -4577,6 +4577,10 @@ fn run_multi_unit_demo(n: usize) {
 /// Steady tick interval for the persistent run loop.
 #[cfg(not(target_arch = "wasm32"))]
 const TICK_INTERVAL_MS: u64 = 1000;
+/// Re-measure host resources, re-advertise headroom, and log the resource line
+/// every this many ticks (so quiet ticks stay quiet; ~5s at 1s ticks).
+#[cfg(not(target_arch = "wasm32"))]
+const RESOURCE_MEASURE_EVERY_TICKS: u64 = 5;
 
 /// Shutdown signalling for the run loop. SIGINT/SIGTERM set a flag the loop
 /// polls each tick, so the node logs a clean shutdown rather than dying mid-
@@ -4720,6 +4724,8 @@ fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     );
 
     let mut tick_n: u64 = 0;
+    // Last peer-headroom view, so we log the gossiped view only when it changes.
+    let mut last_peer_view: Vec<(String, u8)> = Vec::new();
     loop {
         if run_signals::requested() {
             println!(
@@ -4746,8 +4752,76 @@ fn run_multi_unit_node(n: usize, cli: &CliArgs) {
             );
         }
 
+        // Periodically measure resources, re-advertise current headroom, and
+        // log the resource / evolve / peer lines. Quiet ticks stay silent.
+        if tick_n.is_multiple_of(RESOURCE_MEASURE_EVERY_TICKS) {
+            let res = crate::resources::HostResources::measure();
+            // Re-advertise current headroom so peers see real, current capacity.
+            if let Some(ref m) = node.mesh {
+                m.set_headroom(res.advertised_headroom_pct());
+            }
+            if res.is_available() {
+                let mem_pct = if res.mem_total_kb > 0 {
+                    (1.0 - res.mem_available_kb as f64 / res.mem_total_kb as f64) * 100.0
+                } else {
+                    0.0
+                };
+                let load_per_cpu = if res.n_cpus > 0 {
+                    res.load_one / res.n_cpus as f64
+                } else {
+                    res.load_one
+                };
+                println!(
+                    "[{}] RES util={:.1}% (mem={:.1}% load/cpu={:.2} cpus={}) headroom={:.1}% {} units={} rss={}",
+                    log_ts(),
+                    res.utilization * 100.0,
+                    mem_pct,
+                    load_per_cpu,
+                    res.n_cpus,
+                    res.headroom * 100.0,
+                    if res.has_headroom() {
+                        "UNDER-ceiling"
+                    } else {
+                        "OVER-CEILING"
+                    },
+                    node.host.len(),
+                    fmt_kb(read_rss_kb()),
+                );
+            } else {
+                println!(
+                    "[{}] RES unavailable (fail-closed: will not replicate or accept) units={} rss={}",
+                    log_ts(),
+                    node.host.len(),
+                    fmt_kb(read_rss_kb()),
+                );
+            }
+
+            if report.evolved_units > 0 {
+                println!(
+                    "[{}] EVOLVE {} unit(s) evolving, best fitness {}",
+                    log_ts(),
+                    report.evolved_units,
+                    report.best_fitness
+                );
+            }
+
+            // Log the gossiped peer headroom view, but only when it changes.
+            let mut view: Vec<(String, u8)> = node
+                .remote_processes()
+                .iter()
+                .map(|r| (r.host_id_hex.clone(), r.advertised_headroom))
+                .collect();
+            view.sort();
+            if view != last_peer_view {
+                println!("[{}] PEERS {} visible", log_ts(), view.len());
+                for (hex, hr) in &view {
+                    println!("[{}]   peer {} headroom={}%", log_ts(), hex, hr);
+                }
+                last_peer_view = view;
+            }
+        }
+
         tick_n = tick_n.wrapping_add(1);
-        let _ = tick_n;
         std::thread::sleep(Duration::from_millis(TICK_INTERVAL_MS));
     }
 
