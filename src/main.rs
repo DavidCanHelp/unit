@@ -58,6 +58,11 @@ pub mod niche;
 /// Inter-unit signaling — direct (peer inbox) and environmental layers.
 pub mod signaling;
 
+/// Host resource reader — memory, load, headroom. Foundation for
+/// resource-aware migration; not yet wired into the host.
+#[allow(dead_code)]
+pub mod resources;
+
 // --- Replication & persistence ---
 #[allow(dead_code)]
 pub mod persist;
