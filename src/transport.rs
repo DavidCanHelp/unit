@@ -451,7 +451,13 @@ pub fn start_transport_listener(
     use std::net::TcpListener;
     use std::time::Duration;
 
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+    // Bind to all interfaces (0.0.0.0), not loopback: a transported unit
+    // arrives from another machine, so the listener must accept connections to
+    // this host's routable IP. A 127.0.0.1 bind would make inbound transport
+    // single-host-only — the same loopback assumption that hid cross-machine
+    // breakage in the mesh socket. (The HTTP bridge stays 127.0.0.1 by design;
+    // this peer-traffic listener does not.)
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
         .map_err(|e| TransportError::Io(format!("bind {}: {}", port, e)))?;
     let (tx, rx) = std::sync::mpsc::channel();
 

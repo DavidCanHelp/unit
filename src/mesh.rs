@@ -586,7 +586,17 @@ impl MeshNode {
         let id = fixed_id.unwrap_or_else(generate_id);
         let id_hex = id_to_hex(&id);
 
-        let bind_addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port);
+        // Bind to all interfaces (0.0.0.0), not loopback. The mesh gossip
+        // socket carries heartbeats, headroom advertisements, goals, and
+        // transport coordination BETWEEN peers — it must receive datagrams
+        // destined for this host's routable IP, which a 127.0.0.1-bound socket
+        // never sees (the kernel only feeds it loopback-destined packets). The
+        // old 127.0.0.1 convention was for single-host loopback testing; that
+        // assumption is exactly what multi-machine operation breaks. Seed peers
+        // (--peers) made MESH-PROCESS-COUNT *look* populated cross-machine, but
+        // that was only the seeded table entries surviving inside the 15s
+        // PEER_TIMEOUT — no remote heartbeat was ever actually received.
+        let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);
         let socket = UdpSocket::bind(bind_addr).map_err(|e| format!("bind: {}", e))?;
         let local_port = socket.local_addr().map_err(|e| format!("{}", e))?.port();
 
