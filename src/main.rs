@@ -69,6 +69,12 @@ pub mod persist;
 #[allow(dead_code)]
 pub mod spawn;
 
+/// Unit self-transport — relocate the complete self to another coordinate
+/// with confirm-before-release semantics. Mechanism only; placement and the
+/// Forth word come later.
+#[allow(dead_code)]
+pub mod transport;
+
 // --- Feature layers ---
 pub mod features {
     #[allow(dead_code)]
