@@ -608,12 +608,46 @@ impl MultiUnitNode {
     }
 
     /// One tick of the persistent run loop, factored out so the loop body is
-    /// testable without sockets or sleeps. Drains and dispatches any inbound
-    /// mesh work; later milestones extend this with metabolism, evolution, and
-    /// the placement rule. Returns a [`TickReport`] of what happened.
+    /// testable without sockets or sleeps. A later milestone adds the
+    /// ceiling-gated placement rule. Returns a [`TickReport`] of what happened.
+    ///
+    /// In order: (a) drain and dispatch inbound mesh work; (b) advance each
+    /// unit's metabolism one step; (c) every unworked (idle) unit runs one
+    /// bounded GP-EVOLVE step — the "a unit with no work evolves" principle.
+    /// GP-EVOLVE caps itself at a fixed batch of generations and is
+    /// energy-gated, so a tick can't run away and a starving unit simply
+    /// pauses rather than evolving for free.
     pub fn tick(&mut self) -> TickReport {
+        // a. inbound mesh work.
+        let dispatched = self.drain_and_dispatch();
+
+        // b. metabolism: passive regen + starvation accounting for every unit.
+        for slot in self.host.units.iter_mut() {
+            slot.vm.energy.tick();
+        }
+
+        // c. unworked units evolve speculatively rather than sitting idle.
+        let mut evolved_units = 0;
+        for slot in self.host.units.iter_mut() {
+            if !slot.busy {
+                slot.busy = true;
+                slot.vm.eval("GP-EVOLVE");
+                slot.busy = false;
+                evolved_units += 1;
+            }
+        }
+        let best_fitness = self
+            .host
+            .units
+            .iter()
+            .map(|s| s.vm.fitness.score)
+            .max()
+            .unwrap_or(0);
+
         TickReport {
-            dispatched: self.drain_and_dispatch(),
+            dispatched,
+            evolved_units,
+            best_fitness,
             ..TickReport::default()
         }
     }
@@ -921,6 +955,29 @@ mod bridge_tests {
         assert!(report.dispatched.is_empty());
         assert!(report.transport.is_none());
         assert_eq!(a.host.len(), 2, "tick must not retire units with no work");
+    }
+
+    #[test]
+    fn tick_evolves_unworked_units_and_advances_metabolism() {
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(2);
+        // Fresh units have no evolution state.
+        assert!(a.host.units[0].vm.evolution.is_none());
+
+        let report = a.tick();
+
+        // Both idle units took the no-work fall-through into GP-EVOLVE.
+        assert_eq!(report.evolved_units, 2, "every unworked unit evolves");
+        assert!(
+            a.host.units[0].vm.evolution.is_some(),
+            "GP-EVOLVE initialized evolution state"
+        );
+        assert!(a.host.units[1].vm.evolution.is_some());
+        // Metabolism advanced: passive regen recorded as earned energy.
+        assert!(
+            a.host.units[0].vm.energy.total_earned >= 1,
+            "metabolism ticked (passive regen)"
+        );
     }
 }
 
