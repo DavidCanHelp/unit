@@ -35,6 +35,24 @@
 /// anywhere targets 80%.
 pub const CEILING_UTILIZATION: f64 = 0.80;
 
+/// Admission margin below the ceiling, for accepting INBOUND transports.
+///
+/// A receiver accepts an inbound unit only while utilization is below
+/// `CEILING - ADMISSION_MARGIN`, not merely below the ceiling. The slack
+/// absorbs a burst: under gossip lag several senders can all see a receiver's
+/// stale "has room" advertisement and ship within one window, and admission is
+/// one-frame-at-a-time with no view of the in-flight (or just-accepted, not-yet-
+/// instantiated) inbound units. Refusing a margin early leaves room for those
+/// in-flight units so a burst doesn't push the receiver transiently OVER its
+/// hard ceiling — the wall already never *accepts* while measuring over-ceiling
+/// (fail-closed), but without margin it can overshoot for a tick on a burst.
+///
+/// 5% of a box is many units of slack — conservative relative to a realistic
+/// burst (a handful of peers shedding one unit per tick) and deliberately so;
+/// tunable. This governs admission only; the host's own replication and
+/// mislocation decisions still use the full ceiling via [`HostResources::has_headroom`].
+pub const ADMISSION_MARGIN: f64 = 0.05;
+
 // ---------------------------------------------------------------------------
 // HostResources
 // ---------------------------------------------------------------------------
@@ -92,6 +110,21 @@ impl HostResources {
     /// [`CEILING_UTILIZATION`].
     pub fn has_headroom(&self) -> bool {
         self.valid && self.utilization < CEILING_UTILIZATION
+    }
+
+    /// Stricter than [`has_headroom`](Self::has_headroom): true iff this is a
+    /// real reading AND utilization is below the ceiling LESS the admission
+    /// margin (`CEILING - ADMISSION_MARGIN`).
+    ///
+    /// This is the gate for ACCEPTING an inbound transport — a receiver should
+    /// stop taking on MORE units a margin *before* the wall, so a burst of
+    /// in-flight transports it can't yet see doesn't push it transiently over.
+    /// It is deliberately distinct from `has_headroom`: a host can be content to
+    /// keep its own units (still under the ceiling) yet decline to accept more
+    /// (within the admission margin). Fails CLOSED on an unavailable reading,
+    /// exactly like `has_headroom`. See [`ADMISSION_MARGIN`].
+    pub fn has_admission_headroom(&self) -> bool {
+        self.valid && self.utilization < (CEILING_UTILIZATION - ADMISSION_MARGIN)
     }
 
     /// Encodes this reading's headroom as a bounded `0..=100` percentage for
@@ -468,6 +501,32 @@ intr 12345
     fn test_has_headroom_unavailable_fails_closed() {
         // A coordinate that cannot measure itself must not replicate.
         assert!(!HostResources::unavailable().has_headroom());
+    }
+
+    #[test]
+    fn test_has_admission_headroom_is_stricter_than_has_headroom() {
+        // Well below the margin → admit inbound.
+        let low = HostResources::from_parts(1000, 500, 0.0, 4); // 50% util
+        assert!(low.has_headroom());
+        assert!(low.has_admission_headroom());
+
+        // In the margin band: under the 80% ceiling but within the 5% admission
+        // margin (78% util) → has_headroom true, admission false. A host can
+        // keep its own units yet decline to accept more.
+        let near = HostResources::from_parts(1000, 220, 0.0, 4); // 78% util
+        assert!(near.has_headroom(), "78% is under the 80% ceiling");
+        assert!(
+            !near.has_admission_headroom(),
+            "78% is within the 5% admission margin → refuse inbound"
+        );
+
+        // Over the ceiling → neither.
+        let over = HostResources::from_parts(1000, 50, 0.0, 4); // 95% util
+        assert!(!over.has_headroom());
+        assert!(!over.has_admission_headroom());
+
+        // Unavailable → admission fails closed too.
+        assert!(!HostResources::unavailable().has_admission_headroom());
     }
 
     #[test]

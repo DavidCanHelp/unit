@@ -244,14 +244,22 @@ impl HandleResult {
 ///
 /// `dest_res` is injected so tests can pass a fixed available / unavailable
 /// [`HostResources`](crate::resources::HostResources) rather than touching the
-/// real machine. The destination FAILS CLOSED: without headroom it refuses,
-/// and an unavailable reading (no `/proc`, wasm32) also refuses.
+/// real machine. The destination FAILS CLOSED: without admission headroom it
+/// refuses, and an unavailable reading (no `/proc`, wasm32) also refuses.
+///
+/// Admission uses the stricter
+/// [`has_admission_headroom`](crate::resources::HostResources::has_admission_headroom)
+/// — below the ceiling LESS the admission margin — NOT the bare `has_headroom`.
+/// The margin leaves slack to absorb a burst of in-flight transports under
+/// gossip lag, so a receiver doesn't transiently overshoot its hard ceiling.
 ///
 /// Returns `Err` only for a structurally invalid frame (bad magic/version,
 /// over-cap, truncated) — a listener drops those, like `spawn.rs` drops bad
 /// packets. A structurally valid frame always yields a confirm frame to send
-/// back: `Accepted` (with the snapshot) when there is headroom and the self
-/// deserializes, `Refused` (no snapshot) otherwise.
+/// back: `Accepted` (with the snapshot) when there is admission headroom and the
+/// self deserializes, `Refused` (no snapshot) otherwise. Confirm-before-release
+/// is unchanged: a refused inbound still echoes the node_id with `Refused`, so
+/// the sender gets `Err` and keeps its unit.
 pub fn handle_transport_frame(
     frame: &[u8],
     dest_res: &crate::resources::HostResources,
@@ -270,8 +278,9 @@ pub fn handle_transport_frame(
         }
     };
 
-    // Fail closed: only accept when this host actually has headroom.
-    if dest_res.has_headroom() {
+    // Fail closed: accept only with admission headroom (a margin below the
+    // ceiling), so an unseen burst can't push us transiently over the wall.
+    if dest_res.has_admission_headroom() {
         let confirm_frame = encode_confirm_frame(&snap.node_id, ConfirmStatus::Accepted);
         Ok(HandleResult {
             confirm_frame,
@@ -542,7 +551,22 @@ pub fn start_transport_listener(
             frame.extend_from_slice(&header);
             frame.extend_from_slice(&payload);
 
-            // Measure at accept time so the headroom decision is current.
+            // Measure at accept time so the admission decision is current. The
+            // admission margin (see `handle_transport_frame` /
+            // `ADMISSION_MARGIN`) absorbs the burst: accepted snapshots sit in
+            // the channel until the main loop instantiates them, so a rapid
+            // burst's units aren't yet reflected in this fresh measure(). The
+            // margin's slack covers that gap.
+            //
+            // TODO(v0.31+): tighten further by counting just-accepted-not-yet-
+            // instantiated inbound and treating them as additional load when
+            // deciding admission — e.g. share an AtomicUsize "pending admits"
+            // between this listener and the main loop (incremented here,
+            // decremented after each landing), and add an estimated per-unit
+            // util to the reading before the check. Deferred: it needs a
+            // per-unit-footprint estimate (total_mem / per-unit size) that is
+            // easy to get wrong, and the margin alone is the meaningful safety
+            // win. Kept simple and zero-dep here.
             let res = crate::resources::HostResources::measure();
             if let Ok(result) = handle_transport_frame(&frame, &res) {
                 // Confirm first (the origin is waiting on it before releasing)...
@@ -630,6 +654,10 @@ mod tests {
     }
     fn over_ceiling() -> HostResources {
         HostResources::from_parts(1000, 50, 0.0, 4)
+    }
+    // Under the 80% ceiling but within the 5% admission margin (78% util).
+    fn near_ceiling() -> HostResources {
+        HostResources::from_parts(1000, 220, 0.0, 4)
     }
 
     // ----- frame round trips -----
@@ -798,6 +826,28 @@ mod tests {
             result.snapshot.is_none(),
             "refused → caller is NOT asked to instantiate"
         );
+        let (id, status) = decode_confirm_frame(&result.confirm_frame).unwrap();
+        assert_eq!(id, [1, 2, 3, 4, 5, 6, 7, 8], "still echoes the node_id");
+        assert_eq!(status, ConfirmStatus::Refused);
+    }
+
+    #[test]
+    fn handle_refuses_within_admission_margin_even_under_ceiling() {
+        let usav = serialize_snapshot(&sample_snapshot());
+        let frame = encode_transport_frame(&usav).unwrap();
+
+        // The host still has bare headroom (under the ceiling)...
+        assert!(near_ceiling().has_headroom());
+        // ...but is within the admission margin, so it refuses the inbound unit
+        // to leave slack for in-flight burst transports it can't yet see.
+        let result = handle_transport_frame(&frame, &near_ceiling()).unwrap();
+        assert!(
+            !result.accepted(),
+            "must refuse inbound within the admission margin"
+        );
+        assert!(result.snapshot.is_none());
+        // Confirm-before-release intact: still echoes the node_id with Refused,
+        // so the sender gets Err and keeps its unit.
         let (id, status) = decode_confirm_frame(&result.confirm_frame).unwrap();
         assert_eq!(id, [1, 2, 3, 4, 5, 6, 7, 8], "still echoes the node_id");
         assert_eq!(status, ConfirmStatus::Refused);
