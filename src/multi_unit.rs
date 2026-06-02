@@ -396,6 +396,37 @@ pub struct DispatchedRemoteMsg {
     pub output: String,
 }
 
+/// What one [`MultiUnitNode::tick`] did. Returned so the run loop can log each
+/// meaningful event and so tests can assert the tick's behavior without
+/// sockets or real time.
+#[derive(Default)]
+pub struct TickReport {
+    /// Goals received from the mesh and dispatched to local units this tick.
+    pub dispatched: Vec<DispatchedRemoteMsg>,
+    /// Number of unworked units that ran a bounded GP-EVOLVE step this tick.
+    pub evolved_units: usize,
+    /// Best fitness across local units after this tick (for the evolve log).
+    pub best_fitness: i64,
+    /// True if the host was over the ceiling (mislocated) this tick.
+    pub mislocated: bool,
+    /// The placement outcome, present only if the local rule fired.
+    pub transport: Option<TickTransport>,
+}
+
+/// The placement outcome within a single tick.
+pub enum TickTransport {
+    /// Mislocated, but no peer advertised sufficient room — the unit stays.
+    NoDestination,
+    /// A destination was chosen and a transport attempted. `outcome` carries
+    /// the confirm-before-release result; the origin slot was retired iff it is
+    /// `Ok(Accepted)` (see [`MultiUnitNode::relocate_unit_with`]).
+    Attempted {
+        target_hex: String,
+        target_headroom: u8,
+        outcome: Result<crate::transport::ConfirmOutcome, crate::transport::TransportError>,
+    },
+}
+
 pub struct MultiUnitNode {
     pub host: MultiUnitHost,
     pub mesh: Option<MeshNode>,
@@ -574,6 +605,17 @@ impl MultiUnitNode {
             self.host.units.remove(idx);
         }
         outcome
+    }
+
+    /// One tick of the persistent run loop, factored out so the loop body is
+    /// testable without sockets or sleeps. Drains and dispatches any inbound
+    /// mesh work; later milestones extend this with metabolism, evolution, and
+    /// the placement rule. Returns a [`TickReport`] of what happened.
+    pub fn tick(&mut self) -> TickReport {
+        TickReport {
+            dispatched: self.drain_and_dispatch(),
+            ..TickReport::default()
+        }
     }
 
     /// Drain any pending mesh messages. For each `(host-msg :to <us> ...)`
@@ -867,6 +909,18 @@ mod bridge_tests {
             2,
             "confirmed live copy → origin slot retired (released)"
         );
+    }
+
+    #[test]
+    fn tick_on_lone_node_is_safe_noop() {
+        // A node with no peers and no inbound work: tick drains nothing,
+        // retires nothing, and does not panic.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(2);
+        let report = a.tick();
+        assert!(report.dispatched.is_empty());
+        assert!(report.transport.is_none());
+        assert_eq!(a.host.len(), 2, "tick must not retire units with no work");
     }
 }
 

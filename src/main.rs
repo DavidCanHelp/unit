@@ -4565,11 +4565,73 @@ fn run_multi_unit_demo(n: usize) {
 }
 
 // ---------------------------------------------------------------------------
-// --multi-unit + --port: bridged demo (in-process units + mesh peer)
+// --multi-unit + --port: persistent resource-aware node (the live v0.29 run)
 // ---------------------------------------------------------------------------
+//
+// Replaces the old 5-second discovery demo. `unit --multi-unit N --port P
+// --peers ...` launches a living node that stays up and ticks the full v0.29
+// resource-aware self-replication path until killed. Observability is the
+// point: every meaningful event logs one timestamped line so a live tail on a
+// real box shows whether transport actually happens.
+
+/// Steady tick interval for the persistent run loop.
+#[cfg(not(target_arch = "wasm32"))]
+const TICK_INTERVAL_MS: u64 = 1000;
+
+/// Shutdown signalling for the run loop. SIGINT/SIGTERM set a flag the loop
+/// polls each tick, so the node logs a clean shutdown rather than dying mid-
+/// tick. Uses a raw `signal(2)` FFI binding against the already-linked libc —
+/// no new dependency.
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+mod run_signals {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_signal(_sig: i32) {
+        // Atomic store is async-signal-safe.
+        SHUTDOWN.store(true, Ordering::SeqCst);
+    }
+
+    extern "C" {
+        fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    }
+
+    /// Install handlers for SIGINT (2) and SIGTERM (15).
+    pub fn install() {
+        unsafe {
+            signal(2, on_signal);
+            signal(15, on_signal);
+        }
+    }
+
+    pub fn requested() -> bool {
+        SHUTDOWN.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+mod run_signals {
+    pub fn install() {}
+    pub fn requested() -> bool {
+        false
+    }
+}
+
+/// UTC `HH:MM:SS` timestamp for log lines — zero-dependency, comparable across
+/// machines under NTP, and readable in a live tail.
+#[cfg(not(target_arch = "wasm32"))]
+fn log_ts() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{:02}:{:02}:{:02}", (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
+}
 
 #[cfg(not(target_arch = "wasm32"))]
-fn run_multi_unit_mesh_demo(n: usize, cli: &CliArgs) {
+fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     use crate::multi_unit::MultiUnitNode;
     use std::time::{Duration, Instant};
 
@@ -4588,33 +4650,40 @@ fn run_multi_unit_mesh_demo(n: usize, cli: &CliArgs) {
         })
         .collect();
 
+    // ----- startup phase: banner, host id, spawn, brief discovery window -----
     println!("=== unit --multi-unit {} --port {} ===", n, port);
-    println!("(in-process units + mesh peer; seeds = {:?})", seed_peers);
+    println!("(persistent resource-aware node; seeds = {:?})", seed_peers);
 
     let mut node = match MultiUnitNode::new(n.max(1), Some(port), seed_peers) {
         Ok(node) => node,
         Err(e) => {
-            eprintln!("multi-unit-mesh: failed to start mesh: {}", e);
+            eprintln!("multi-unit: failed to start mesh: {}", e);
             std::process::exit(1);
         }
     };
+    // Honor --gossip-k bounded fan-out, as the normal mesh path does.
+    if let Some(k) = cli.gossip_k {
+        if let Some(ref m) = node.mesh {
+            m.set_gossip_fanout(Some(k));
+        }
+    }
     let spawned = node.spawn_n(n);
     let host_hex = node.host_id_hex().unwrap_or_default();
+    let mesh_port = node.mesh_port().unwrap_or(0);
     println!(
         "host id: {}  port: {}  units: {}",
-        host_hex,
-        node.mesh_port().unwrap_or(0),
-        spawned
+        host_hex, mesh_port, spawned
     );
 
-    // Brief discovery window: process inbound mesh messages and re-advertise.
-    println!("\nlistening for peers (5s)...");
+    // Brief discovery window so peers are visible before the loop's first rule
+    // evaluation (kept from the old demo's startup behavior).
+    println!("listening for peers (5s)...");
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        let dispatched = node.drain_and_dispatch();
-        for ev in &dispatched {
+        for ev in node.drain_and_dispatch() {
             println!(
-                "[recv] from {} → unit #{} → {}",
+                "[{}] RECV from {} → unit #{}: {}",
+                log_ts(),
                 ev.from_host_hex,
                 ev.unit_index,
                 ev.output.trim().replace('\n', " ")
@@ -4625,49 +4694,64 @@ fn run_multi_unit_mesh_demo(n: usize, cli: &CliArgs) {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-
-    println!("\n--- discovered remote processes ---");
     let remotes = node.remote_processes();
-    if remotes.is_empty() {
-        println!("  (none)");
-    } else {
-        for r in &remotes {
+    println!(
+        "[{}] discovered {} remote process(es)",
+        log_ts(),
+        remotes.len()
+    );
+    for r in &remotes {
+        println!(
+            "[{}]   peer {} @ {}  units={} headroom={}%",
+            log_ts(),
+            r.host_id_hex,
+            r.addr,
+            r.units_hosted,
+            r.advertised_headroom
+        );
+    }
+
+    // ----- persistent run loop -----
+    run_signals::install();
+    println!(
+        "[{}] node up — ticking every {}ms (Ctrl-C / SIGTERM to stop)",
+        log_ts(),
+        TICK_INTERVAL_MS
+    );
+
+    let mut tick_n: u64 = 0;
+    loop {
+        if run_signals::requested() {
             println!(
-                "  host {} @ {}  units={}",
-                r.host_id_hex, r.addr, r.units_hosted
+                "[{}] shutdown requested — {} units still hosted, exiting cleanly",
+                log_ts(),
+                node.host.len()
             );
+            break;
         }
-    }
 
-    // Demo the per-unit Forth queries.
-    println!("\n--- per-unit Forth queries (unit #0) ---");
-    if spawned > 0 {
-        let q = node.host.units[0].vm.eval("HOST-ID");
-        println!("  HOST-ID            → {}", q.trim());
-        let s = node.host.units[0].vm.eval("SIBLING-COUNT .");
-        println!("  SIBLING-COUNT      → {}", s.trim());
-        let r = node.host.units[0].vm.eval("MESH-PROCESS-COUNT .");
-        println!("  MESH-PROCESS-COUNT → {}", r.trim());
-    }
-
-    // If any remote is visible, send it a probe goal.
-    if let Some(r) = remotes.first() {
-        println!("\n--- cross-process send to {} ---", r.host_id_hex);
-        if node.send_to_process(&r.host_id, "21 2 * .") {
-            println!("  sent: `21 2 * .`");
+        // Always heartbeat so peers keep seeing us.
+        if let Some(ref m) = node.mesh {
+            m.force_heartbeat();
         }
-        std::thread::sleep(Duration::from_millis(200));
-        for ev in node.drain_and_dispatch() {
+
+        let report = node.tick();
+        for ev in &report.dispatched {
             println!(
-                "  reply path (recv): from {} → unit #{} → {}",
+                "[{}] RECV from {} → unit #{}: {}",
+                log_ts(),
                 ev.from_host_hex,
                 ev.unit_index,
                 ev.output.trim().replace('\n', " ")
             );
         }
+
+        tick_n = tick_n.wrapping_add(1);
+        let _ = tick_n;
+        std::thread::sleep(Duration::from_millis(TICK_INTERVAL_MS));
     }
 
-    println!("\nfinal RSS: {}", fmt_kb(read_rss_kb()));
+    println!("[{}] final RSS: {}", log_ts(), fmt_kb(read_rss_kb()));
 }
 
 // ---------------------------------------------------------------------------
@@ -5241,7 +5325,7 @@ fn main() {
             // If --port is also set, run the bridged demo (in-process units +
             // mesh peer). Otherwise run the strictly intra-process demo.
             if cli.port.is_some() {
-                run_multi_unit_mesh_demo(n, &cli);
+                run_multi_unit_node(n, &cli);
             } else {
                 run_multi_unit_demo(n);
             }
