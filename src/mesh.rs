@@ -664,7 +664,11 @@ impl MeshNode {
         });
 
         // Start TCP replication listener on port+1000 (best effort).
-        let repl_tcp_port = if local_port > 0 { local_port + 1000 } else { 0 };
+        let repl_tcp_port = if local_port > 0 {
+            local_port.checked_add(1000).unwrap_or(0)
+        } else {
+            0
+        };
         let (repl_rx, actual_repl_port) =
             match crate::spawn::start_replication_listener(repl_tcp_port) {
                 Ok(rx) => (Some(rx), repl_tcp_port),
