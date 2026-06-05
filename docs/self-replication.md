@@ -205,6 +205,35 @@ the host's routable IP. The fix was to bind both peer-traffic sockets to
 could not have caught this; the persistent loop on three boxes caught it in the
 first minute.
 
+## Multi-machine validation (v0.31)
+
+The v0.30 soak proved the 80% ceiling holds as a hard refusal wall, but it also
+showed a receiver still *under* the ceiling could be pushed *over* it by a burst:
+several senders act on the same stale "has room" gossip and all transport within
+one window, so the wall holds but overshoots for a tick before the next frame is
+refused. v0.31 added the **inbound admission margin** — accept inbound only while
+utilization is below `CEILING - ADMISSION_MARGIN` (0.05), so a receiver refuses
+*before* a burst can push it onto the wall. This section is what was *observed*.
+
+**Setup.** Three DigitalOcean droplets, SFO3, 512 MB RAM each, Ubuntu 25.10,
+built from source, peered into one mesh.
+
+**What happened.** A receiver was parked at **76.7–79.2%** utilization — **under
+the 80% ceiling**, but inside the admission margin (above the 75% admission gate).
+A single over-ceiling sender tried to transport to it and was refused with
+**`destination refused (no headroom)`**: the receiver declined inbound while it
+was still under its own ceiling, exactly because the margin reserves that last
+slack for in-flight units a fresh measure can't yet see. Under a **2-sender
+burst** the receiver **held — utilization never crossed 80%** — where pre-margin
+admission would have let both frames land in one window and overshoot the wall
+transiently before clawing back.
+
+**Admission stays separate from replication.** The receiver refusing inbound at
+~78% did not stop it tending its own units; only the decision to *accept more*
+uses the stricter `has_admission_headroom`, while the host's own replication and
+mislocation decisions still use the full-ceiling `has_headroom`. A box can be
+content to keep what it has yet decline to take on more.
+
 ## What this deliberately does not do
 
 - **No *central* coordinator.** This is the load-bearing one. In v0.30 the

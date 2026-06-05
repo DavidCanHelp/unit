@@ -3,6 +3,88 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.31.0] - 2026-06-05
+
+Three fixes for the failure modes the v0.30 multi-machine soak surfaced once a
+persistent node ran on real hardware: load skew onto the first adequate peer, a
+correlated thundering-herd when several senders shed at once, and transient
+overshoot of the 80% ceiling when a burst of transports lands under gossip lag.
+The 80% wall already held as a hard refusal; v0.31 keeps a receiver from being
+pushed up to it in the first place and spreads shed load more evenly. See
+[docs/self-replication.md](docs/self-replication.md#multi-machine-validation-v031).
+
+### Fixed
+- **Inbound admission margin.** A receiver UNDER the ceiling could still be pushed
+  OVER it by a burst: several senders all act on the same stale "has room" gossip,
+  all transport within one window, and admission is one-frame-at-a-time with no
+  view of in-flight (or just-accepted, not-yet-instantiated) inbound — so the wall
+  held but overshot transiently for a tick before the next frame was refused. New
+  `HostResources::has_admission_headroom()` accepts inbound only while utilization
+  is below `CEILING - ADMISSION_MARGIN` (margin = 0.05), not merely below the
+  ceiling; that slack absorbs a burst's in-flight units a fresh `measure()` can't
+  yet see (accepted snapshots sit in the channel until the main loop instantiates
+  them). `handle_transport_frame` uses this stricter gate for ACCEPTING inbound,
+  while the host's own replication / mislocation decisions (`can_spawn_within`,
+  `is_mislocated`) still use the full-ceiling `has_headroom()` — the two are
+  deliberately not conflated, since a host can be content to keep its own units yet
+  decline to accept more. Fail-closed and confirm-before-release are intact: an
+  unavailable reading still refuses, and a margin refusal still echoes the node_id
+  with `Refused`, so the sender gets `Err` and keeps its unit.
+- **Two-tier placement.** Pure sufficient-first placement concentrated load onto
+  the first adequate peer — one peer climbed to its ceiling while another sat at
+  ~73% headroom nearly untouched; the skew self-corrected (the first peer fills,
+  walls, and relays onward) but slowly and unevenly. A second threshold,
+  `ABUNDANT_HEADROOM_PCT` (50%, above the ~20% sufficiency bar), makes
+  `choose_destination` two-tier: if any peer is abundantly free, pick the emptiest
+  such peer (spread toward a clearly-emptier home); otherwise fall back to the
+  original first-sufficient rule (frugal, herd-avoiding). It only chases the
+  emptiest peer when one has slack to absorb a spread without itself crowding;
+  under light/normal load it stays first-sufficient exactly as before. Both
+  thresholds (`headroom_pct_sufficient`, `headroom_pct_abundant`) live in
+  `resources.rs` as the single source of truth, mirrored by the pure
+  `transport::choose_destination` and the node-side `MultiUnitNode::choose_destination`.
+- **Randomized tie-break.** Two-tier's tier 1 picks the emptiest abundant peer,
+  but when several peers tie at the maximum headroom a deterministic tie-break made
+  multiple senders shedding at the same instant — sharing the same abundant gossip
+  view — all pick the SAME peer: the correlated mini-thundering-herd two-tier
+  placement is meant to prevent (and gossip order is too arbitrary to spread them
+  reliably). `choose_destination` now picks uniformly at random among the
+  tied-maximum peers via a one-pass reservoir sample over the existing zero-dep
+  `SimpleRng`, each node/unit seeding from its own identity so concurrent senders
+  draw independent picks and spread across the tied set; a unique maximum is still
+  chosen deterministically. `MultiUnitNode` now delegates to the pure
+  `choose_destination` (a true single source of truth) rather than carrying its
+  own copy.
+
+### Validated on hardware
+- Three DigitalOcean droplets (SFO3, 512 MB, Ubuntu 25.10, source builds). A
+  receiver parked at 76.7–79.2% — UNDER the 80% ceiling but inside the admission
+  margin — refused a single over-ceiling sender with `destination refused (no
+  headroom)`, and held under a 2-sender burst with utilization never crossing 80%.
+  The margin kept the receiver off the wall, rather than letting a burst push it
+  past and relying on the next frame's refusal to claw it back.
+
+### Known limitations
+- **Just-accepted, not-yet-instantiated inbound is not yet counted as load.**
+  Accepted unit snapshots sit in the channel until the main loop instantiates them,
+  so a fresh `measure()` cannot see them; the admission margin's slack absorbs this
+  in practice, but counting in-flight inbound directly — Part 2 of the admission
+  work — is left as a documented TODO in the listener. It needs a per-unit-footprint
+  estimate that is easy to get wrong, and the margin alone is the meaningful fix.
+
+### Changed
+- VERSION → v0.31.0; prelude banner and web demo title/cache-bust updated.
+
+### Design principles held
+- **Admission and replication are separate decisions.** Accepting inbound uses the
+  stricter `has_admission_headroom`; the host's own replication still uses the
+  full-ceiling `has_headroom`. A host may keep its own units while declining more.
+- **Confirm before release; honesty selected, not policed; fail closed; 80% is a
+  refusal wall, not a target; no central coordinator.** All carried unchanged from
+  v0.30 — each node still decides from its own gossiped view and its own measured
+  pressure.
+- **Zero new dependencies.** Cargo.lock still contains only the `unit` crate.
+
 ## [0.30.0] - 2026-06-02
 
 The v0.29 resource-aware self-replication surface, now driven by a persistent
