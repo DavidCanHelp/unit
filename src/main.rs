@@ -1960,6 +1960,9 @@ impl VM {
         let saved_deadline = self.deadline.take();
         let saved_timed_out = self.timed_out;
         let saved_sandbox = self.sandbox_active;
+        // `take` both stashes any outer fault and resets to None for this run,
+        // so a fault from a prior evaluation cannot leak into this result.
+        let saved_fault = self.fault.take();
 
         // Set up sandbox.
         self.stack = Vec::with_capacity(256);
@@ -1985,11 +1988,11 @@ impl VM {
         // Capture results.
         let stack_snapshot = self.stack.clone();
         let output = self.output_buffer.take().unwrap_or_default();
-        let success = !self.timed_out;
+        let success = !self.timed_out && self.fault.is_none();
         let error = if self.timed_out {
             Some(format!("execution timeout ({}s)", self.execution_timeout))
         } else {
-            None
+            self.fault.map(|f| f.message().to_string())
         };
 
         // Restore state.
@@ -2002,6 +2005,7 @@ impl VM {
         self.deadline = saved_deadline;
         self.timed_out = saved_timed_out;
         self.sandbox_active = saved_sandbox;
+        self.fault = saved_fault;
         self.running = true; // task execution must not kill the unit
 
         goals::TaskResult {

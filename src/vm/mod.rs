@@ -306,6 +306,26 @@ pub(crate) const P_ALERT_THRESHOLD_RT: usize = 112;
 
 // PAD is imported from types.rs
 
+/// A structured runtime fault raised mid-execution. `None` on the common path;
+/// set by `pop`/`rpop` on underflow so a sandboxed run can report a failed
+/// evaluation instead of silently substituting 0. `Copy`, so recording it
+/// allocates nothing on the hot path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    StackUnderflow,
+    ReturnStackUnderflow,
+}
+
+impl Fault {
+    /// A human-readable message for the fault.
+    pub fn message(self) -> &'static str {
+        match self {
+            Fault::StackUnderflow => "stack underflow",
+            Fault::ReturnStackUnderflow => "return stack underflow",
+        }
+    }
+}
+
 pub struct VM {
     pub stack: Vec<Cell>,
     pub rstack: Vec<Cell>,
@@ -328,6 +348,9 @@ pub struct VM {
     pub deadline: Option<Instant>,
     /// Set when execution exceeds the deadline.
     pub timed_out: bool,
+    /// Structured runtime fault from the current execution (`pop`/`rpop`
+    /// underflow). Reset at the start of each sandboxed run.
+    pub fault: Option<Fault>,
     /// Configurable execution timeout in seconds.
     pub execution_timeout: u64,
     /// When true, automatically claim and execute incoming tasks.
@@ -429,6 +452,7 @@ impl VM {
             output_buffer: None,
             deadline: None,
             timed_out: false,
+            fault: None,
             execution_timeout: 10,
             auto_claim: false,
             code_strings: Vec::new(),
@@ -1627,17 +1651,27 @@ impl VM {
     // Stack helpers
     // -----------------------------------------------------------------------
     pub(crate) fn pop(&mut self) -> Cell {
-        self.stack.pop().unwrap_or_else(|| {
-            self.emit_str("error: stack underflow\n");
-            0
-        })
+        match self.stack.pop() {
+            Some(v) => v,
+            None => {
+                // Record the fault as structured state, then keep the existing
+                // emit-and-substitute-0 behavior so callers don't break.
+                self.fault = Some(Fault::StackUnderflow);
+                self.emit_str("error: stack underflow\n");
+                0
+            }
+        }
     }
 
     pub(crate) fn rpop(&mut self) -> Cell {
-        self.rstack.pop().unwrap_or_else(|| {
-            self.emit_str("error: return stack underflow\n");
-            0
-        })
+        match self.rstack.pop() {
+            Some(v) => v,
+            None => {
+                self.fault = Some(Fault::ReturnStackUnderflow);
+                self.emit_str("error: return stack underflow\n");
+                0
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

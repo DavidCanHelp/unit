@@ -316,19 +316,112 @@ pub fn msg_goal(goal_id: u64, code: &str) -> Sexp {
     ])
 }
 
-/// Constructs a `goal-result` mesh message with execution output.
-pub fn msg_goal_result(goal_id: u64, unit_id: &NodeId, success: bool, output: &str) -> Sexp {
-    Sexp::List(vec![
-        Sexp::Atom("goal-result".into()),
-        Sexp::Atom(":goal".into()),
-        Sexp::Number(goal_id as i64),
-        Sexp::Atom(":unit".into()),
-        Sexp::Str(crate::mesh::id_to_hex(unit_id)),
-        Sexp::Atom(":ok".into()),
-        Sexp::Number(if success { 1 } else { 0 }),
-        Sexp::Atom(":output".into()),
-        Sexp::Str(output.into()),
-    ])
+// ---------------------------------------------------------------------------
+// Result envelope — the canonical "here is a result" wire contract
+// ---------------------------------------------------------------------------
+
+/// The outcome of evaluating an instruction, ready to be serialized as a
+/// result envelope by [`msg_result`].
+pub enum EvalOutcome<'a> {
+    /// Execution succeeded. `stack` is the full data stack after execution in
+    /// the VM's bottom-to-top order; `msg_result` serializes it top-of-stack
+    /// first. `output` is any captured printed output.
+    Ok { stack: &'a [i64], output: &'a str },
+    /// Execution failed. `kind` is `"parse"` or `"runtime"`; `msg` is a
+    /// human-readable description.
+    Err { kind: &'a str, msg: &'a str },
+}
+
+/// Constructs the canonical result envelope — the single "here is a result"
+/// contract a controller reads back (this replaces the former dormant
+/// `msg_goal_result`; there is exactly one result-envelope constructor).
+///
+/// Success:
+/// ```text
+/// (result :ok 1 :value (<v0> <v1> ...) :output "<captured>")
+/// ```
+/// The `:value` list is the data stack **top-of-stack first**, so an empty
+/// stack serializes as `:value ()`. The envelope reports the whole stack
+/// rather than collapsing to a single scalar: Forth produces a stack, and the
+/// contract is honest about that.
+///
+/// Failure:
+/// ```text
+/// (result :ok 0 :error "<msg>" :kind <parse|runtime>)
+/// ```
+pub fn msg_result(outcome: EvalOutcome) -> Sexp {
+    match outcome {
+        EvalOutcome::Ok { stack, output } => {
+            // The VM stores the stack bottom-to-top (top of stack is the last
+            // element); reverse so the envelope lists the top of stack first.
+            let values: Vec<Sexp> = stack.iter().rev().map(|n| Sexp::Number(*n)).collect();
+            Sexp::List(vec![
+                Sexp::Atom("result".into()),
+                Sexp::Atom(":ok".into()),
+                Sexp::Number(1),
+                Sexp::Atom(":value".into()),
+                Sexp::List(values),
+                Sexp::Atom(":output".into()),
+                Sexp::Str(output.into()),
+            ])
+        }
+        EvalOutcome::Err { kind, msg } => Sexp::List(vec![
+            Sexp::Atom("result".into()),
+            Sexp::Atom(":ok".into()),
+            Sexp::Number(0),
+            Sexp::Atom(":error".into()),
+            Sexp::Str(msg.into()),
+            Sexp::Atom(":kind".into()),
+            Sexp::Atom(kind.into()),
+        ]),
+    }
+}
+
+/// A result envelope read back into Rust for a controller's convenience —
+/// the inverse of [`msg_result`].
+#[derive(Debug, PartialEq)]
+pub enum ResultView {
+    /// `:ok 1` — `value` is top-of-stack first; `output` is the captured text.
+    Ok { value: Vec<i64>, output: String },
+    /// `:ok 0` — `kind` is `parse`/`runtime`; `msg` is the error text.
+    Err { kind: String, msg: String },
+}
+
+/// Reads a result envelope produced by [`msg_result`] back into a [`ResultView`].
+/// Returns `None` if `sexp` is not a well-formed `(result ...)` envelope.
+pub fn read_result(sexp: &Sexp) -> Option<ResultView> {
+    if msg_type(sexp)? != "result" {
+        return None;
+    }
+    match sexp.get_key(":ok")?.as_number()? {
+        1 => {
+            let value = sexp
+                .get_key(":value")?
+                .as_list()?
+                .iter()
+                .filter_map(Sexp::as_number)
+                .collect();
+            let output = sexp
+                .get_key(":output")
+                .and_then(Sexp::as_str)
+                .unwrap_or("")
+                .to_string();
+            Some(ResultView::Ok { value, output })
+        }
+        _ => {
+            let msg = sexp
+                .get_key(":error")
+                .and_then(Sexp::as_str)
+                .unwrap_or("")
+                .to_string();
+            let kind = sexp
+                .get_key(":kind")
+                .and_then(Sexp::as_atom)
+                .unwrap_or("")
+                .to_string();
+            Some(ResultView::Err { kind, msg })
+        }
+    }
 }
 
 /// Constructs a `word-share` mesh message for distributing Forth words.
@@ -401,6 +494,40 @@ pub fn try_parse_mesh_msg(input: &str) -> Option<Sexp> {
         return None; // not an S-expression — probably raw Forth
     }
     parse(trimmed).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Evaluation seam — s-expr instruction in, result envelope out
+// ---------------------------------------------------------------------------
+
+/// The step-1 seam: receive an s-expression instruction, evaluate it in the
+/// Forth VM, and return a result-envelope s-expression. Pure `&str -> Sexp`
+/// (no mesh, no sockets) — the single entry point the REPL word, the HTTP
+/// endpoint, and (later) the mesh recruit handler can all share.
+///
+/// A parse failure yields an error envelope tagged `:kind parse`; a runtime
+/// failure (an execution timeout or a stack/return-stack underflow) yields one
+/// tagged `:kind runtime`.
+pub fn eval_sexp(vm: &mut crate::vm::VM, input: &str) -> Sexp {
+    let parsed = match parse(input) {
+        Ok(p) => p,
+        Err(e) => return msg_result(EvalOutcome::Err { kind: "parse", msg: &e.0 }),
+    };
+    let forth = to_forth(&parsed);
+    let result = vm.execute_sandbox(&forth);
+
+    // execute_sandbox reports runtime faults structurally: success is false and
+    // `error` is populated for an execution timeout or a stack/return-stack
+    // underflow recorded by pop/rpop.
+    if !result.success {
+        let msg = result.error.as_deref().unwrap_or("execution failed");
+        return msg_result(EvalOutcome::Err { kind: "runtime", msg });
+    }
+
+    msg_result(EvalOutcome::Ok {
+        stack: &result.stack_snapshot,
+        output: result.output.trim_end(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -571,5 +698,171 @@ mod tests {
             let code_sexp = &items[1];
             assert_eq!(to_forth(code_sexp), "42 42 *");
         }
+    }
+
+    // --- Result envelope (pure, no VM) ---
+
+    #[test]
+    fn test_msg_result_value_is_top_of_stack_first() {
+        // VM stores bottom-to-top, so stack [2, 1] has top = 1; the envelope
+        // lists the top first -> (1 2).
+        let env = msg_result(EvalOutcome::Ok {
+            stack: &[2, 1],
+            output: "",
+        });
+        assert_eq!(env.to_string(), "(result :ok 1 :value (1 2) :output \"\")");
+    }
+
+    #[test]
+    fn test_msg_result_empty_stack_is_empty_list() {
+        let env = msg_result(EvalOutcome::Ok {
+            stack: &[],
+            output: "",
+        });
+        assert_eq!(env.to_string(), "(result :ok 1 :value () :output \"\")");
+    }
+
+    #[test]
+    fn test_msg_result_error_shape() {
+        let env = msg_result(EvalOutcome::Err {
+            kind: "parse",
+            msg: "boom",
+        });
+        assert_eq!(env.to_string(), "(result :ok 0 :error \"boom\" :kind parse)");
+    }
+
+    #[test]
+    fn test_read_result_roundtrip_ok() {
+        let env = msg_result(EvalOutcome::Ok {
+            stack: &[2, 1],
+            output: "hi",
+        });
+        assert_eq!(
+            read_result(&env),
+            Some(ResultView::Ok {
+                value: vec![1, 2],
+                output: "hi".into()
+            })
+        );
+    }
+
+    #[test]
+    fn test_read_result_roundtrip_err() {
+        let env = msg_result(EvalOutcome::Err {
+            kind: "runtime",
+            msg: "stack underflow",
+        });
+        assert_eq!(
+            read_result(&env),
+            Some(ResultView::Err {
+                kind: "runtime".into(),
+                msg: "stack underflow".into()
+            })
+        );
+    }
+
+    #[test]
+    fn test_read_result_rejects_non_result() {
+        let other = parse("(peer-hello :id \"abc\")").unwrap();
+        assert!(read_result(&other).is_none());
+    }
+
+    // --- eval_sexp seam (drives the real VM through execute_sandbox) ---
+
+    #[test]
+    fn test_eval_sexp_arithmetic() {
+        let mut vm = crate::vm::VM::new();
+        let env = eval_sexp(&mut vm, "(+ 2 3)");
+        assert_eq!(
+            read_result(&env),
+            Some(ResultView::Ok {
+                value: vec![5],
+                output: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn test_eval_sexp_value_order_top_first() {
+        let mut vm = crate::vm::VM::new();
+        // (swap 1 2) -> "1 2 SWAP" -> stack bottom-to-top [2, 1], top = 1.
+        let env = eval_sexp(&mut vm, "(swap 1 2)");
+        match read_result(&env).unwrap() {
+            ResultView::Ok { value, .. } => assert_eq!(value, vec![1, 2]),
+            other => panic!("expected ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_eval_sexp_produces_output() {
+        let mut vm = crate::vm::VM::new();
+        // (. 42) -> "42 ." -> prints 42 and consumes it -> empty stack.
+        let env = eval_sexp(&mut vm, "(. 42)");
+        match read_result(&env).unwrap() {
+            ResultView::Ok { value, output } => {
+                assert!(value.is_empty(), "stack should be empty, got {:?}", value);
+                assert_eq!(output.trim(), "42");
+            }
+            other => panic!("expected ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_eval_sexp_empty_stack() {
+        let mut vm = crate::vm::VM::new();
+        // (drop 5) -> "5 DROP" -> pushes 5 then drops it -> empty stack.
+        let env = eval_sexp(&mut vm, "(drop 5)");
+        assert_eq!(
+            read_result(&env),
+            Some(ResultView::Ok {
+                value: vec![],
+                output: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn test_eval_sexp_parse_error() {
+        let mut vm = crate::vm::VM::new();
+        let env = eval_sexp(&mut vm, "(+ 2 3"); // unterminated list
+        match read_result(&env).unwrap() {
+            ResultView::Err { kind, .. } => assert_eq!(kind, "parse"),
+            other => panic!("expected parse error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_eval_sexp_runtime_error_underflow() {
+        let mut vm = crate::vm::VM::new();
+        // (drop) -> "DROP" on an empty stack -> pop() records a structured
+        // fault -> execute_sandbox returns success=false with the fault message.
+        let env = eval_sexp(&mut vm, "(drop)");
+        assert_eq!(
+            read_result(&env),
+            Some(ResultView::Err {
+                kind: "runtime".into(),
+                msg: "stack underflow".into()
+            })
+        );
+    }
+
+    #[test]
+    fn test_eval_sexp_fault_does_not_leak() {
+        let mut vm = crate::vm::VM::new();
+        // An underflow on one evaluation...
+        let bad = eval_sexp(&mut vm, "(drop)");
+        assert!(matches!(
+            read_result(&bad).unwrap(),
+            ResultView::Err { .. }
+        ));
+        // ...must not poison the next clean evaluation on the same VM.
+        let good = eval_sexp(&mut vm, "(+ 2 3)");
+        assert_eq!(
+            read_result(&good),
+            Some(ResultView::Ok {
+                value: vec![5],
+                output: String::new()
+            })
+        );
     }
 }
