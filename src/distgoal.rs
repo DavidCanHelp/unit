@@ -386,6 +386,89 @@ pub fn read_recruit_result(sexp: &crate::sexp::Sexp) -> Option<RecruitResult> {
     })
 }
 
+/// Recruiter-side ledger binding outstanding recruit requests to their
+/// collected results, keyed by `(goal_id, seq)`. Mechanism only — it records
+/// what was recruited and what came back; it holds no policy about *when* to
+/// recruit. `open` on emit, `collect` on reply (matched by key).
+#[derive(Debug, Default)]
+pub struct RecruitLedger {
+    entries: HashMap<(GoalId, usize), Option<RecruitResult>>,
+    next_id: GoalId,
+}
+
+impl RecruitLedger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Allocate a fresh goal_id for a manually-triggered recruit. Independent
+    /// of `DistEngine`'s id space so the recruit path stays decoupled.
+    pub fn next_id(&mut self) -> GoalId {
+        self.next_id += 1;
+        self.next_id
+    }
+
+    /// Record an outstanding request whose reply has not yet arrived.
+    pub fn open(&mut self, goal_id: GoalId, seq: usize) {
+        self.entries.insert((goal_id, seq), None);
+    }
+
+    /// Record a collected reply if it matches an outstanding request. Returns
+    /// true if it matched a known `(goal_id, seq)` and was recorded; false if
+    /// the reply is for a request this node did not open (so cross-node
+    /// broadcasts that aren't ours are ignored).
+    pub fn collect(&mut self, rr: RecruitResult) -> bool {
+        let key = (rr.goal_id, rr.seq);
+        if let Some(slot) = self.entries.get_mut(&key) {
+            *slot = Some(rr);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The collected result for a slot, if its reply has arrived.
+    pub fn get(&self, goal_id: GoalId, seq: usize) -> Option<&RecruitResult> {
+        self.entries.get(&(goal_id, seq)).and_then(|o| o.as_ref())
+    }
+
+    /// True if the slot was opened but its reply hasn't arrived yet.
+    pub fn is_pending(&self, goal_id: GoalId, seq: usize) -> bool {
+        matches!(self.entries.get(&(goal_id, seq)), Some(None))
+    }
+
+    /// Human-readable dump for the RECRUITS REPL word (sorted for determinism).
+    pub fn format_status(&self) -> String {
+        if self.entries.is_empty() {
+            return "no recruits\n".to_string();
+        }
+        let mut keys: Vec<(GoalId, usize)> = self.entries.keys().copied().collect();
+        keys.sort();
+        let mut out = String::new();
+        for key in keys {
+            let (g, s) = key;
+            match &self.entries[&key] {
+                None => out.push_str(&format!("recruit #{} seq {}: pending\n", g, s)),
+                Some(rr) => {
+                    let body = match &rr.result {
+                        crate::sexp::ResultView::Ok { value, output } => {
+                            format!("ok value={:?} output={:?}", value, output)
+                        }
+                        crate::sexp::ResultView::Err { kind, msg } => {
+                            format!("ERR [{}] {}", kind, msg)
+                        }
+                    };
+                    out.push_str(&format!(
+                        "recruit #{} seq {} from {}: {}\n",
+                        g, s, rr.from, body
+                    ));
+                }
+            }
+        }
+        out
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

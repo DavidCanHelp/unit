@@ -752,6 +752,79 @@ fn test_recruit_parse_error_is_visible() {
     }
 }
 
+// --- Mechanical recruiter (emit + collect, full round-trip) ---
+
+#[test]
+fn test_recruiter_emits_wellformed() {
+    let mut vm = test_vm();
+    let msg = vm.send_recruit("peerABC", 4, 1, "(* 6 7)");
+    // node_id_cache unset in test_vm -> :from "local".
+    assert_eq!(msg, "(recruit :id 4 :seq 1 :from \"local\" :instr \"(* 6 7)\")");
+    assert!(vm.recruit_ledger.is_pending(4, 1));
+}
+
+/// Drive a recruit message through the worker's handle_recruit and feed the
+/// reply back through the recruiter's real collection path (process_chatter_msg).
+fn loopback_recruit(recruiter: &mut VM, worker: &mut VM, goal_id: u64, seq: usize, instr: &str) {
+    let recruit_msg = recruiter.send_recruit("worker", goal_id, seq, instr);
+    let parsed = crate::sexp::parse(&recruit_msg).unwrap();
+    let gid = parsed.get_key(":id").and_then(|s| s.as_number()).unwrap() as u64;
+    let s = parsed.get_key(":seq").and_then(|s| s.as_number()).unwrap() as usize;
+    let i = parsed.get_key(":instr").and_then(|s| s.as_str()).unwrap().to_string();
+    let reply = worker.handle_recruit(gid, s, &i);
+    recruiter.process_chatter_msg(&reply);
+}
+
+#[test]
+fn test_recruit_round_trip_success() {
+    let mut recruiter = test_vm();
+    let mut worker = test_vm();
+    loopback_recruit(&mut recruiter, &mut worker, 9, 0, "(+ 2 3)");
+    let rr = recruiter
+        .recruit_ledger
+        .get(9, 0)
+        .expect("reply should be collected");
+    assert_eq!(
+        rr.result,
+        crate::sexp::ResultView::Ok {
+            value: vec![5],
+            output: String::new()
+        }
+    );
+    assert!(!recruiter.recruit_ledger.is_pending(9, 0));
+}
+
+#[test]
+fn test_recruit_round_trip_failure_visible_end_to_end() {
+    // A faulting instruction's failure must be visible to the RECRUITER,
+    // not just the worker — the collected envelope is :ok 0 with structured :error.
+    let mut recruiter = test_vm();
+    let mut worker = test_vm();
+    loopback_recruit(&mut recruiter, &mut worker, 3, 1, "(drop)");
+    let rr = recruiter
+        .recruit_ledger
+        .get(3, 1)
+        .expect("reply should be collected");
+    match &rr.result {
+        crate::sexp::ResultView::Err { kind, msg } => {
+            assert_eq!(kind, "runtime");
+            assert!(msg.contains("underflow"), "msg: {}", msg);
+        }
+        other => panic!("expected runtime error, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_recruit_word_fires_and_logs() {
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "RECRUIT\" peerX (+ 2 3)\"");
+    assert!(out.contains("(recruit :id"), "out: {}", out);
+    assert!(out.contains(":instr \"(+ 2 3)\""), "out: {}", out);
+    // The viewer word shows the now-pending request.
+    let view = eval(&mut vm, "RECRUITS");
+    assert!(view.contains("pending"), "view: {}", view);
+}
+
 #[test]
 fn test_vm_stack_top() {
     let mut vm = test_vm();

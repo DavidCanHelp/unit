@@ -1318,6 +1318,73 @@ impl VM {
         distgoal::sexp_recruit_result(goal_id, seq, &my_id, &envelope)
     }
 
+    /// Recruiter side (emit): build a `(recruit ...)` message handing `instr`
+    /// to `peer_hex`, record the outstanding request in the ledger, and send it
+    /// to that peer over the mesh. Returns the message string so it is testable
+    /// without a live mesh. MECHANISM ONLY — the caller (a manual trigger)
+    /// supplies the target, goal_id/seq, and instruction; nothing here decides
+    /// whether or when to recruit.
+    pub(crate) fn send_recruit(
+        &mut self,
+        peer_hex: &str,
+        goal_id: u64,
+        seq: usize,
+        instr: &str,
+    ) -> String {
+        let my_id = self
+            .node_id_cache
+            .map(|id| crate::mesh::id_to_hex(&id))
+            .unwrap_or_else(|| "local".to_string());
+        let msg = distgoal::sexp_recruit(goal_id, seq, &my_id, instr);
+        self.recruit_ledger.open(goal_id, seq);
+        if let Some(ref m) = self.mesh {
+            // Resolve the target peer's address from the gossiped view and send
+            // to just that peer (same single-recipient path available to the
+            // mesh layer). If it is not a known peer, the request still stands
+            // in the ledger; no send happens.
+            if let Some((_, _, addr_str)) = m
+                .peer_details()
+                .into_iter()
+                .find(|(hex, _, _)| hex == peer_hex)
+            {
+                if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
+                    m.send_sexp_to(addr, &msg);
+                }
+            }
+        }
+        msg
+    }
+
+    /// RECRUIT" <peer> <s-expr>" — manual recruit trigger. Parses a target peer
+    /// hex id and an s-expression instruction, allocates a goal_id, and emits a
+    /// recruit. The reply is collected asynchronously (see the `recruit-result`
+    /// arm); view results with RECRUITS. There is NO automatic decision here —
+    /// this is purely the human-fired mechanism.
+    fn prim_recruit(&mut self) {
+        let arg = self.parse_until('"');
+        let arg = arg.trim();
+        let (peer, instr) = match arg.split_once(char::is_whitespace) {
+            Some((p, rest)) => (p.to_string(), rest.trim().to_string()),
+            None => {
+                self.emit_str("recruit: expected <peer> <s-expr>\n");
+                return;
+            }
+        };
+        if instr.is_empty() {
+            self.emit_str("recruit: empty instruction\n");
+            return;
+        }
+        let goal_id = self.recruit_ledger.next_id();
+        let msg = self.send_recruit(&peer, goal_id, 0, &instr);
+        self.emit_str(&format!("recruit #{} -> {}: {}\n", goal_id, peer, msg));
+    }
+
+    /// RECRUITS — show outstanding and collected recruit round-trips.
+    fn prim_recruits(&mut self) {
+        let report = self.recruit_ledger.format_status();
+        self.emit_str(&report);
+    }
+
     /// Dispatch a single inbound chatter (S-expression) message. Extracted so
     /// the bench harness can call it directly with synthesized messages.
     pub fn process_chatter_msg(&mut self, msg: &str) {
@@ -1408,6 +1475,15 @@ impl VM {
                                 if let Some(ref m2) = self.mesh {
                                     m2.send_sexp(&reply);
                                 }
+                            }
+                        }
+                        Some("recruit-result") => {
+                            // Recruiter side (collect): match the reply to an
+                            // outstanding request by (:id, :seq) and record the
+                            // canonical envelope. Replies for requests this node
+                            // did not open are ignored by the ledger.
+                            if let Some(rr) = distgoal::read_recruit_result(&sexp) {
+                                self.recruit_ledger.collect(rr);
                             }
                         }
                         Some("mating-request") => {
