@@ -228,6 +228,7 @@ pub(crate) const P_SEXP_RECV: usize = 422;
 pub(crate) const P_SEXP_RESULT: usize = 423;
 pub(crate) const P_RECRUIT: usize = 424;
 pub(crate) const P_RECRUITS: usize = 425;
+pub(crate) const P_PARALLEL: usize = 426;
 // JSON snapshot persistence
 pub(crate) const P_JSON_SNAPSHOT: usize = 430;
 pub(crate) const P_JSON_RESTORE: usize = 431;
@@ -403,6 +404,8 @@ pub struct VM {
     pub dist_engine: crate::distgoal::DistEngine,
     /// Recruiter-side ledger of outstanding/collected recruit round-trips.
     pub recruit_ledger: crate::distgoal::RecruitLedger,
+    /// Active (parallel ...) split-and-collect jobs, keyed by goal_id.
+    pub parallel_jobs: std::collections::HashMap<u64, crate::distgoal::ParallelJob>,
     // --- Immune system ---
     pub challenge_registry: crate::challenges::ChallengeRegistry,
     pub problem_detector: crate::discovery::ProblemDetector,
@@ -487,6 +490,7 @@ impl VM {
             evolution: None,
             dist_engine: crate::distgoal::DistEngine::new(),
             recruit_ledger: crate::distgoal::RecruitLedger::new(),
+            parallel_jobs: std::collections::HashMap::new(),
             challenge_registry: crate::challenges::ChallengeRegistry::new(&[0; 8]),
             problem_detector: crate::discovery::ProblemDetector::new(),
             energy: crate::energy::EnergyState::new(),
@@ -715,6 +719,7 @@ impl VM {
             // Recruit pattern (manual trigger + collected results)
             ("RECRUIT\"", P_RECRUIT, true),
             ("RECRUITS", P_RECRUITS, false),
+            ("PARALLEL\"", P_PARALLEL, true),
             // JSON snapshot persistence
             ("JSON-SNAPSHOT", P_JSON_SNAPSHOT, false),
             ("JSON-RESTORE", P_JSON_RESTORE, false),
@@ -1301,6 +1306,7 @@ impl VM {
             P_SEXP_RECV => self.prim_sexp_recv(),
             P_RECRUIT => self.prim_recruit(),
             P_RECRUITS => self.prim_recruits(),
+            P_PARALLEL => self.prim_parallel(),
             // JSON snapshot persistence
             P_JSON_SNAPSHOT => self.prim_json_snapshot(),
             P_JSON_RESTORE => self.prim_json_restore(),

@@ -825,6 +825,153 @@ fn test_recruit_word_fires_and_logs() {
     assert!(view.contains("pending"), "view: {}", view);
 }
 
+// --- (parallel ...) split-and-recruit decision ---
+
+// Injected resource readings (see commit/diff notes on the test seam): a real
+// reading at any utilization via the crate-visible from_parts constructor — no
+// memory exhaustion, no mock.
+fn under_ceiling() -> crate::resources::HostResources {
+    crate::resources::HostResources::from_parts(1000, 500, 0.0, 4) // util 0.5
+}
+fn over_ceiling() -> crate::resources::HostResources {
+    crate::resources::HostResources::from_parts(1000, 50, 0.0, 4) // util 0.95
+}
+
+fn parse_parts(expr: &str) -> Vec<crate::sexp::Sexp> {
+    crate::distgoal::parallel_parts(&crate::sexp::parse(expr).unwrap()).unwrap()
+}
+
+/// Read a (parallel-result ...) into (overall_ok, ordered ResultViews).
+fn read_parallel(sexp: &crate::sexp::Sexp) -> (i64, Vec<crate::sexp::ResultView>) {
+    let ok = sexp.get_key(":ok").and_then(|s| s.as_number()).unwrap();
+    let views = sexp
+        .get_key(":results")
+        .and_then(|s| s.as_list())
+        .unwrap()
+        .iter()
+        .map(|e| crate::sexp::read_result(e).unwrap())
+        .collect();
+    (ok, views)
+}
+
+fn ok_values(views: &[crate::sexp::ResultView]) -> Vec<Vec<i64>> {
+    views
+        .iter()
+        .map(|v| match v {
+            crate::sexp::ResultView::Ok { value, .. } => value.clone(),
+            other => panic!("expected ok, got {:?}", other),
+        })
+        .collect()
+}
+
+#[test]
+fn test_parallel_all_local_with_headroom() {
+    let mut vm = test_vm();
+    let parts = parse_parts("(parallel (+ 1 1) (+ 2 2) (+ 3 3))");
+    let mut measure = under_ceiling;
+    let goal_id = vm.run_parallel(&parts, &mut measure);
+    let (ok, views) = read_parallel(&vm.parallel_result(goal_id).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![2], vec![4], vec![6]]);
+}
+
+#[test]
+fn test_parallel_forced_recruit_round_trip() {
+    // Over ceiling for every part -> all recruited, all slots pending. Loopback
+    // each through a worker's handle_recruit and the recruiter's collection arm.
+    let mut recruiter = test_vm();
+    let mut worker = test_vm();
+    let parts = parse_parts("(parallel (+ 1 1) (+ 2 2) (+ 3 3))");
+    let mut measure = over_ceiling;
+    let goal_id = recruiter.run_parallel(&parts, &mut measure);
+    // Before any reply, the job is incomplete -> overall :ok 0.
+    assert_eq!(
+        read_parallel(&recruiter.parallel_result(goal_id).unwrap()).0,
+        0
+    );
+    for (seq, part) in parts.iter().enumerate() {
+        let reply = worker.handle_recruit(goal_id, seq, &part.to_string());
+        recruiter.process_chatter_msg(&reply);
+    }
+    let (ok, views) = read_parallel(&recruiter.parallel_result(goal_id).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![2], vec![4], vec![6]]);
+}
+
+#[test]
+fn test_parallel_mixed_local_and_recruited_preserves_order() {
+    let mut recruiter = test_vm();
+    let mut worker = test_vm();
+    let parts = parse_parts("(parallel (+ 1 1) (+ 2 2) (+ 3 3))");
+    // Measure per part: part 0 local, part 1 recruited, part 2 local.
+    let mut call = 0;
+    let mut measure = || {
+        call += 1;
+        if call == 2 {
+            over_ceiling()
+        } else {
+            under_ceiling()
+        }
+    };
+    let goal_id = recruiter.run_parallel(&parts, &mut measure);
+    // Only the middle part is outstanding; loopback just that one.
+    let reply = worker.handle_recruit(goal_id, 1, &parts[1].to_string());
+    recruiter.process_chatter_msg(&reply);
+    let (ok, views) = read_parallel(&recruiter.parallel_result(goal_id).unwrap());
+    assert_eq!(ok, 1);
+    // Order preserved across the local/recruited boundary.
+    assert_eq!(ok_values(&views), vec![vec![2], vec![4], vec![6]]);
+}
+
+#[test]
+fn test_parallel_failure_is_visible_in_collected_results() {
+    let mut vm = test_vm();
+    // Middle part underflows.
+    let parts = parse_parts("(parallel (+ 1 1) (drop) (+ 3 3))");
+    let mut measure = under_ceiling;
+    let goal_id = vm.run_parallel(&parts, &mut measure);
+    let (ok, views) = read_parallel(&vm.parallel_result(goal_id).unwrap());
+    assert_eq!(ok, 0, "overall ok must be 0 when a sub-part faults");
+    match &views[1] {
+        crate::sexp::ResultView::Err { kind, msg } => {
+            assert_eq!(kind, "runtime");
+            assert!(msg.contains("underflow"), "msg: {}", msg);
+        }
+        other => panic!("expected runtime error in slot 1, got {:?}", other),
+    }
+    // Flanking parts still succeeded.
+    assert!(matches!(views[0], crate::sexp::ResultView::Ok { .. }));
+    assert!(matches!(views[2], crate::sexp::ResultView::Ok { .. }));
+}
+
+#[test]
+fn test_parallel_single_element_degenerate() {
+    let mut vm = test_vm();
+    let parts = parse_parts("(parallel (+ 2 3))");
+    assert_eq!(parts.len(), 1);
+    let mut measure = under_ceiling;
+    let goal_id = vm.run_parallel(&parts, &mut measure);
+    let (ok, views) = read_parallel(&vm.parallel_result(goal_id).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![5]]);
+}
+
+#[test]
+fn test_parallel_word_fires() {
+    // Uses live HostResources::measure, so don't assert local-vs-recruit (that
+    // depends on machine state); just that the word produces a well-formed
+    // parallel-result with one sub-result envelope per part.
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "PARALLEL\" (parallel (+ 1 1) (+ 2 2))\"");
+    assert!(out.contains("(parallel-result :ok"), "out: {}", out);
+    assert_eq!(
+        out.matches("(result :ok").count(),
+        2,
+        "expected 2 sub-result envelopes, out: {}",
+        out
+    );
+}
+
 #[test]
 fn test_vm_stack_top() {
     let mut vm = test_vm();

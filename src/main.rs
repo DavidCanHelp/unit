@@ -1385,6 +1385,105 @@ impl VM {
         self.emit_str(&report);
     }
 
+    /// Choose a peer to recruit to using the EXISTING placement logic
+    /// (`transport::choose_destination`) over the gossiped peer headroom view —
+    /// the same headroom-based selection placement and replication use. Returns
+    /// the chosen peer's hex id, or None if there is no mesh / no suitable peer.
+    pub(crate) fn choose_recruit_peer(&mut self) -> Option<String> {
+        let peers = self.mesh.as_ref()?.peer_resource_view();
+        if peers.is_empty() {
+            return None;
+        }
+        let candidates: Vec<crate::transport::Candidate> = peers
+            .iter()
+            .map(|(_, _, headroom, addr)| crate::transport::Candidate {
+                headroom_pct: *headroom,
+                addr: *addr,
+            })
+            .collect();
+        let chosen_addr = crate::transport::choose_destination(&candidates, &mut self.rng)?.addr;
+        peers
+            .iter()
+            .find(|(_, _, _, addr)| *addr == chosen_addr)
+            .map(|(id, _, _, _)| crate::mesh::id_to_hex(id))
+    }
+
+    /// Split-and-recruit a `(parallel (e1) (e2) ...)` instruction under LOCAL
+    /// RESOURCE PRESSURE. For each sub-part, in order: if the unit currently has
+    /// headroom under the ceiling, run it locally via the `eval_sexp` seam and
+    /// re-measure on the next part; otherwise recruit it to a placement-chosen
+    /// peer via `send_recruit`. Reactive and measured, NOT predictive: no
+    /// part's cost is estimated; the decision reads only the current measured
+    /// pressure and re-checks after each local run. If already over the ceiling
+    /// when the work arrives, every part is recruited.
+    ///
+    /// Results are COLLECTED into a `ParallelJob` (see `parallel_result`), never
+    /// combined. `measure` yields the current host reading: live callers pass
+    /// `HostResources::measure`; tests pass a scripted closure. Returns the
+    /// job's goal_id.
+    pub(crate) fn run_parallel<M>(&mut self, parts: &[crate::sexp::Sexp], measure: &mut M) -> u64
+    where
+        M: FnMut() -> crate::resources::HostResources,
+    {
+        let goal_id = self.recruit_ledger.next_id();
+        let mut job = crate::distgoal::ParallelJob::new(goal_id, parts.len());
+        for (seq, part) in parts.iter().enumerate() {
+            let part_str = part.to_string();
+            if measure().has_headroom() {
+                // Headroom now: run this part locally; the next iteration's
+                // measure() reflects the added pressure (reactive, not predicted).
+                let envelope = crate::sexp::eval_sexp(self, &part_str);
+                job.set(seq, envelope);
+            } else {
+                // No headroom: recruit this part to a placement-chosen peer. The
+                // slot stays pending until its (recruit-result ...) lands.
+                let peer = self.choose_recruit_peer().unwrap_or_default();
+                self.send_recruit(&peer, goal_id, seq, &part_str);
+            }
+        }
+        self.parallel_jobs.insert(goal_id, job);
+        goal_id
+    }
+
+    /// Assemble the collected `(parallel-result ...)` for a parallel job, or
+    /// None if `goal_id` is not a known parallel job.
+    pub(crate) fn parallel_result(&self, goal_id: u64) -> Option<crate::sexp::Sexp> {
+        self.parallel_jobs.get(&goal_id).map(|job| job.assemble())
+    }
+
+    /// PARALLEL" (parallel (e1) (e2) ...)" — manual split-and-recruit trigger.
+    /// Parses the divisible form, runs the resource-pressure decision, and
+    /// prints the collected (parallel-result ...). Trigger only — there is no
+    /// automatic detection of parallel work inside handle_recruit yet.
+    fn prim_parallel(&mut self) {
+        let arg = self.parse_until('"');
+        let sexp = match crate::sexp::parse(arg.trim()) {
+            Ok(s) => s,
+            Err(e) => {
+                self.emit_str(&format!("parallel: sexp error: {}\n", e));
+                return;
+            }
+        };
+        let parts = match crate::distgoal::parallel_parts(&sexp) {
+            Some(p) => p,
+            None => {
+                self.emit_str("parallel: expected (parallel (e1) (e2) ...)\n");
+                return;
+            }
+        };
+        // run_parallel -> eval_sexp -> execute_sandbox -> interpret_line clobbers
+        // the input buffer/position; save and restore so the outer line survives.
+        let saved_buf = self.input_buffer.clone();
+        let saved_pos = self.input_pos;
+        let mut measure = crate::resources::HostResources::measure;
+        let goal_id = self.run_parallel(&parts, &mut measure);
+        self.input_buffer = saved_buf;
+        self.input_pos = saved_pos;
+        if let Some(result) = self.parallel_result(goal_id) {
+            self.emit_str(&format!("{}\n", result));
+        }
+    }
+
     /// Dispatch a single inbound chatter (S-expression) message. Extracted so
     /// the bench harness can call it directly with synthesized messages.
     pub fn process_chatter_msg(&mut self, msg: &str) {
@@ -1483,7 +1582,16 @@ impl VM {
                             // canonical envelope. Replies for requests this node
                             // did not open are ignored by the ledger.
                             if let Some(rr) = distgoal::read_recruit_result(&sexp) {
+                                let (gid, seq) = (rr.goal_id, rr.seq);
                                 self.recruit_ledger.collect(rr);
+                                // If this reply belongs to a parallel job, fill
+                                // its ordered slot with the raw envelope
+                                // (collected, not combined).
+                                if let Some(job) = self.parallel_jobs.get_mut(&gid) {
+                                    if let Some(env) = sexp.get_key(":result") {
+                                        job.set(seq, env.clone());
+                                    }
+                                }
                             }
                         }
                         Some("mating-request") => {

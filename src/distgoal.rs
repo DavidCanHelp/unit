@@ -470,6 +470,97 @@ impl RecruitLedger {
 }
 
 // ---------------------------------------------------------------------------
+// (parallel ...) split-and-recruit job
+//
+// The divisible form is (parallel (e1) (e2) ...): each element is an
+// independent s-expr sub-instruction that runs correctly from an empty stack.
+// A ParallelJob holds one ordered slot per sub-part; local parts fill
+// immediately, recruited parts fill when their (recruit-result ...) arrives.
+// Results are COLLECTED, never combined — combination is a later step.
+// ---------------------------------------------------------------------------
+
+/// If `sexp` is a `(parallel (e1) (e2) ...)` form, returns its sub-parts in
+/// order. Returns `None` for any other shape. Only this form is divisible:
+/// the sandbox resets the stack per eval, so an arbitrary mid-stack Forth
+/// split would underflow — each sub-part must stand alone.
+pub fn parallel_parts(sexp: &crate::sexp::Sexp) -> Option<Vec<crate::sexp::Sexp>> {
+    let items = sexp.as_list()?;
+    if items.first()?.as_atom()? != "parallel" {
+        return None;
+    }
+    Some(items[1..].to_vec())
+}
+
+/// A parallel job: one ordered result slot per sub-part. A slot holds its
+/// sub-part's canonical result envelope once available (local parts fill
+/// immediately; recruited parts fill when their reply arrives).
+#[derive(Debug)]
+pub struct ParallelJob {
+    pub goal_id: GoalId,
+    slots: Vec<Option<crate::sexp::Sexp>>,
+}
+
+impl ParallelJob {
+    pub fn new(goal_id: GoalId, parts: usize) -> Self {
+        ParallelJob {
+            goal_id,
+            slots: vec![None; parts],
+        }
+    }
+
+    /// Record a sub-part's result envelope at its slot index (no-op if out of
+    /// range).
+    pub fn set(&mut self, seq: usize, envelope: crate::sexp::Sexp) {
+        if let Some(slot) = self.slots.get_mut(seq) {
+            *slot = Some(envelope);
+        }
+    }
+
+    /// True once every slot has a result.
+    pub fn is_complete(&self) -> bool {
+        self.slots.iter().all(|s| s.is_some())
+    }
+
+    /// Assemble the collected result:
+    ///   (parallel-result :ok <1|0> :results ( <env0> <env1> ... ))
+    /// preserving sub-part order. Results are collected, NOT combined. Overall
+    /// `:ok` is 1 only if every slot is present and every envelope is `:ok 1`;
+    /// a still-pending slot renders as a pending error envelope and forces 0.
+    pub fn assemble(&self) -> crate::sexp::Sexp {
+        use crate::sexp::Sexp;
+        let mut all_ok = true;
+        let mut results = Vec::with_capacity(self.slots.len());
+        for slot in &self.slots {
+            match slot {
+                Some(env) => {
+                    if !matches!(
+                        crate::sexp::read_result(env),
+                        Some(crate::sexp::ResultView::Ok { .. })
+                    ) {
+                        all_ok = false;
+                    }
+                    results.push(env.clone());
+                }
+                None => {
+                    all_ok = false;
+                    results.push(crate::sexp::msg_result(crate::sexp::EvalOutcome::Err {
+                        kind: "pending",
+                        msg: "pending",
+                    }));
+                }
+            }
+        }
+        Sexp::List(vec![
+            Sexp::Atom("parallel-result".into()),
+            Sexp::Atom(":ok".into()),
+            Sexp::Number(if all_ok { 1 } else { 0 }),
+            Sexp::Atom(":results".into()),
+            Sexp::List(results),
+        ])
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -528,6 +619,68 @@ mod tests {
         let other =
             crate::sexp::parse("(sub-result :id 1 :seq 0 :from \"x\" :result \"5\")").unwrap();
         assert!(read_recruit_result(&other).is_none());
+    }
+
+    // --- (parallel ...) shape + job (pure; no VM) ---
+
+    #[test]
+    fn test_parallel_parts_extracts_in_order() {
+        let s = crate::sexp::parse("(parallel (+ 1 1) (* 2 3))").unwrap();
+        let parts = parallel_parts(&s).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].to_string(), "(+ 1 1)");
+        assert_eq!(parts[1].to_string(), "(* 2 3)");
+    }
+
+    #[test]
+    fn test_parallel_parts_rejects_non_parallel() {
+        let s = crate::sexp::parse("(+ 2 3)").unwrap();
+        assert!(parallel_parts(&s).is_none());
+    }
+
+    #[test]
+    fn test_parallel_job_assemble_pending_then_complete() {
+        let env0 = crate::sexp::msg_result(crate::sexp::EvalOutcome::Ok {
+            stack: &[5],
+            output: "",
+        });
+        let mut job = ParallelJob::new(7, 2);
+        job.set(0, env0);
+        // Slot 1 still pending -> not complete, overall :ok 0.
+        assert!(!job.is_complete());
+        let asm = job.assemble();
+        assert_eq!(asm.get_key(":ok").and_then(|s| s.as_number()), Some(0));
+
+        let env1 = crate::sexp::msg_result(crate::sexp::EvalOutcome::Ok {
+            stack: &[6],
+            output: "",
+        });
+        job.set(1, env1);
+        assert!(job.is_complete());
+        let asm2 = job.assemble();
+        assert_eq!(asm2.get_key(":ok").and_then(|s| s.as_number()), Some(1));
+        let results = asm2.get_key(":results").and_then(|s| s.as_list()).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_parallel_job_ok_zero_if_any_part_failed() {
+        let ok = crate::sexp::msg_result(crate::sexp::EvalOutcome::Ok {
+            stack: &[5],
+            output: "",
+        });
+        let err = crate::sexp::msg_result(crate::sexp::EvalOutcome::Err {
+            kind: "runtime",
+            msg: "stack underflow",
+        });
+        let mut job = ParallelJob::new(1, 2);
+        job.set(0, ok);
+        job.set(1, err);
+        assert!(job.is_complete());
+        assert_eq!(
+            job.assemble().get_key(":ok").and_then(|s| s.as_number()),
+            Some(0)
+        );
     }
 
     #[test]
