@@ -1302,6 +1302,22 @@ impl VM {
         }
     }
 
+    /// Handle an inbound recruit instruction: evaluate the s-expression `instr`
+    /// through the `eval_sexp` seam and build the `(recruit-result ...)` reply
+    /// carrying the canonical envelope under the `:id`/`:seq`/`:from` routing
+    /// wrapper. Returns the reply string (the caller sends it); kept free of the
+    /// mesh send so it is testable without sockets. Unlike the legacy sub-goal
+    /// path, success/error is preserved — a failed eval yields a visible
+    /// `:ok 0` envelope rather than a silently-trimmed output string.
+    pub(crate) fn handle_recruit(&mut self, goal_id: u64, seq: usize, instr: &str) -> String {
+        let envelope = crate::sexp::eval_sexp(self, instr);
+        let my_id = self
+            .node_id_cache
+            .map(|id| crate::mesh::id_to_hex(&id))
+            .unwrap_or_else(|| "local".to_string());
+        distgoal::sexp_recruit_result(goal_id, seq, &my_id, &envelope)
+    }
+
     /// Dispatch a single inbound chatter (S-expression) message. Extracted so
     /// the bench harness can call it directly with synthesized messages.
     pub fn process_chatter_msg(&mut self, msg: &str) {
@@ -1362,6 +1378,35 @@ impl VM {
                                         "dist-goal #{} complete: {}\n",
                                         goal_id, combined
                                     ));
+                                }
+                            }
+                        }
+                        Some("recruit") => {
+                            // A peer recruited us to evaluate an s-expression
+                            // instruction. Built on the eval_sexp seam (NOT the
+                            // legacy sub-goal path): the reply carries the full
+                            // canonical result envelope, so success/error is
+                            // visible to the recruiter.
+                            let goal_id =
+                                sexp.get_key(":id").and_then(|s| s.as_number()).unwrap_or(0) as u64;
+                            let seq = sexp
+                                .get_key(":seq")
+                                .and_then(|s| s.as_number())
+                                .unwrap_or(0) as usize;
+                            let _from = sexp
+                                .get_key(":from")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let instr = sexp
+                                .get_key(":instr")
+                                .and_then(|s| s.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if !instr.is_empty() {
+                                let reply = self.handle_recruit(goal_id, seq, &instr);
+                                if let Some(ref m2) = self.mesh {
+                                    m2.send_sexp(&reply);
                                 }
                             }
                         }

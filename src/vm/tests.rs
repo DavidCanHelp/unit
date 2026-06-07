@@ -702,6 +702,56 @@ fn test_sexp_eval_word_preserves_rest_of_line() {
     );
 }
 
+// --- Recruit handler (eval_sexp over the mesh recruit pattern) ---
+
+#[test]
+fn test_recruit_success_envelope() {
+    let mut vm = test_vm();
+    let reply = vm.handle_recruit(7, 2, "(+ 2 3)");
+    let parsed = crate::sexp::parse(&reply).unwrap();
+    let rr = crate::distgoal::read_recruit_result(&parsed).unwrap();
+    // Routing fields round-trip (node_id_cache unset in test_vm -> "local").
+    assert_eq!(rr.goal_id, 7);
+    assert_eq!(rr.seq, 2);
+    assert_eq!(rr.from, "local");
+    assert_eq!(
+        rr.result,
+        crate::sexp::ResultView::Ok {
+            value: vec![5],
+            output: String::new()
+        }
+    );
+}
+
+#[test]
+fn test_recruit_runtime_error_is_visible() {
+    // A failing instr produces a VISIBLE :ok 0 envelope over the wire — unlike
+    // the legacy sub-goal path, which silently trims output and drops failure.
+    let mut vm = test_vm();
+    let reply = vm.handle_recruit(1, 0, "(drop)");
+    let rr =
+        crate::distgoal::read_recruit_result(&crate::sexp::parse(&reply).unwrap()).unwrap();
+    match rr.result {
+        crate::sexp::ResultView::Err { kind, msg } => {
+            assert_eq!(kind, "runtime");
+            assert!(msg.contains("underflow"), "msg: {}", msg);
+        }
+        other => panic!("expected runtime error, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_recruit_parse_error_is_visible() {
+    let mut vm = test_vm();
+    let reply = vm.handle_recruit(1, 0, "(+ 2"); // unterminated list
+    let rr =
+        crate::distgoal::read_recruit_result(&crate::sexp::parse(&reply).unwrap()).unwrap();
+    match rr.result {
+        crate::sexp::ResultView::Err { kind, .. } => assert_eq!(kind, "parse"),
+        other => panic!("expected parse error, got {:?}", other),
+    }
+}
+
 #[test]
 fn test_vm_stack_top() {
     let mut vm = test_vm();

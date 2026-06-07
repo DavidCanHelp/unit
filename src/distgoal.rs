@@ -310,6 +310,83 @@ pub fn sexp_dist_complete(goal_id: GoalId, results: &str, peers: usize) -> Strin
 }
 
 // ---------------------------------------------------------------------------
+// Recruit message pair (step-2 recruit pattern, built on the eval_sexp seam)
+//
+// These are additive and independent of the sub-goal/sub-result path above:
+// the recruit reply carries the canonical (result ...) envelope from
+// eval_sexp, preserving success/error, rather than a bare output string.
+// ---------------------------------------------------------------------------
+
+/// Builds an outgoing `(recruit ...)` message handing an s-expression
+/// instruction to a peer. The routing fields (`:id`, `:seq`, `:from`) let the
+/// recruiter match the eventual `(recruit-result ...)` back to this slot;
+/// `:instr` carries the s-expression instruction text the worker evaluates
+/// through the eval_sexp seam.
+pub fn sexp_recruit(goal_id: GoalId, seq: usize, from: &str, instr: &str) -> String {
+    format!(
+        "(recruit :id {} :seq {} :from \"{}\" :instr \"{}\")",
+        goal_id,
+        seq,
+        from,
+        instr.replace('"', "\\\"")
+    )
+}
+
+/// Builds a `(recruit-result ...)` reply. The routing fields live on the outer
+/// wrapper; the full canonical result envelope (from `eval_sexp`) rides nested
+/// as `:result`'s value — not flattened to a bare string — so the recruiter
+/// reads back ok/value/output/error structurally via [`read_recruit_result`].
+pub fn sexp_recruit_result(
+    goal_id: GoalId,
+    seq: usize,
+    from: &str,
+    envelope: &crate::sexp::Sexp,
+) -> String {
+    use crate::sexp::Sexp;
+    Sexp::List(vec![
+        Sexp::Atom("recruit-result".into()),
+        Sexp::Atom(":id".into()),
+        Sexp::Number(goal_id as i64),
+        Sexp::Atom(":seq".into()),
+        Sexp::Number(seq as i64),
+        Sexp::Atom(":from".into()),
+        Sexp::Str(from.into()),
+        Sexp::Atom(":result".into()),
+        envelope.clone(),
+    ])
+    .to_string()
+}
+
+/// A `(recruit-result ...)` read back: the routing fields plus the decoded
+/// result envelope.
+#[derive(Debug, PartialEq)]
+pub struct RecruitResult {
+    pub goal_id: GoalId,
+    pub seq: usize,
+    pub from: String,
+    pub result: crate::sexp::ResultView,
+}
+
+/// Parses a `(recruit-result :id :seq :from :result <envelope>)` message,
+/// extracting the routing fields and `read_result`-ing the nested envelope.
+/// Returns `None` if it is not a well-formed recruit-result.
+pub fn read_recruit_result(sexp: &crate::sexp::Sexp) -> Option<RecruitResult> {
+    if crate::sexp::msg_type(sexp)? != "recruit-result" {
+        return None;
+    }
+    let goal_id = sexp.get_key(":id")?.as_number()? as GoalId;
+    let seq = sexp.get_key(":seq")?.as_number()? as usize;
+    let from = sexp.get_key(":from")?.as_str()?.to_string();
+    let result = crate::sexp::read_result(sexp.get_key(":result")?)?;
+    Some(RecruitResult {
+        goal_id,
+        seq,
+        from,
+        result,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -324,6 +401,50 @@ mod tests {
         assert_eq!(exprs[0], "10 10 *");
         assert_eq!(exprs[1], "20 20 *");
         assert_eq!(exprs[2], "30 30 *");
+    }
+
+    // --- Recruit message pair (pure; no VM) ---
+
+    #[test]
+    fn test_sexp_recruit_shape() {
+        let s = sexp_recruit(7, 2, "abc", "(+ 2 3)");
+        assert_eq!(s, "(recruit :id 7 :seq 2 :from \"abc\" :instr \"(+ 2 3)\")");
+    }
+
+    #[test]
+    fn test_recruit_result_round_trip() {
+        // Build a canonical envelope by hand, wrap it, parse it back.
+        let envelope = crate::sexp::msg_result(crate::sexp::EvalOutcome::Ok {
+            stack: &[5],
+            output: "",
+        });
+        let wire = sexp_recruit_result(7, 2, "node-xyz", &envelope);
+        // The envelope rides nested as :result's value, not as a quoted string.
+        assert!(
+            wire.contains(":result (result :ok 1 :value (5) :output \"\")"),
+            "wire was: {}",
+            wire
+        );
+        let parsed = crate::sexp::parse(&wire).unwrap();
+        let rr = read_recruit_result(&parsed).unwrap();
+        assert_eq!(rr.goal_id, 7);
+        assert_eq!(rr.seq, 2);
+        assert_eq!(rr.from, "node-xyz");
+        assert_eq!(
+            rr.result,
+            crate::sexp::ResultView::Ok {
+                value: vec![5],
+                output: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_recruit_result_rejects_other() {
+        // A legacy sub-result must not parse as a recruit-result.
+        let other =
+            crate::sexp::parse("(sub-result :id 1 :seq 0 :from \"x\" :result \"5\")").unwrap();
+        assert!(read_recruit_result(&other).is_none());
     }
 
     #[test]
