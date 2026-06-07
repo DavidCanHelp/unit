@@ -416,6 +416,25 @@ impl VM {
         }
     }
 
+    /// SEXP-EVAL" expr" — evaluate an S-expression instruction through the
+    /// `eval_sexp` seam and print the structured result envelope. Unlike
+    /// `SEXP"` (which translates into the live VM and prints whatever the code
+    /// emits), this evaluates in a sandbox and reports a `(result :ok ...)`
+    /// envelope, so it never disturbs the REPL's own stack.
+    fn prim_sexp_eval_result(&mut self) {
+        let sexp_str = self.parse_until('"');
+        // eval_sexp runs the code through execute_sandbox -> interpret_line,
+        // which overwrites the input buffer/position; save and restore them so
+        // the rest of the outer line keeps processing (same guard as
+        // prim_sexp_eval).
+        let saved_buf = self.input_buffer.clone();
+        let saved_pos = self.input_pos;
+        let envelope = crate::sexp::eval_sexp(self, &sexp_str);
+        self.input_buffer = saved_buf;
+        self.input_pos = saved_pos;
+        self.emit_str(&format!("{}\n", envelope));
+    }
+
     /// SEXP-SEND" expr" — broadcast an S-expression message to mesh peers.
     fn prim_sexp_send(&mut self) {
         let sexp_str = self.parse_until('"');

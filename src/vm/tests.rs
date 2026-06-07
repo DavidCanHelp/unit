@@ -658,6 +658,51 @@ fn test_vm_eval_returns_output() {
 }
 
 #[test]
+fn test_sexp_eval_word_prints_envelope() {
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "SEXP-EVAL\" (+ 2 3)\"");
+    assert!(
+        out.contains("(result :ok 1 :value (5) :output \"\")"),
+        "envelope was: {}",
+        out
+    );
+    // Sandboxed: the live REPL stack is untouched (the 5 lives in the envelope).
+    assert!(
+        vm.stack.is_empty(),
+        "live stack should be empty, got {:?}",
+        vm.stack
+    );
+}
+
+#[test]
+fn test_sexp_eval_word_runtime_error_envelope() {
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "SEXP-EVAL\" (drop)\"");
+    assert!(
+        out.contains("(result :ok 0 :error \"stack underflow\" :kind runtime)"),
+        "envelope was: {}",
+        out
+    );
+}
+
+#[test]
+fn test_sexp_eval_word_preserves_rest_of_line() {
+    // The input-state guard: code after the word on the same line still runs.
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "SEXP-EVAL\" (+ 2 3)\" 7 .");
+    assert!(
+        out.contains("(result :ok 1 :value (5)"),
+        "envelope missing: {}",
+        out
+    );
+    assert!(
+        out.trim_end().ends_with('7'),
+        "trailing '7 .' did not run: {}",
+        out
+    );
+}
+
+#[test]
 fn test_vm_stack_top() {
     let mut vm = test_vm();
     assert_eq!(vm.stack_top(), None);

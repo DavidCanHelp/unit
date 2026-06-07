@@ -225,6 +225,7 @@ pub(crate) const P_MUTATION_STATS: usize = 414;
 pub(crate) const P_SEXP_EVAL: usize = 420;
 pub(crate) const P_SEXP_SEND: usize = 421;
 pub(crate) const P_SEXP_RECV: usize = 422;
+pub(crate) const P_SEXP_RESULT: usize = 423;
 // JSON snapshot persistence
 pub(crate) const P_JSON_SNAPSHOT: usize = 430;
 pub(crate) const P_JSON_RESTORE: usize = 431;
@@ -703,6 +704,7 @@ impl VM {
             ("MUTATION-STATS", P_MUTATION_STATS, false),
             // S-expression support
             ("SEXP\"", P_SEXP_EVAL, true),
+            ("SEXP-EVAL\"", P_SEXP_RESULT, true),
             ("SEXP-SEND\"", P_SEXP_SEND, true),
             ("SEXP-RECV", P_SEXP_RECV, false),
             // JSON snapshot persistence
@@ -1286,6 +1288,7 @@ impl VM {
             }
             // S-expression support
             P_SEXP_EVAL => self.prim_sexp_eval(),
+            P_SEXP_RESULT => self.prim_sexp_eval_result(),
             P_SEXP_SEND => self.prim_sexp_send(),
             P_SEXP_RECV => self.prim_sexp_recv(),
             // JSON snapshot persistence
