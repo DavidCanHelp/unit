@@ -359,7 +359,7 @@ pub fn sexp_recruit_result(
 
 /// A `(recruit-result ...)` read back: the routing fields plus the decoded
 /// result envelope.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RecruitResult {
     pub goal_id: GoalId,
     pub seq: usize,
@@ -386,13 +386,25 @@ pub fn read_recruit_result(sexp: &crate::sexp::Sexp) -> Option<RecruitResult> {
     })
 }
 
+/// One recruit slot. Holds the sub-instruction (so the work can be re-recruited
+/// if the peer dies — mirrors confirm-before-release: don't discard the work
+/// until a result is confirmed), the peer currently holding it, and the
+/// collected result (`None` while pending). The instruction is released once
+/// the slot settles.
+#[derive(Debug, Clone)]
+pub struct LedgerSlot {
+    pub instr: String,
+    pub peer: String,
+    pub result: Option<RecruitResult>,
+}
+
 /// Recruiter-side ledger binding outstanding recruit requests to their
-/// collected results, keyed by `(goal_id, seq)`. Mechanism only — it records
-/// what was recruited and what came back; it holds no policy about *when* to
-/// recruit. `open` on emit, `collect` on reply (matched by key).
+/// collected results, keyed by `(goal_id, seq)`. Each open slot also retains
+/// the sub-instruction and the holding peer, which is the state supervision
+/// reads to re-recruit a slot whose peer has died.
 #[derive(Debug, Default)]
 pub struct RecruitLedger {
-    entries: HashMap<(GoalId, usize), Option<RecruitResult>>,
+    entries: HashMap<(GoalId, usize), LedgerSlot>,
     next_id: GoalId,
 }
 
@@ -408,33 +420,80 @@ impl RecruitLedger {
         self.next_id
     }
 
-    /// Record an outstanding request whose reply has not yet arrived.
-    pub fn open(&mut self, goal_id: GoalId, seq: usize) {
-        self.entries.insert((goal_id, seq), None);
+    /// Open a slot, recording the sub-instruction and the peer it was sent to.
+    pub fn open(&mut self, goal_id: GoalId, seq: usize, instr: &str, peer: &str) {
+        self.entries.insert(
+            (goal_id, seq),
+            LedgerSlot {
+                instr: instr.to_string(),
+                peer: peer.to_string(),
+                result: None,
+            },
+        );
     }
 
-    /// Record a collected reply if it matches an outstanding request. Returns
-    /// true if it matched a known `(goal_id, seq)` and was recorded; false if
-    /// the reply is for a request this node did not open (so cross-node
-    /// broadcasts that aren't ours are ignored).
+    /// Record a collected reply if it matches an outstanding request. Releases
+    /// the retained instruction (the slot is settled — no re-recruit needed).
+    /// Returns true if it matched a known `(goal_id, seq)`; false otherwise (so
+    /// cross-node broadcasts that aren't ours are ignored).
     pub fn collect(&mut self, rr: RecruitResult) -> bool {
         let key = (rr.goal_id, rr.seq);
         if let Some(slot) = self.entries.get_mut(&key) {
-            *slot = Some(rr);
+            slot.result = Some(rr);
+            slot.instr.clear();
             true
         } else {
             false
         }
     }
 
+    /// Reassign an OPEN slot to a new peer (re-recruit). Keeps the instruction.
+    pub fn reassign(&mut self, goal_id: GoalId, seq: usize, new_peer: &str) {
+        if let Some(slot) = self.entries.get_mut(&(goal_id, seq)) {
+            slot.peer = new_peer.to_string();
+        }
+    }
+
     /// The collected result for a slot, if its reply has arrived.
     pub fn get(&self, goal_id: GoalId, seq: usize) -> Option<&RecruitResult> {
-        self.entries.get(&(goal_id, seq)).and_then(|o| o.as_ref())
+        self.entries.get(&(goal_id, seq)).and_then(|s| s.result.as_ref())
     }
 
     /// True if the slot was opened but its reply hasn't arrived yet.
     pub fn is_pending(&self, goal_id: GoalId, seq: usize) -> bool {
-        matches!(self.entries.get(&(goal_id, seq)), Some(None))
+        matches!(self.entries.get(&(goal_id, seq)), Some(s) if s.result.is_none())
+    }
+
+    /// The peer currently holding a slot, if the slot exists.
+    pub fn holder(&self, goal_id: GoalId, seq: usize) -> Option<&str> {
+        self.entries.get(&(goal_id, seq)).map(|s| s.peer.as_str())
+    }
+
+    /// The retained sub-instruction for an OPEN slot; `None` once the slot has
+    /// settled (the instruction is released after the result is confirmed).
+    pub fn pending_instr(&self, goal_id: GoalId, seq: usize) -> Option<&str> {
+        let slot = self.entries.get(&(goal_id, seq))?;
+        if slot.result.is_none() && !slot.instr.is_empty() {
+            Some(&slot.instr)
+        } else {
+            None
+        }
+    }
+
+    /// Open slots whose holding peer has left the live set — the gossip-death
+    /// signal. Returns `(goal_id, seq, instruction)` so the caller can
+    /// re-recruit the retained instruction to a different peer.
+    pub fn open_slots_with_dead_holder(
+        &self,
+        live: &std::collections::HashSet<&str>,
+    ) -> Vec<(GoalId, usize, String)> {
+        self.entries
+            .iter()
+            .filter(|(_, s)| {
+                s.result.is_none() && !s.peer.is_empty() && !live.contains(s.peer.as_str())
+            })
+            .map(|((g, seq), s)| (*g, *seq, s.instr.clone()))
+            .collect()
     }
 
     /// Number of recruit requests opened (outstanding + collected). Lets a
@@ -458,8 +517,12 @@ impl RecruitLedger {
         let mut out = String::new();
         for key in keys {
             let (g, s) = key;
-            match &self.entries[&key] {
-                None => out.push_str(&format!("recruit #{} seq {}: pending\n", g, s)),
+            let slot = &self.entries[&key];
+            match &slot.result {
+                None => out.push_str(&format!(
+                    "recruit #{} seq {} -> {}: pending\n",
+                    g, s, slot.peer
+                )),
                 Some(rr) => {
                     let body = match &rr.result {
                         crate::sexp::ResultView::Ok { value, output } => {

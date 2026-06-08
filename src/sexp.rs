@@ -379,7 +379,7 @@ pub fn msg_result(outcome: EvalOutcome) -> Sexp {
 
 /// A result envelope read back into Rust for a controller's convenience —
 /// the inverse of [`msg_result`].
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResultView {
     /// `:ok 1` — `value` is top-of-stack first; `output` is the captured text.
     Ok { value: Vec<i64>, output: String },

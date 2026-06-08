@@ -1280,6 +1280,21 @@ impl VM {
             }
         }
 
+        // Supervision (gossip-death): re-recruit any open recruit slot whose
+        // holding peer has left the pruned peer view. The peer_resource_view is
+        // already maintained by the PEER_TIMEOUT prune, so absence == death.
+        let live_peers: Vec<(String, u8, std::net::SocketAddr)> = match self.mesh {
+            Some(ref m) => m
+                .peer_resource_view()
+                .into_iter()
+                .map(|(id, _load, headroom, addr)| (crate::mesh::id_to_hex(&id), headroom, addr))
+                .collect(),
+            None => Vec::new(),
+        };
+        if !live_peers.is_empty() {
+            self.supervise_recruits(&live_peers);
+        }
+
         // Check for timed-out sub-goals and fall back to local.
         let goal_ids: Vec<u64> = self.dist_engine.goals.keys().copied().collect();
         for gid in goal_ids {
@@ -1469,11 +1484,65 @@ impl VM {
             .map(|id| crate::mesh::id_to_hex(&id))
             .unwrap_or_else(|| "local".to_string());
         let msg = distgoal::sexp_recruit(goal_id, seq, &my_id, instr);
-        self.recruit_ledger.open(goal_id, seq);
+        // Retain the instruction and the holding peer so supervision can
+        // re-recruit this slot if `peer_hex` later dies.
+        self.recruit_ledger.open(goal_id, seq, instr, peer_hex);
         // Send to just that peer; if it is not a known peer the request still
         // stands in the ledger and no send happens.
         self.send_to_node(peer_hex, &msg);
         msg
+    }
+
+    /// SUPERVISION (gossip-death, let-it-crash). Given the current live peer
+    /// view (hex id, advertised headroom, addr), re-recruit every OPEN slot
+    /// whose holding peer has left that view — its peer is presumed dead. The
+    /// retained instruction is re-sent to a DIFFERENT peer chosen by the same
+    /// placement logic (`choose_destination`); the dead peer isn't in the view,
+    /// so it can't be re-chosen. If no peer has headroom, the slot stays
+    /// open/declined (fail-closed — no fabricated completion). This handles
+    /// crash/disappearance only; an alive-but-wedged peer needs a job-timeout,
+    /// deferred. Supervision nests for free: a re-recruited slot may itself hold
+    /// a `(parallel ...)` subtree, which the new peer re-runs normally.
+    pub(crate) fn supervise_recruits(&mut self, live_peers: &[(String, u8, std::net::SocketAddr)]) {
+        let live: std::collections::HashSet<&str> =
+            live_peers.iter().map(|(hex, _, _)| hex.as_str()).collect();
+        let dead = self.recruit_ledger.open_slots_with_dead_holder(&live);
+        if dead.is_empty() {
+            return;
+        }
+        let candidates: Vec<crate::transport::Candidate> = live_peers
+            .iter()
+            .map(|(_, headroom, addr)| crate::transport::Candidate {
+                headroom_pct: *headroom,
+                addr: *addr,
+            })
+            .collect();
+        for (gid, seq, instr) in dead {
+            // Choose a new headroom peer (same placement rule). The dead peer is
+            // absent from `candidates`, so it cannot be re-chosen.
+            let chosen_addr =
+                match crate::transport::choose_destination(&candidates, &mut self.rng) {
+                    Some(c) => c.addr,
+                    None => continue, // fail-closed: no capacity -> slot stays open
+                };
+            if let Some((hex, _, _)) = live_peers.iter().find(|(_, _, a)| *a == chosen_addr) {
+                let new_peer = hex.clone();
+                self.re_recruit(gid, seq, &new_peer, &instr);
+            }
+        }
+    }
+
+    /// Re-send an existing open slot's retained instruction to `new_peer` and
+    /// reassign the slot's holder. The slot keeps its identity `(goal_id, seq)`,
+    /// so the eventual result still routes back to the same parallel-job slot.
+    fn re_recruit(&mut self, goal_id: u64, seq: usize, new_peer: &str, instr: &str) {
+        let my_id = self
+            .node_id_cache
+            .map(|id| crate::mesh::id_to_hex(&id))
+            .unwrap_or_else(|| "local".to_string());
+        let msg = distgoal::sexp_recruit(goal_id, seq, &my_id, instr);
+        self.recruit_ledger.reassign(goal_id, seq, new_peer);
+        self.send_to_node(new_peer, &msg);
     }
 
     /// RECRUIT" <peer> <s-expr>" — manual recruit trigger. Parses a target peer

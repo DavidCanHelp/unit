@@ -1250,6 +1250,128 @@ fn test_ordering_preserved_across_out_of_order_fill() {
     assert_eq!(leaf_values(&nested_of(&msg)), vec![vec![2], vec![4], vec![6]]);
 }
 
+// --- Supervision: re-recruit on peer death (gossip-death, let-it-crash) ---
+
+fn addr(s: &str) -> std::net::SocketAddr {
+    s.parse().unwrap()
+}
+
+#[test]
+fn test_resupervise_re_recruits_on_peer_death() {
+    let mut parent = test_vm();
+    // Parent recruited slot (5,0)="(+ 2 2)" to peer "deadpeer"; tracked as a
+    // 1-part parallel job (what run_parallel would have set up).
+    parent
+        .parallel_jobs
+        .insert(5, crate::distgoal::ParallelJob::new(5, 1));
+    parent.send_recruit("deadpeer", 5, 0, "(+ 2 2)");
+    assert_eq!(parent.recruit_ledger.holder(5, 0), Some("deadpeer"));
+
+    // "deadpeer" leaves the gossip view; an abundant peer "Q" is live.
+    parent.supervise_recruits(&[("Q".to_string(), 90, addr("127.0.0.1:9001"))]);
+
+    // Re-recruited to Q: holder reassigned, instruction retained, still pending.
+    assert_eq!(parent.recruit_ledger.holder(5, 0), Some("Q"));
+    assert_eq!(parent.recruit_ledger.pending_instr(5, 0), Some("(+ 2 2)"));
+    assert!(parent.recruit_ledger.is_pending(5, 0));
+
+    // Q reports -> slot fills -> parent completes normally.
+    let mut worker = test_vm();
+    let mut m = under_ceiling;
+    let q_reply = reply_of(worker.handle_recruit(5, 0, "(+ 2 2)", "parent", &mut m));
+    assert!(parent
+        .collect_recruit_result(&crate::sexp::parse(&q_reply).unwrap())
+        .is_none());
+    let (ok, views) = read_parallel(&parent.parallel_result(5).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![4]]);
+    // Instruction released after the slot settles.
+    assert!(!parent.recruit_ledger.is_pending(5, 0));
+    assert_eq!(parent.recruit_ledger.pending_instr(5, 0), None);
+}
+
+#[test]
+fn test_ledger_retains_then_releases_instruction() {
+    let mut parent = test_vm();
+    parent.send_recruit("P", 3, 1, "(* 6 7)");
+    // Retained while pending.
+    assert_eq!(parent.recruit_ledger.pending_instr(3, 1), Some("(* 6 7)"));
+    assert!(parent.recruit_ledger.is_pending(3, 1));
+    // Fill it.
+    let env = crate::sexp::msg_result(crate::sexp::EvalOutcome::Ok {
+        stack: &[42],
+        output: "",
+    });
+    let reply = crate::distgoal::sexp_recruit_result(3, 1, "P", &env);
+    parent.collect_recruit_result(&crate::sexp::parse(&reply).unwrap());
+    // Released after fill; result settled.
+    assert_eq!(parent.recruit_ledger.pending_instr(3, 1), None);
+    assert!(!parent.recruit_ledger.is_pending(3, 1));
+}
+
+#[test]
+fn test_resupervise_fail_closed_when_no_headroom_peer() {
+    let mut parent = test_vm();
+    parent.send_recruit("deadpeer", 7, 0, "(+ 1 1)");
+    // deadpeer dies; the only live peer "Z" has NO headroom (5% < sufficiency).
+    parent.supervise_recruits(&[("Z".to_string(), 5, addr("127.0.0.1:9002"))]);
+    // Fail-closed: no re-recruit, slot stays held by deadpeer and pending.
+    assert!(parent.recruit_ledger.is_pending(7, 0));
+    assert_eq!(parent.recruit_ledger.holder(7, 0), Some("deadpeer"));
+    assert_eq!(parent.recruit_ledger.pending_instr(7, 0), Some("(+ 1 1)"));
+}
+
+#[test]
+fn test_recursive_supervision_re_recruits_whole_subtree() {
+    let mut root = test_vm();
+    // Root recruited a (parallel ...) SUBTREE to "middle".
+    root.parallel_jobs
+        .insert(2, crate::distgoal::ParallelJob::new(2, 1));
+    root.send_recruit("middle", 2, 0, "(parallel (+ 1 1) (+ 2 2))");
+
+    // "middle" dies; a fresh peer "M2" with headroom exists.
+    root.supervise_recruits(&[("M2".to_string(), 90, addr("127.0.0.1:9003"))]);
+    // The WHOLE subtree instruction was re-recruited to M2 (not just a leaf).
+    assert_eq!(root.recruit_ledger.holder(2, 0), Some("M2"));
+    assert_eq!(
+        root.recruit_ledger.pending_instr(2, 0),
+        Some("(parallel (+ 1 1) (+ 2 2))")
+    );
+
+    // M2 re-runs the subtree (has headroom -> completes locally) and reports.
+    let mut m2 = test_vm();
+    let mut m = under_ceiling;
+    let m2_reply = reply_of(m2.handle_recruit(2, 0, "(parallel (+ 1 1) (+ 2 2))", "root", &mut m));
+    root.collect_recruit_result(&crate::sexp::parse(&m2_reply).unwrap());
+    let result = root.parallel_result(2).unwrap();
+    assert_eq!(result.get_key(":ok").and_then(|s| s.as_number()), Some(1));
+    let nested = result.get_key(":results").and_then(|s| s.as_list()).unwrap();
+    assert_eq!(crate::sexp::msg_type(&nested[0]), Some("parallel-result"));
+    assert_eq!(leaf_values(&nested[0]), vec![vec![2], vec![4]]);
+}
+
+#[test]
+fn test_supervision_leaves_healthy_slots_alone() {
+    let mut parent = test_vm();
+    parent
+        .parallel_jobs
+        .insert(8, crate::distgoal::ParallelJob::new(8, 1));
+    parent.send_recruit("P", 8, 0, "(+ 3 4)");
+    // P is ALIVE in the view -> supervision must not touch the slot.
+    parent.supervise_recruits(&[("P".to_string(), 90, addr("127.0.0.1:9004"))]);
+    assert_eq!(parent.recruit_ledger.holder(8, 0), Some("P")); // unchanged
+    assert_eq!(parent.recruit_ledger.pending_instr(8, 0), Some("(+ 3 4)"));
+
+    // P reports normally -> completes exactly as before.
+    let mut worker = test_vm();
+    let mut m = under_ceiling;
+    let reply = reply_of(worker.handle_recruit(8, 0, "(+ 3 4)", "parent", &mut m));
+    parent.collect_recruit_result(&crate::sexp::parse(&reply).unwrap());
+    let (ok, views) = read_parallel(&parent.parallel_result(8).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![7]]);
+}
+
 #[test]
 fn test_recursive_failure_propagates_through_two_levels() {
     // A fault in a deeply-nested sub-part surfaces as :ok 0 :kind runtime in the
