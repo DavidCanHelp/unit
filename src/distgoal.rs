@@ -437,6 +437,17 @@ impl RecruitLedger {
         matches!(self.entries.get(&(goal_id, seq)), Some(None))
     }
 
+    /// Number of recruit requests opened (outstanding + collected). Lets a
+    /// caller observe recruit emission — e.g. that a saturated mesh emits none.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// True if no recruit has been opened.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Human-readable dump for the RECRUITS REPL word (sorted for determinism).
     pub fn format_status(&self) -> String {
         if self.entries.is_empty() {
@@ -533,10 +544,11 @@ impl ParallelJob {
         for slot in &self.slots {
             match slot {
                 Some(env) => {
-                    if !matches!(
-                        crate::sexp::read_result(env),
-                        Some(crate::sexp::ResultView::Ok { .. })
-                    ) {
+                    // A slot envelope is either a (result ...) or, for a
+                    // recursively-recruited part, a nested (parallel-result ...).
+                    // Both carry :ok; treat :ok 1 as success. Nested
+                    // parallel-results are collected as-is, never flattened.
+                    if env.get_key(":ok").and_then(|s| s.as_number()) != Some(1) {
                         all_ok = false;
                     }
                     results.push(env.clone());

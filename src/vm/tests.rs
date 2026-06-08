@@ -707,7 +707,8 @@ fn test_sexp_eval_word_preserves_rest_of_line() {
 #[test]
 fn test_recruit_success_envelope() {
     let mut vm = test_vm();
-    let reply = vm.handle_recruit(7, 2, "(+ 2 3)");
+    let mut m = under_ceiling;
+    let reply = vm.handle_recruit(7, 2, "(+ 2 3)", &mut m);
     let parsed = crate::sexp::parse(&reply).unwrap();
     let rr = crate::distgoal::read_recruit_result(&parsed).unwrap();
     // Routing fields round-trip (node_id_cache unset in test_vm -> "local").
@@ -728,7 +729,8 @@ fn test_recruit_runtime_error_is_visible() {
     // A failing instr produces a VISIBLE :ok 0 envelope over the wire — unlike
     // the legacy sub-goal path, which silently trims output and drops failure.
     let mut vm = test_vm();
-    let reply = vm.handle_recruit(1, 0, "(drop)");
+    let mut m = under_ceiling;
+    let reply = vm.handle_recruit(1, 0, "(drop)", &mut m);
     let rr =
         crate::distgoal::read_recruit_result(&crate::sexp::parse(&reply).unwrap()).unwrap();
     match rr.result {
@@ -743,7 +745,8 @@ fn test_recruit_runtime_error_is_visible() {
 #[test]
 fn test_recruit_parse_error_is_visible() {
     let mut vm = test_vm();
-    let reply = vm.handle_recruit(1, 0, "(+ 2"); // unterminated list
+    let mut m = under_ceiling;
+    let reply = vm.handle_recruit(1, 0, "(+ 2", &mut m); // unterminated list
     let rr =
         crate::distgoal::read_recruit_result(&crate::sexp::parse(&reply).unwrap()).unwrap();
     match rr.result {
@@ -771,7 +774,8 @@ fn loopback_recruit(recruiter: &mut VM, worker: &mut VM, goal_id: u64, seq: usiz
     let gid = parsed.get_key(":id").and_then(|s| s.as_number()).unwrap() as u64;
     let s = parsed.get_key(":seq").and_then(|s| s.as_number()).unwrap() as usize;
     let i = parsed.get_key(":instr").and_then(|s| s.as_str()).unwrap().to_string();
-    let reply = worker.handle_recruit(gid, s, &i);
+    let mut m = under_ceiling;
+    let reply = worker.handle_recruit(gid, s, &i, &mut m);
     recruiter.process_chatter_msg(&reply);
 }
 
@@ -890,7 +894,8 @@ fn test_parallel_forced_recruit_round_trip() {
         0
     );
     for (seq, part) in parts.iter().enumerate() {
-        let reply = worker.handle_recruit(goal_id, seq, &part.to_string());
+        let mut wm = under_ceiling;
+        let reply = worker.handle_recruit(goal_id, seq, &part.to_string(), &mut wm);
         recruiter.process_chatter_msg(&reply);
     }
     let (ok, views) = read_parallel(&recruiter.parallel_result(goal_id).unwrap());
@@ -915,7 +920,8 @@ fn test_parallel_mixed_local_and_recruited_preserves_order() {
     };
     let goal_id = recruiter.run_parallel(&parts, &mut measure);
     // Only the middle part is outstanding; loopback just that one.
-    let reply = worker.handle_recruit(goal_id, 1, &parts[1].to_string());
+    let mut wm = under_ceiling;
+    let reply = worker.handle_recruit(goal_id, 1, &parts[1].to_string(), &mut wm);
     recruiter.process_chatter_msg(&reply);
     let (ok, views) = read_parallel(&recruiter.parallel_result(goal_id).unwrap());
     assert_eq!(ok, 1);
@@ -970,6 +976,89 @@ fn test_parallel_word_fires() {
         "expected 2 sub-result envelopes, out: {}",
         out
     );
+}
+
+// --- Recursive recruit fan-out (the decision recurses, ceiling-bounded) ---
+
+#[test]
+fn test_recursive_two_level_fanout() {
+    // Parts are THEMSELVES (parallel ...) forms.
+    let mut recruiter = test_vm();
+    let mut worker = test_vm();
+    let parts = parse_parts("(parallel (parallel (+ 1 1) (+ 2 2)) (parallel (+ 3 3)))");
+    // Level 1: no headroom -> both parts recruited (no mesh here -> pending; we
+    // loopback as the recruited worker).
+    let mut l1 = over_ceiling;
+    let goal_id = recruiter.run_parallel(&parts, &mut l1);
+    // The recruited worker HAS headroom, so when it receives a (parallel ...)
+    // part it runs its OWN run_parallel and handles the sub-parts locally.
+    for (seq, part) in parts.iter().enumerate() {
+        let mut wm = under_ceiling;
+        let reply = worker.handle_recruit(goal_id, seq, &part.to_string(), &mut wm);
+        recruiter.process_chatter_msg(&reply);
+    }
+    let result = recruiter.parallel_result(goal_id).unwrap();
+    assert_eq!(result.get_key(":ok").and_then(|s| s.as_number()), Some(1));
+    // Each parent slot holds a NESTED (parallel-result ...), ordered, not flattened.
+    let nested = result.get_key(":results").and_then(|s| s.as_list()).unwrap();
+    assert_eq!(nested.len(), 2);
+    assert_eq!(crate::sexp::msg_type(&nested[0]), Some("parallel-result"));
+    assert_eq!(crate::sexp::msg_type(&nested[1]), Some("parallel-result"));
+    // First nested has two sub-results (2, 4); second has one (6).
+    let first = nested[0].get_key(":results").and_then(|s| s.as_list()).unwrap();
+    let second = nested[1].get_key(":results").and_then(|s| s.as_list()).unwrap();
+    assert_eq!(ok_values(&first.iter().map(|e| crate::sexp::read_result(e).unwrap()).collect::<Vec<_>>()), vec![vec![2], vec![4]]);
+    assert_eq!(ok_values(&second.iter().map(|e| crate::sexp::read_result(e).unwrap()).collect::<Vec<_>>()), vec![vec![6]]);
+}
+
+#[test]
+fn test_recursive_fanout_halts_when_no_peer_has_headroom() {
+    // THE BRAKE. No mesh -> choose_recruit_peer returns None (the same boundary
+    // a saturated mesh hits, where transport::choose_destination returns None —
+    // see choose_destination_none_when_no_peer_sufficient). With no headroom and
+    // no choosable peer, run_parallel must terminate and emit ZERO recruits;
+    // parts are declined (slots stay pending). This is emergent termination:
+    // the ceiling check, present at every level, stops the tree growing.
+    let mut vm = test_vm();
+    let parts = parse_parts("(parallel (+ 1 1) (+ 2 2) (+ 3 3))");
+    let mut measure = over_ceiling; // no headroom
+    let goal_id = vm.run_parallel(&parts, &mut measure);
+    // Terminated (we're here, not looping). No recruit emitted.
+    assert_eq!(
+        vm.recruit_ledger.len(),
+        0,
+        "a peerless/saturated mesh must emit no recruits"
+    );
+    // Parts declined: all slots pending -> overall :ok 0.
+    let (ok, _) = read_parallel(&vm.parallel_result(goal_id).unwrap());
+    assert_eq!(ok, 0);
+}
+
+#[test]
+fn test_recursive_failure_propagates_through_two_levels() {
+    // A fault in a deeply-nested sub-part surfaces as :ok 0 :kind runtime in the
+    // nested envelope and forces :ok 0 up through each parent parallel-result.
+    let mut recruiter = test_vm();
+    let mut worker = test_vm();
+    let parts = parse_parts("(parallel (parallel (+ 1 1) (drop)))");
+    let mut l1 = over_ceiling;
+    let goal_id = recruiter.run_parallel(&parts, &mut l1);
+    let mut wm = under_ceiling;
+    let reply = worker.handle_recruit(goal_id, 0, &parts[0].to_string(), &mut wm);
+    recruiter.process_chatter_msg(&reply);
+
+    let result = recruiter.parallel_result(goal_id).unwrap();
+    // Top level :ok 0.
+    assert_eq!(result.get_key(":ok").and_then(|s| s.as_number()), Some(0));
+    let nested = result.get_key(":results").and_then(|s| s.as_list()).unwrap();
+    // Nested parallel-result :ok 0.
+    assert_eq!(nested[0].get_key(":ok").and_then(|s| s.as_number()), Some(0));
+    // The faulting leaf is a runtime error envelope.
+    let leaves = nested[0].get_key(":results").and_then(|s| s.as_list()).unwrap();
+    match crate::sexp::read_result(&leaves[1]).unwrap() {
+        crate::sexp::ResultView::Err { kind, .. } => assert_eq!(kind, "runtime"),
+        other => panic!("expected runtime error leaf, got {:?}", other),
+    }
 }
 
 #[test]

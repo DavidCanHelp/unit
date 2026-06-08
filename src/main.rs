@@ -1309,8 +1309,40 @@ impl VM {
     /// mesh send so it is testable without sockets. Unlike the legacy sub-goal
     /// path, success/error is preserved — a failed eval yields a visible
     /// `:ok 0` envelope rather than a silently-trimmed output string.
-    pub(crate) fn handle_recruit(&mut self, goal_id: u64, seq: usize, instr: &str) -> String {
-        let envelope = crate::sexp::eval_sexp(self, instr);
+    pub(crate) fn handle_recruit<M>(
+        &mut self,
+        goal_id: u64,
+        seq: usize,
+        instr: &str,
+        measure: &mut M,
+    ) -> String
+    where
+        M: FnMut() -> crate::resources::HostResources,
+    {
+        // RECURSION: a recruited (parallel ...) re-applies the SAME
+        // split-and-recruit DECISION at THIS level — it routes through
+        // run_parallel, whose per-part `measure().has_headroom()` check (the
+        // ceiling brake) runs again here, so this peer runs the parts it has
+        // headroom for and recruits only ITS overflow. A non-(parallel ...)
+        // instruction evaluates flat through the seam, exactly as before.
+        let envelope = match crate::sexp::parse(instr) {
+            Ok(sexp) => match crate::distgoal::parallel_parts(&sexp) {
+                Some(parts) => {
+                    let child = self.run_parallel(&parts, measure);
+                    self.parallel_result(child).unwrap_or_else(|| {
+                        crate::sexp::msg_result(crate::sexp::EvalOutcome::Err {
+                            kind: "runtime",
+                            msg: "parallel job missing",
+                        })
+                    })
+                }
+                None => crate::sexp::eval_sexp(self, instr),
+            },
+            Err(e) => crate::sexp::msg_result(crate::sexp::EvalOutcome::Err {
+                kind: "parse",
+                msg: &e.0,
+            }),
+        };
         let my_id = self
             .node_id_cache
             .map(|id| crate::mesh::id_to_hex(&id))
@@ -1434,12 +1466,17 @@ impl VM {
                 // measure() reflects the added pressure (reactive, not predicted).
                 let envelope = crate::sexp::eval_sexp(self, &part_str);
                 job.set(seq, envelope);
-            } else {
-                // No headroom: recruit this part to a placement-chosen peer. The
-                // slot stays pending until its (recruit-result ...) lands.
-                let peer = self.choose_recruit_peer().unwrap_or_default();
+            } else if let Some(peer) = self.choose_recruit_peer() {
+                // No headroom AND a peer WITH headroom exists: recruit this part.
+                // The slot stays pending until its (recruit-result ...) lands.
                 self.send_recruit(&peer, goal_id, seq, &part_str);
             }
+            // else: no headroom and no peer with headroom — the part is declined
+            // and its slot stays pending. THIS is the emergent brake: a recruit
+            // is emitted ONLY when placement finds a peer with capacity, so on a
+            // saturated mesh fan-out stops. The ceiling bounds the tree at every
+            // level (this same check runs on every recursively-recruited peer);
+            // no recursion-depth cap is needed, by design.
         }
         self.parallel_jobs.insert(goal_id, job);
         goal_id
@@ -1570,7 +1607,11 @@ impl VM {
                                 .unwrap_or("")
                                 .to_string();
                             if !instr.is_empty() {
-                                let reply = self.handle_recruit(goal_id, seq, &instr);
+                                // Live measure so a recruited (parallel ...)
+                                // re-applies the ceiling decision at this level.
+                                let mut measure = crate::resources::HostResources::measure;
+                                let reply =
+                                    self.handle_recruit(goal_id, seq, &instr, &mut measure);
                                 if let Some(ref m2) = self.mesh {
                                     m2.send_sexp(&reply);
                                 }
@@ -1578,20 +1619,30 @@ impl VM {
                         }
                         Some("recruit-result") => {
                             // Recruiter side (collect): match the reply to an
-                            // outstanding request by (:id, :seq) and record the
-                            // canonical envelope. Replies for requests this node
-                            // did not open are ignored by the ledger.
-                            if let Some(rr) = distgoal::read_recruit_result(&sexp) {
-                                let (gid, seq) = (rr.goal_id, rr.seq);
-                                self.recruit_ledger.collect(rr);
-                                // If this reply belongs to a parallel job, fill
-                                // its ordered slot with the raw envelope
-                                // (collected, not combined).
+                            // outstanding request by (:id, :seq). Read the
+                            // routing + raw :result envelope directly so this
+                            // works for ANY envelope type — including a nested
+                            // (parallel-result ...) from a recursively-recruited
+                            // part, which read_recruit_result can't decode.
+                            let gid =
+                                sexp.get_key(":id").and_then(|s| s.as_number()).unwrap_or(0) as u64;
+                            let seq = sexp
+                                .get_key(":seq")
+                                .and_then(|s| s.as_number())
+                                .unwrap_or(0) as usize;
+                            // If this reply belongs to a parallel job, fill its
+                            // ordered slot with the raw envelope (collected, not
+                            // combined; nested parallel-results stay nested).
+                            if let Some(env) = sexp.get_key(":result").cloned() {
                                 if let Some(job) = self.parallel_jobs.get_mut(&gid) {
-                                    if let Some(env) = sexp.get_key(":result") {
-                                        job.set(seq, env.clone());
-                                    }
+                                    job.set(seq, env);
                                 }
+                            }
+                            // Also record decodable single-result replies in the
+                            // recruit ledger. A nested parallel-result doesn't
+                            // decode here and is handled purely via the job above.
+                            if let Some(rr) = distgoal::read_recruit_result(&sexp) {
+                                self.recruit_ledger.collect(rr);
                             }
                         }
                         Some("mating-request") => {
