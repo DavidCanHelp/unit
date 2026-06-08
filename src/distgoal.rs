@@ -480,6 +480,30 @@ impl RecruitLedger {
     }
 }
 
+/// Where a unit reports its completed result back to. Stored by a unit that
+/// recruited overflow (so it can't complete synchronously), keyed by its own
+/// child job's goal_id; consulted when that child job becomes whole. No
+/// coordinator — each unit holds only its own back-references.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReportTarget {
+    /// Hex node id of whoever recruited this unit — who to report back to.
+    pub recruiter_node: String,
+    /// The recruiter's goal_id for this work (routes the reply to its slot).
+    pub goal_id: GoalId,
+    /// The recruiter's slot index for this work.
+    pub seq: usize,
+}
+
+/// Outcome of handling an inbound recruit. `Reply` carries a recruit-result to
+/// send back synchronously — the work completed here. `Deferred` means this
+/// unit recruited overflow and will self-report once its child job completes;
+/// `child_goal_id` is that job's id (exposed for correlation and testing).
+#[derive(Debug)]
+pub enum RecruitOutcome {
+    Reply(String),
+    Deferred { child_goal_id: GoalId },
+}
+
 // ---------------------------------------------------------------------------
 // (parallel ...) split-and-recruit job
 //

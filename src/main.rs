@@ -1314,40 +1314,141 @@ impl VM {
         goal_id: u64,
         seq: usize,
         instr: &str,
+        recruiter: &str,
         measure: &mut M,
-    ) -> String
+    ) -> crate::distgoal::RecruitOutcome
     where
         M: FnMut() -> crate::resources::HostResources,
     {
-        // RECURSION: a recruited (parallel ...) re-applies the SAME
-        // split-and-recruit DECISION at THIS level — it routes through
-        // run_parallel, whose per-part `measure().has_headroom()` check (the
-        // ceiling brake) runs again here, so this peer runs the parts it has
-        // headroom for and recruits only ITS overflow. A non-(parallel ...)
-        // instruction evaluates flat through the seam, exactly as before.
-        let envelope = match crate::sexp::parse(instr) {
-            Ok(sexp) => match crate::distgoal::parallel_parts(&sexp) {
-                Some(parts) => {
-                    let child = self.run_parallel(&parts, measure);
-                    self.parallel_result(child).unwrap_or_else(|| {
-                        crate::sexp::msg_result(crate::sexp::EvalOutcome::Err {
-                            kind: "runtime",
-                            msg: "parallel job missing",
-                        })
-                    })
-                }
-                None => crate::sexp::eval_sexp(self, instr),
-            },
-            Err(e) => crate::sexp::msg_result(crate::sexp::EvalOutcome::Err {
-                kind: "parse",
-                msg: &e.0,
-            }),
-        };
         let my_id = self
             .node_id_cache
             .map(|id| crate::mesh::id_to_hex(&id))
             .unwrap_or_else(|| "local".to_string());
-        distgoal::sexp_recruit_result(goal_id, seq, &my_id, &envelope)
+        let reply = |env: &crate::sexp::Sexp| {
+            crate::distgoal::RecruitOutcome::Reply(distgoal::sexp_recruit_result(
+                goal_id, seq, &my_id, env,
+            ))
+        };
+        match crate::sexp::parse(instr) {
+            // RECURSION: a recruited (parallel ...) re-applies the SAME
+            // split-and-recruit DECISION at THIS level — it routes through
+            // run_parallel, whose per-part `measure().has_headroom()` check (the
+            // ceiling brake) runs again here. The reply path then splits:
+            Ok(sexp) => match crate::distgoal::parallel_parts(&sexp) {
+                Some(parts) => {
+                    let child = self.run_parallel(&parts, measure);
+                    let complete = self
+                        .parallel_jobs
+                        .get(&child)
+                        .map(|j| j.is_complete())
+                        .unwrap_or(true);
+                    if complete {
+                        // Every part ran locally (had headroom): reply NOW with
+                        // the complete envelope, and drop the settled job.
+                        let env = self.parallel_result(child).unwrap_or_else(|| {
+                            crate::sexp::msg_result(crate::sexp::EvalOutcome::Err {
+                                kind: "runtime",
+                                msg: "parallel job missing",
+                            })
+                        });
+                        self.parallel_jobs.remove(&child);
+                        reply(&env)
+                    } else {
+                        // Recruited overflow: do NOT reply synchronously. Store
+                        // who to report back to (the back-reference), keyed by
+                        // this child job; completion self-reports later via the
+                        // recruit-result handler.
+                        self.report_targets.insert(
+                            child,
+                            crate::distgoal::ReportTarget {
+                                recruiter_node: recruiter.to_string(),
+                                goal_id,
+                                seq,
+                            },
+                        );
+                        crate::distgoal::RecruitOutcome::Deferred {
+                            child_goal_id: child,
+                        }
+                    }
+                }
+                // Flat instruction: evaluate and reply synchronously, as before.
+                None => {
+                    let env = crate::sexp::eval_sexp(self, instr);
+                    reply(&env)
+                }
+            },
+            Err(e) => reply(&crate::sexp::msg_result(crate::sexp::EvalOutcome::Err {
+                kind: "parse",
+                msg: &e.0,
+            })),
+        }
+    }
+
+    /// Collect an inbound `(recruit-result ...)`: fill the matching parallel-job
+    /// slot (and the recruit ledger, for decodable single results). If that was
+    /// the job's LAST open slot, the unit is now complete: assemble its full
+    /// result and, if a recruiter back-reference is stored, return the
+    /// `(node, message)` self-report to send up the tree. A root job (no
+    /// back-reference) surfaces locally and returns None. This is where the
+    /// last-slot-fill completion check fires. Returns None when nothing to send.
+    pub(crate) fn collect_recruit_result(
+        &mut self,
+        sexp: &crate::sexp::Sexp,
+    ) -> Option<(String, String)> {
+        let gid = sexp.get_key(":id")?.as_number()? as u64;
+        let seq = sexp.get_key(":seq")?.as_number()? as usize;
+        let env = sexp.get_key(":result")?.clone();
+        // Record decodable single-result replies in the ledger (generic recruits);
+        // a nested parallel-result doesn't decode and is handled via the job.
+        if let Some(rr) = crate::distgoal::read_recruit_result(sexp) {
+            self.recruit_ledger.collect(rr);
+        }
+        // Fill the parallel-job slot and check completion (borrow scoped).
+        let full = {
+            let job = self.parallel_jobs.get_mut(&gid)?;
+            job.set(seq, env);
+            if job.is_complete() {
+                Some(job.assemble())
+            } else {
+                None
+            }
+        };
+        let full = full?; // not my last slot -> nothing to report yet
+        // COMPLETE. Report up to the stored recruiter, or surface if root.
+        match self.report_targets.remove(&gid) {
+            Some(target) => {
+                self.parallel_jobs.remove(&gid); // settled; result has flowed up
+                let my_id = self
+                    .node_id_cache
+                    .map(|id| crate::mesh::id_to_hex(&id))
+                    .unwrap_or_else(|| "local".to_string());
+                let msg =
+                    distgoal::sexp_recruit_result(target.goal_id, target.seq, &my_id, &full);
+                Some((target.recruiter_node, msg))
+            }
+            None => {
+                // Root: surface the whole answer to the original asker.
+                self.emit_str(&format!("parallel #{} complete: {}\n", gid, full));
+                None
+            }
+        }
+    }
+
+    /// Send an s-expression message to a specific peer by hex node id, resolving
+    /// its address from the gossiped view. No-op if there is no mesh or the peer
+    /// is unknown. Shared by recruit emission and result self-reporting.
+    fn send_to_node(&self, node_hex: &str, msg: &str) {
+        if let Some(ref m) = self.mesh {
+            if let Some((_, _, addr_str)) = m
+                .peer_details()
+                .into_iter()
+                .find(|(hex, _, _)| hex == node_hex)
+            {
+                if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
+                    m.send_sexp_to(addr, msg);
+                }
+            }
+        }
     }
 
     /// Recruiter side (emit): build a `(recruit ...)` message handing `instr`
@@ -1369,21 +1470,9 @@ impl VM {
             .unwrap_or_else(|| "local".to_string());
         let msg = distgoal::sexp_recruit(goal_id, seq, &my_id, instr);
         self.recruit_ledger.open(goal_id, seq);
-        if let Some(ref m) = self.mesh {
-            // Resolve the target peer's address from the gossiped view and send
-            // to just that peer (same single-recipient path available to the
-            // mesh layer). If it is not a known peer, the request still stands
-            // in the ledger; no send happens.
-            if let Some((_, _, addr_str)) = m
-                .peer_details()
-                .into_iter()
-                .find(|(hex, _, _)| hex == peer_hex)
-            {
-                if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
-                    m.send_sexp_to(addr, &msg);
-                }
-            }
-        }
+        // Send to just that peer; if it is not a known peer the request still
+        // stands in the ledger and no send happens.
+        self.send_to_node(peer_hex, &msg);
         msg
     }
 
@@ -1596,7 +1685,7 @@ impl VM {
                                 .get_key(":seq")
                                 .and_then(|s| s.as_number())
                                 .unwrap_or(0) as usize;
-                            let _from = sexp
+                            let from = sexp
                                 .get_key(":from")
                                 .and_then(|s| s.as_str())
                                 .unwrap_or("unknown")
@@ -1610,39 +1699,26 @@ impl VM {
                                 // Live measure so a recruited (parallel ...)
                                 // re-applies the ceiling decision at this level.
                                 let mut measure = crate::resources::HostResources::measure;
-                                let reply =
-                                    self.handle_recruit(goal_id, seq, &instr, &mut measure);
-                                if let Some(ref m2) = self.mesh {
-                                    m2.send_sexp(&reply);
+                                match self.handle_recruit(goal_id, seq, &instr, &from, &mut measure)
+                                {
+                                    // Completed here: reply to the recruiter now.
+                                    distgoal::RecruitOutcome::Reply(reply) => {
+                                        self.send_to_node(&from, &reply);
+                                    }
+                                    // Recruited overflow: no reply now; this unit
+                                    // self-reports up once its child job completes.
+                                    distgoal::RecruitOutcome::Deferred { .. } => {}
                                 }
                             }
                         }
                         Some("recruit-result") => {
-                            // Recruiter side (collect): match the reply to an
-                            // outstanding request by (:id, :seq). Read the
-                            // routing + raw :result envelope directly so this
-                            // works for ANY envelope type — including a nested
-                            // (parallel-result ...) from a recursively-recruited
-                            // part, which read_recruit_result can't decode.
-                            let gid =
-                                sexp.get_key(":id").and_then(|s| s.as_number()).unwrap_or(0) as u64;
-                            let seq = sexp
-                                .get_key(":seq")
-                                .and_then(|s| s.as_number())
-                                .unwrap_or(0) as usize;
-                            // If this reply belongs to a parallel job, fill its
-                            // ordered slot with the raw envelope (collected, not
-                            // combined; nested parallel-results stay nested).
-                            if let Some(env) = sexp.get_key(":result").cloned() {
-                                if let Some(job) = self.parallel_jobs.get_mut(&gid) {
-                                    job.set(seq, env);
-                                }
-                            }
-                            // Also record decodable single-result replies in the
-                            // recruit ledger. A nested parallel-result doesn't
-                            // decode here and is handled purely via the job above.
-                            if let Some(rr) = distgoal::read_recruit_result(&sexp) {
-                                self.recruit_ledger.collect(rr);
+                            // Recruiter side (collect): fill the matching slot.
+                            // If that was the last open slot, this unit is now
+                            // complete and self-reports its full result UP to
+                            // whoever recruited it (fan-in). A root surfaces it
+                            // locally. The completion check lives in here.
+                            if let Some((target, msg)) = self.collect_recruit_result(&sexp) {
+                                self.send_to_node(&target, &msg);
                             }
                         }
                         Some("mating-request") => {

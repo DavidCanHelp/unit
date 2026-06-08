@@ -406,6 +406,9 @@ pub struct VM {
     pub recruit_ledger: crate::distgoal::RecruitLedger,
     /// Active (parallel ...) split-and-collect jobs, keyed by goal_id.
     pub parallel_jobs: std::collections::HashMap<u64, crate::distgoal::ParallelJob>,
+    /// Back-references for deferred recruits: child job goal_id -> who to
+    /// self-report to once that job completes (fan-in up the recruit tree).
+    pub report_targets: std::collections::HashMap<u64, crate::distgoal::ReportTarget>,
     // --- Immune system ---
     pub challenge_registry: crate::challenges::ChallengeRegistry,
     pub problem_detector: crate::discovery::ProblemDetector,
@@ -491,6 +494,7 @@ impl VM {
             dist_engine: crate::distgoal::DistEngine::new(),
             recruit_ledger: crate::distgoal::RecruitLedger::new(),
             parallel_jobs: std::collections::HashMap::new(),
+            report_targets: std::collections::HashMap::new(),
             challenge_registry: crate::challenges::ChallengeRegistry::new(&[0; 8]),
             problem_detector: crate::discovery::ProblemDetector::new(),
             energy: crate::energy::EnergyState::new(),

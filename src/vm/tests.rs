@@ -708,7 +708,7 @@ fn test_sexp_eval_word_preserves_rest_of_line() {
 fn test_recruit_success_envelope() {
     let mut vm = test_vm();
     let mut m = under_ceiling;
-    let reply = vm.handle_recruit(7, 2, "(+ 2 3)", &mut m);
+    let reply = reply_of(vm.handle_recruit(7, 2, "(+ 2 3)", "parent", &mut m));
     let parsed = crate::sexp::parse(&reply).unwrap();
     let rr = crate::distgoal::read_recruit_result(&parsed).unwrap();
     // Routing fields round-trip (node_id_cache unset in test_vm -> "local").
@@ -730,7 +730,7 @@ fn test_recruit_runtime_error_is_visible() {
     // the legacy sub-goal path, which silently trims output and drops failure.
     let mut vm = test_vm();
     let mut m = under_ceiling;
-    let reply = vm.handle_recruit(1, 0, "(drop)", &mut m);
+    let reply = reply_of(vm.handle_recruit(1, 0, "(drop)", "parent", &mut m));
     let rr =
         crate::distgoal::read_recruit_result(&crate::sexp::parse(&reply).unwrap()).unwrap();
     match rr.result {
@@ -746,7 +746,7 @@ fn test_recruit_runtime_error_is_visible() {
 fn test_recruit_parse_error_is_visible() {
     let mut vm = test_vm();
     let mut m = under_ceiling;
-    let reply = vm.handle_recruit(1, 0, "(+ 2", &mut m); // unterminated list
+    let reply = reply_of(vm.handle_recruit(1, 0, "(+ 2", "parent", &mut m)); // unterminated list
     let rr =
         crate::distgoal::read_recruit_result(&crate::sexp::parse(&reply).unwrap()).unwrap();
     match rr.result {
@@ -775,7 +775,7 @@ fn loopback_recruit(recruiter: &mut VM, worker: &mut VM, goal_id: u64, seq: usiz
     let s = parsed.get_key(":seq").and_then(|s| s.as_number()).unwrap() as usize;
     let i = parsed.get_key(":instr").and_then(|s| s.as_str()).unwrap().to_string();
     let mut m = under_ceiling;
-    let reply = worker.handle_recruit(gid, s, &i, &mut m);
+    let reply = reply_of(worker.handle_recruit(gid, s, &i, "recruiter", &mut m));
     recruiter.process_chatter_msg(&reply);
 }
 
@@ -845,6 +845,14 @@ fn parse_parts(expr: &str) -> Vec<crate::sexp::Sexp> {
     crate::distgoal::parallel_parts(&crate::sexp::parse(expr).unwrap()).unwrap()
 }
 
+/// Unwrap a synchronous recruit reply, panicking if the unit deferred.
+fn reply_of(o: crate::distgoal::RecruitOutcome) -> String {
+    match o {
+        crate::distgoal::RecruitOutcome::Reply(s) => s,
+        other => panic!("expected synchronous Reply, got {:?}", other),
+    }
+}
+
 /// Read a (parallel-result ...) into (overall_ok, ordered ResultViews).
 fn read_parallel(sexp: &crate::sexp::Sexp) -> (i64, Vec<crate::sexp::ResultView>) {
     let ok = sexp.get_key(":ok").and_then(|s| s.as_number()).unwrap();
@@ -895,7 +903,7 @@ fn test_parallel_forced_recruit_round_trip() {
     );
     for (seq, part) in parts.iter().enumerate() {
         let mut wm = under_ceiling;
-        let reply = worker.handle_recruit(goal_id, seq, &part.to_string(), &mut wm);
+        let reply = reply_of(worker.handle_recruit(goal_id, seq, &part.to_string(), "recruiter", &mut wm));
         recruiter.process_chatter_msg(&reply);
     }
     let (ok, views) = read_parallel(&recruiter.parallel_result(goal_id).unwrap());
@@ -921,7 +929,7 @@ fn test_parallel_mixed_local_and_recruited_preserves_order() {
     let goal_id = recruiter.run_parallel(&parts, &mut measure);
     // Only the middle part is outstanding; loopback just that one.
     let mut wm = under_ceiling;
-    let reply = worker.handle_recruit(goal_id, 1, &parts[1].to_string(), &mut wm);
+    let reply = reply_of(worker.handle_recruit(goal_id, 1, &parts[1].to_string(), "recruiter", &mut wm));
     recruiter.process_chatter_msg(&reply);
     let (ok, views) = read_parallel(&recruiter.parallel_result(goal_id).unwrap());
     assert_eq!(ok, 1);
@@ -994,7 +1002,7 @@ fn test_recursive_two_level_fanout() {
     // part it runs its OWN run_parallel and handles the sub-parts locally.
     for (seq, part) in parts.iter().enumerate() {
         let mut wm = under_ceiling;
-        let reply = worker.handle_recruit(goal_id, seq, &part.to_string(), &mut wm);
+        let reply = reply_of(worker.handle_recruit(goal_id, seq, &part.to_string(), "recruiter", &mut wm));
         recruiter.process_chatter_msg(&reply);
     }
     let result = recruiter.parallel_result(goal_id).unwrap();
@@ -1034,6 +1042,214 @@ fn test_recursive_fanout_halts_when_no_peer_has_headroom() {
     assert_eq!(ok, 0);
 }
 
+// --- Fan-in: report-once-when-complete result propagation up the tree ---
+
+// Helpers to read a recruit-result wrapper's nested envelope and routing.
+fn nested_of(msg: &str) -> crate::sexp::Sexp {
+    crate::sexp::parse(msg)
+        .unwrap()
+        .get_key(":result")
+        .cloned()
+        .unwrap()
+}
+fn leaf_values(parallel_result: &crate::sexp::Sexp) -> Vec<Vec<i64>> {
+    let leaves = parallel_result
+        .get_key(":results")
+        .and_then(|s| s.as_list())
+        .unwrap();
+    ok_values(
+        &leaves
+            .iter()
+            .map(|e| crate::sexp::read_result(e).unwrap())
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[test]
+fn test_deep_completion_propagates_up() {
+    // Three roles: root recruits a (parallel ...) part to middle; middle has
+    // headroom for only ONE of its sub-parts, recruits the other to grandchild.
+    // The root's result must come back COMPLETE only after the grandchild's
+    // result propagates up THROUGH middle. This is the fan-in that was broken.
+    let mut root = test_vm();
+    let mut middle = test_vm();
+    let mut grand = test_vm();
+
+    let parts = parse_parts("(parallel (parallel (+ 1 1) (+ 2 2)))");
+    let mut root_m = over_ceiling; // root: no headroom -> recruit the part
+    let root_g = root.run_parallel(&parts, &mut root_m);
+    assert_eq!(read_parallel(&root.parallel_result(root_g).unwrap()).0, 0); // pending
+
+    // Middle: headroom for sub-part 0 only -> runs it, recruits sub-part 1.
+    let mut mid_call = 0;
+    let mut mid_m = || {
+        mid_call += 1;
+        if mid_call == 1 {
+            under_ceiling()
+        } else {
+            over_ceiling()
+        }
+    };
+    let mid_child = match middle.handle_recruit(root_g, 0, &parts[0].to_string(), "root", &mut mid_m)
+    {
+        crate::distgoal::RecruitOutcome::Deferred { child_goal_id } => child_goal_id,
+        other => panic!("middle recruited overflow, should defer; got {:?}", other),
+    };
+    // Back-reference stored; middle has NOT reported up yet.
+    assert!(middle.report_targets.contains_key(&mid_child));
+
+    // Grandchild computes middle's overflow sub-part (seq 1 -> (+ 2 2)).
+    let mut g_m = under_ceiling;
+    let g_reply = reply_of(grand.handle_recruit(mid_child, 1, "(+ 2 2)", "middle", &mut g_m));
+
+    // Middle collects it -> middle now whole -> self-reports UP to root.
+    let (target, mid_report) = middle
+        .collect_recruit_result(&crate::sexp::parse(&g_reply).unwrap())
+        .expect("middle should self-report on completion");
+    assert_eq!(target, "root"); // the back-reference is used to target the report
+
+    // Root collects middle's COMPLETE report -> root is whole (it is the root).
+    assert!(
+        root.collect_recruit_result(&crate::sexp::parse(&mid_report).unwrap())
+            .is_none(),
+        "root surfaces locally, does not report further"
+    );
+    let result = root.parallel_result(root_g).unwrap();
+    assert_eq!(
+        result.get_key(":ok").and_then(|s| s.as_number()),
+        Some(1),
+        "root result must be COMPLETE (no pending holes)"
+    );
+    let nested = result.get_key(":results").and_then(|s| s.as_list()).unwrap();
+    assert_eq!(crate::sexp::msg_type(&nested[0]), Some("parallel-result"));
+    assert_eq!(leaf_values(&nested[0]), vec![vec![2], vec![4]]);
+}
+
+#[test]
+fn test_last_slot_fill_triggers_self_report() {
+    // Middle recruits BOTH sub-parts (no headroom). Filling the first slot must
+    // NOT self-report; filling the last slot MUST, targeting the back-reference.
+    let mut middle = test_vm();
+    let mut grand = test_vm();
+    let parts = parse_parts("(parallel (parallel (+ 1 1) (+ 2 2)))");
+    let mut mid_m = over_ceiling;
+    let mid_child =
+        match middle.handle_recruit(99, 5, &parts[0].to_string(), "the-recruiter", &mut mid_m) {
+            crate::distgoal::RecruitOutcome::Deferred { child_goal_id } => child_goal_id,
+            other => panic!("expected deferred, got {:?}", other),
+        };
+    let mut g_m = under_ceiling;
+    let r0 = reply_of(grand.handle_recruit(mid_child, 0, "(+ 1 1)", "middle", &mut g_m));
+    let r1 = reply_of(grand.handle_recruit(mid_child, 1, "(+ 2 2)", "middle", &mut g_m));
+
+    // First (non-last) slot: no self-report.
+    assert!(middle
+        .collect_recruit_result(&crate::sexp::parse(&r0).unwrap())
+        .is_none());
+    // Last slot: self-report, targeting the stored back-reference + routing.
+    let (target, msg) = middle
+        .collect_recruit_result(&crate::sexp::parse(&r1).unwrap())
+        .unwrap();
+    assert_eq!(target, "the-recruiter");
+    let report = crate::sexp::parse(&msg).unwrap();
+    assert_eq!(report.get_key(":id").and_then(|s| s.as_number()), Some(99));
+    assert_eq!(report.get_key(":seq").and_then(|s| s.as_number()), Some(5));
+}
+
+#[test]
+fn test_synchronous_completion_still_replies() {
+    // A recruited (parallel ...) that completes fully locally still replies
+    // synchronously — no back-reference, no async path (prior behavior intact).
+    let mut worker = test_vm();
+    let mut m = under_ceiling; // headroom for everything
+    let outcome = worker.handle_recruit(1, 0, "(parallel (+ 1 1) (+ 2 2))", "recruiter", &mut m);
+    match outcome {
+        crate::distgoal::RecruitOutcome::Reply(reply) => {
+            let nested = nested_of(&reply);
+            assert_eq!(crate::sexp::msg_type(&nested), Some("parallel-result"));
+            assert_eq!(nested.get_key(":ok").and_then(|s| s.as_number()), Some(1));
+        }
+        other => panic!("expected synchronous Reply, got {:?}", other),
+    }
+    assert!(
+        worker.report_targets.is_empty(),
+        "no back-reference for a synchronously-completed job"
+    );
+}
+
+#[test]
+fn test_deep_failure_propagates_up() {
+    // A fault in a grandchild part surfaces :ok 0 :kind runtime in the nested
+    // envelope and forces :ok 0 up through each parent's COMPLETE result.
+    let mut root = test_vm();
+    let mut middle = test_vm();
+    let mut grand = test_vm();
+    let parts = parse_parts("(parallel (parallel (+ 1 1) (drop)))");
+    let mut root_m = over_ceiling;
+    let root_g = root.run_parallel(&parts, &mut root_m);
+    let mut mid_call = 0;
+    let mut mid_m = || {
+        mid_call += 1;
+        if mid_call == 1 {
+            under_ceiling()
+        } else {
+            over_ceiling()
+        }
+    };
+    let mid_child = match middle.handle_recruit(root_g, 0, &parts[0].to_string(), "root", &mut mid_m)
+    {
+        crate::distgoal::RecruitOutcome::Deferred { child_goal_id } => child_goal_id,
+        other => panic!("expected deferred, got {:?}", other),
+    };
+    // Grandchild runs the faulting overflow part (drop -> underflow).
+    let mut g_m = under_ceiling;
+    let g_reply = reply_of(grand.handle_recruit(mid_child, 1, "(drop)", "middle", &mut g_m));
+    let (_, mid_report) = middle
+        .collect_recruit_result(&crate::sexp::parse(&g_reply).unwrap())
+        .unwrap();
+    root.collect_recruit_result(&crate::sexp::parse(&mid_report).unwrap());
+
+    let result = root.parallel_result(root_g).unwrap();
+    assert_eq!(result.get_key(":ok").and_then(|s| s.as_number()), Some(0));
+    let nested = result.get_key(":results").and_then(|s| s.as_list()).unwrap();
+    assert_eq!(nested[0].get_key(":ok").and_then(|s| s.as_number()), Some(0));
+    let leaves = nested[0].get_key(":results").and_then(|s| s.as_list()).unwrap();
+    match crate::sexp::read_result(&leaves[1]).unwrap() {
+        crate::sexp::ResultView::Err { kind, .. } => assert_eq!(kind, "runtime"),
+        other => panic!("expected runtime error leaf, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_ordering_preserved_across_out_of_order_fill() {
+    // Three recruited sub-parts; their results arrive OUT OF ORDER (2,0,1). The
+    // reported parallel-result must still list results in SLOT order.
+    let mut middle = test_vm();
+    let mut grand = test_vm();
+    let parts = parse_parts("(parallel (parallel (+ 1 1) (+ 2 2) (+ 3 3)))");
+    let mut mid_m = over_ceiling;
+    let mid_child = match middle.handle_recruit(7, 0, &parts[0].to_string(), "root", &mut mid_m) {
+        crate::distgoal::RecruitOutcome::Deferred { child_goal_id } => child_goal_id,
+        other => panic!("expected deferred, got {:?}", other),
+    };
+    let mut g_m = under_ceiling;
+    let r0 = reply_of(grand.handle_recruit(mid_child, 0, "(+ 1 1)", "m", &mut g_m));
+    let r1 = reply_of(grand.handle_recruit(mid_child, 1, "(+ 2 2)", "m", &mut g_m));
+    let r2 = reply_of(grand.handle_recruit(mid_child, 2, "(+ 3 3)", "m", &mut g_m));
+    // Fill out of order: 2, then 0, then 1 (the last fill completes the job).
+    assert!(middle
+        .collect_recruit_result(&crate::sexp::parse(&r2).unwrap())
+        .is_none());
+    assert!(middle
+        .collect_recruit_result(&crate::sexp::parse(&r0).unwrap())
+        .is_none());
+    let (_, msg) = middle
+        .collect_recruit_result(&crate::sexp::parse(&r1).unwrap())
+        .unwrap();
+    // Results ordered by slot despite out-of-order arrival.
+    assert_eq!(leaf_values(&nested_of(&msg)), vec![vec![2], vec![4], vec![6]]);
+}
+
 #[test]
 fn test_recursive_failure_propagates_through_two_levels() {
     // A fault in a deeply-nested sub-part surfaces as :ok 0 :kind runtime in the
@@ -1044,7 +1260,7 @@ fn test_recursive_failure_propagates_through_two_levels() {
     let mut l1 = over_ceiling;
     let goal_id = recruiter.run_parallel(&parts, &mut l1);
     let mut wm = under_ceiling;
-    let reply = worker.handle_recruit(goal_id, 0, &parts[0].to_string(), &mut wm);
+    let reply = reply_of(worker.handle_recruit(goal_id, 0, &parts[0].to_string(), "recruiter", &mut wm));
     recruiter.process_chatter_msg(&reply);
 
     let result = recruiter.parallel_result(goal_id).unwrap();
