@@ -676,11 +676,17 @@ impl MultiUnitNode {
                 evolved_units += 1;
             }
         }
+        // Read the GP engine's own best (evolution.best.fitness), not the
+        // mesh fitness ledger (fitness.score) — GP-EVOLVE never writes the
+        // latter, which made this report claim "best fitness 0" on live
+        // boxes while evolution was visibly progressing.
         let best_fitness = self
             .host
             .units
             .iter()
-            .map(|s| s.vm.fitness.score)
+            .filter_map(|s| s.vm.evolution.as_ref())
+            .filter_map(|e| e.best.as_ref())
+            .map(|b| b.fitness as i64)
             .max()
             .unwrap_or(0);
 
@@ -1060,6 +1066,33 @@ mod bridge_tests {
         assert!(
             a.host.units[0].vm.energy.total_earned >= 1,
             "metabolism ticked (passive regen)"
+        );
+    }
+
+    #[test]
+    fn tick_report_reads_gp_best_not_mesh_fitness_score() {
+        // Regression: the tick report read vm.fitness.score (the mesh
+        // fitness ledger, which GP-EVOLVE never writes) and reported
+        // "best fitness 0" on live boxes while evolution progressed.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(1);
+
+        // Seed a finished GP run with a known best. running=false and
+        // generation at max so the tick's GP-EVOLVE pass is a no-op and
+        // can't improve on the seeded value.
+        let mut evo = crate::evolve::EvolutionState::new(crate::evolve::fib10_challenge(), 50);
+        evo.generation = 50;
+        let mut best = crate::evolve::Candidate::new("0 1 10 0 DO OVER + SWAP LOOP DROP .");
+        best.fitness = 432.0;
+        evo.best = Some(best);
+        a.host.units[0].vm.evolution = Some(evo);
+        // The mesh ledger stays at 0 — the old code would report 0 here.
+        assert_eq!(a.host.units[0].vm.fitness.score, 0);
+
+        let report = a.tick(&under_ceiling_reading(), never_transport);
+        assert_eq!(
+            report.best_fitness, 432,
+            "report must surface evolution.best.fitness, not fitness.score"
         );
     }
 
