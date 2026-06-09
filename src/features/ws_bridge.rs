@@ -373,7 +373,28 @@ fn serve_http(stream: &mut TcpStream, request: &str) {
             "application/javascript; charset=utf-8",
             include_bytes!("../../web/unit.js"),
         ),
-        "/unit.wasm" => ("application/wasm", include_bytes!("../../web/unit.wasm")),
+        "/unit.wasm" => {
+            // COUPLING: web/unit.wasm is gitignored (a build artifact), so
+            // build.rs guarantees this path exists at compile time by writing
+            // a 0-byte stub when the real wasm wasn't built. Do not remove
+            // the file from the build without updating build.rs, and vice
+            // versa. An empty embed means this build has no bundled web UI.
+            const WASM: &[u8] = include_bytes!("../../web/unit.wasm");
+            if WASM.is_empty() {
+                let body = "web UI not bundled in this build: web/unit.wasm \
+                            was absent at compile time (a stub was embedded). \
+                            Run `just wasm` and rebuild to bundle it.";
+                let resp = format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                return;
+            }
+            ("application/wasm", WASM)
+        }
         _ => {
             let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
             let _ = stream.write_all(resp.as_bytes());
