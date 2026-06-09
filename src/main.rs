@@ -1351,7 +1351,8 @@ impl VM {
             // ceiling brake) runs again here. The reply path then splits:
             Ok(sexp) => match crate::distgoal::parallel_parts(&sexp) {
                 Some(parts) => {
-                    let child = self.run_parallel(&parts, measure);
+                    let budget_kb = crate::resources::measure_mem_budget_kb();
+                    let child = self.run_parallel(&parts, measure, budget_kb);
                     let complete = self
                         .parallel_jobs
                         .get(&child)
@@ -1650,19 +1651,46 @@ impl VM {
     /// combined. `measure` yields the current host reading: live callers pass
     /// `HostResources::measure`; tests pass a scripted closure. Returns the
     /// job's goal_id.
-    pub(crate) fn run_parallel<M>(&mut self, parts: &[crate::sexp::Sexp], measure: &mut M) -> u64
+    pub(crate) fn run_parallel<M>(
+        &mut self,
+        parts: &[crate::sexp::Sexp],
+        measure: &mut M,
+        budget_kb: u64,
+    ) -> u64
     where
         M: FnMut() -> crate::resources::HostResources,
     {
         let goal_id = self.recruit_ledger.next_id();
         let mut job = crate::distgoal::ParallelJob::new(goal_id, parts.len());
+        // Committed-work tally: memory (kB) THIS call has decided to run locally
+        // but that measure() may not yet reflect (RSS lag, swap absorption,
+        // loadavg averaging). Per-call scratch — it resets here and never
+        // persists across calls or ticks, so it cannot double-count against a
+        // later measure() that catches up.
+        let mut committed_kb: u64 = 0;
         for (seq, part) in parts.iter().enumerate() {
             let part_str = part.to_string();
-            if measure().has_headroom() {
-                // Headroom now: run this part locally; the next iteration's
-                // measure() reflects the added pressure (reactive, not predicted).
+            let obs = measure();
+            // Add the committed tally on the same (combined RAM+swap) memory
+            // axis as obs.utilization. budget_kb == 0 means the budget is
+            // unknown -> accounting disabled (observed-only, the old behavior).
+            // (obs.utilization is max(mem, load); adding the memory tally is
+            // exact when memory is binding and mildly conservative otherwise.)
+            let committed_fraction = if budget_kb > 0 {
+                committed_kb as f64 / budget_kb as f64
+            } else {
+                0.0
+            };
+            let has_headroom = obs.is_available()
+                && (obs.utilization + committed_fraction) < crate::resources::CEILING_UTILIZATION;
+            if has_headroom {
+                // Headroom (observed + committed): run locally, then ADD this
+                // part's estimated cost to the tally before deciding the next.
                 let envelope = crate::sexp::eval_sexp(self, &part_str);
                 job.set(seq, envelope);
+                committed_kb = committed_kb.saturating_add(
+                    crate::distgoal::part_cost_mb(part).saturating_mul(1024),
+                );
             } else if let Some(peer) = self.choose_recruit_peer() {
                 // No headroom AND a peer WITH headroom exists: recruit this part.
                 // The slot stays pending until its (recruit-result ...) lands.
@@ -1710,7 +1738,8 @@ impl VM {
         let saved_buf = self.input_buffer.clone();
         let saved_pos = self.input_pos;
         let mut measure = crate::resources::HostResources::measure;
-        let goal_id = self.run_parallel(&parts, &mut measure);
+        let budget_kb = crate::resources::measure_mem_budget_kb();
+        let goal_id = self.run_parallel(&parts, &mut measure, budget_kb);
         self.input_buffer = saved_buf;
         self.input_pos = saved_pos;
         if let Some(result) = self.parallel_result(goal_id) {

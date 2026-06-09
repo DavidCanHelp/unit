@@ -881,7 +881,7 @@ fn test_parallel_all_local_with_headroom() {
     let mut vm = test_vm();
     let parts = parse_parts("(parallel (+ 1 1) (+ 2 2) (+ 3 3))");
     let mut measure = under_ceiling;
-    let goal_id = vm.run_parallel(&parts, &mut measure);
+    let goal_id = vm.run_parallel(&parts, &mut measure, 0);
     let (ok, views) = read_parallel(&vm.parallel_result(goal_id).unwrap());
     assert_eq!(ok, 1);
     assert_eq!(ok_values(&views), vec![vec![2], vec![4], vec![6]]);
@@ -895,7 +895,7 @@ fn test_parallel_forced_recruit_round_trip() {
     let mut worker = test_vm();
     let parts = parse_parts("(parallel (+ 1 1) (+ 2 2) (+ 3 3))");
     let mut measure = over_ceiling;
-    let goal_id = recruiter.run_parallel(&parts, &mut measure);
+    let goal_id = recruiter.run_parallel(&parts, &mut measure, 0);
     // Before any reply, the job is incomplete -> overall :ok 0.
     assert_eq!(
         read_parallel(&recruiter.parallel_result(goal_id).unwrap()).0,
@@ -926,7 +926,7 @@ fn test_parallel_mixed_local_and_recruited_preserves_order() {
             under_ceiling()
         }
     };
-    let goal_id = recruiter.run_parallel(&parts, &mut measure);
+    let goal_id = recruiter.run_parallel(&parts, &mut measure, 0);
     // Only the middle part is outstanding; loopback just that one.
     let mut wm = under_ceiling;
     let reply = reply_of(worker.handle_recruit(goal_id, 1, &parts[1].to_string(), "recruiter", &mut wm));
@@ -943,7 +943,7 @@ fn test_parallel_failure_is_visible_in_collected_results() {
     // Middle part underflows.
     let parts = parse_parts("(parallel (+ 1 1) (drop) (+ 3 3))");
     let mut measure = under_ceiling;
-    let goal_id = vm.run_parallel(&parts, &mut measure);
+    let goal_id = vm.run_parallel(&parts, &mut measure, 0);
     let (ok, views) = read_parallel(&vm.parallel_result(goal_id).unwrap());
     assert_eq!(ok, 0, "overall ok must be 0 when a sub-part faults");
     match &views[1] {
@@ -964,7 +964,7 @@ fn test_parallel_single_element_degenerate() {
     let parts = parse_parts("(parallel (+ 2 3))");
     assert_eq!(parts.len(), 1);
     let mut measure = under_ceiling;
-    let goal_id = vm.run_parallel(&parts, &mut measure);
+    let goal_id = vm.run_parallel(&parts, &mut measure, 0);
     let (ok, views) = read_parallel(&vm.parallel_result(goal_id).unwrap());
     assert_eq!(ok, 1);
     assert_eq!(ok_values(&views), vec![vec![5]]);
@@ -1081,7 +1081,7 @@ fn test_parallel_of_alloc_mb_parts_runs() {
     vm.alloc_enabled = true; // gated off by default
     let parts = parse_parts("(parallel (alloc-mb 1) (alloc-mb 1) (alloc-mb 1))");
     let mut measure = under_ceiling; // force all-local so the parts actually run
-    let goal_id = vm.run_parallel(&parts, &mut measure);
+    let goal_id = vm.run_parallel(&parts, &mut measure, 0);
     let (ok, views) = read_parallel(&vm.parallel_result(goal_id).unwrap());
     assert_eq!(ok, 1);
     assert_eq!(ok_values(&views), vec![vec![1], vec![1], vec![1]]);
@@ -1089,6 +1089,82 @@ fn test_parallel_of_alloc_mb_parts_runs() {
     assert_eq!(vm.mem_ballast.len(), 3);
     vm.eval("RECLAIM-MB");
     assert!(vm.mem_ballast.is_empty());
+}
+
+// --- Committed-work accounting in run_parallel admission (per-call) ---
+
+// A measure() PINNED at 50% utilization over a 10 MiB budget: it never changes,
+// so ONLY the committed tally can shift a run-vs-recruit decision.
+fn pinned_half() -> crate::resources::HostResources {
+    crate::resources::HostResources::from_parts(10_240, 5_120, 0.0, 4) // util 0.5
+}
+const PIN_BUDGET_KB: u64 = 10_240; // 10 MiB; each (alloc-mb 1) = 1/10 of budget
+
+#[test]
+fn test_committed_tally_recruits_later_parts_under_pinned_measure() {
+    let mut vm = test_vm();
+    vm.alloc_enabled = true;
+    let mut measure = pinned_half;
+    // 0.50 observed + committed: parts 0,1,2 fit (0.50, 0.60, 0.70 < 0.80);
+    // part 3 would be 0.80 -> recruit; part 4 -> recruit. measure() never moves,
+    // so it is the committed tally — not a change in measure() — that recruits.
+    let parts = parse_parts("(parallel (alloc-mb 1) (alloc-mb 1) (alloc-mb 1) (alloc-mb 1) (alloc-mb 1))");
+    let goal_id = vm.run_parallel(&parts, &mut measure, PIN_BUDGET_KB);
+    assert_eq!(
+        vm.mem_ballast.len(),
+        3,
+        "committed tally must stop local runs at 3 (raw measure alone never would)"
+    );
+    let (ok, _) = read_parallel(&vm.parallel_result(goal_id).unwrap());
+    assert_eq!(ok, 0, "the 2 recruited parts stay pending -> overall not ok");
+    vm.eval("RECLAIM-MB");
+}
+
+#[test]
+fn test_committed_tally_resets_between_calls() {
+    let mut vm = test_vm();
+    vm.alloc_enabled = true;
+    let mut measure = pinned_half;
+    // First parallel fills the tally (3 local, 2 recruited).
+    let p1 = parse_parts("(parallel (alloc-mb 1) (alloc-mb 1) (alloc-mb 1) (alloc-mb 1) (alloc-mb 1))");
+    vm.run_parallel(&p1, &mut measure, PIN_BUDGET_KB);
+    vm.eval("RECLAIM-MB");
+    // Second parallel starts from a CLEAN tally: a single part runs locally,
+    // not penalized by the first call's committed work.
+    let p2 = parse_parts("(parallel (alloc-mb 1))");
+    let g2 = vm.run_parallel(&p2, &mut measure, PIN_BUDGET_KB);
+    let (ok, views) = read_parallel(&vm.parallel_result(g2).unwrap());
+    assert_eq!(ok, 1, "second call's single part runs locally (tally reset)");
+    assert_eq!(ok_values(&views), vec![vec![1]]);
+    vm.eval("RECLAIM-MB");
+}
+
+#[test]
+fn test_committed_single_part_runs_local_no_false_recruit() {
+    let mut vm = test_vm();
+    vm.alloc_enabled = true;
+    let mut measure = pinned_half;
+    // 0.50 + 0 committed < 0.80 -> the single part runs locally.
+    let parts = parse_parts("(parallel (alloc-mb 1))");
+    let g = vm.run_parallel(&parts, &mut measure, PIN_BUDGET_KB);
+    let (ok, _) = read_parallel(&vm.parallel_result(g).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(vm.mem_ballast.len(), 1);
+    vm.eval("RECLAIM-MB");
+}
+
+#[test]
+fn test_committed_unknown_cost_parts_contribute_zero() {
+    let mut vm = test_vm();
+    // Arithmetic parts have no cost model -> contribute 0, so even five of them
+    // all run locally under the pinned under-ceiling measure (no false recruit
+    // from a fabricated cost).
+    let mut measure = pinned_half;
+    let parts = parse_parts("(parallel (+ 1 1) (+ 2 2) (+ 3 3) (+ 4 4) (+ 5 5))");
+    let g = vm.run_parallel(&parts, &mut measure, PIN_BUDGET_KB);
+    let (ok, views) = read_parallel(&vm.parallel_result(g).unwrap());
+    assert_eq!(ok, 1, "unknown-cost parts contribute 0 -> all run locally");
+    assert_eq!(views.len(), 5);
 }
 
 // --- Recursive recruit fan-out (the decision recurses, ceiling-bounded) ---
@@ -1102,7 +1178,7 @@ fn test_recursive_two_level_fanout() {
     // Level 1: no headroom -> both parts recruited (no mesh here -> pending; we
     // loopback as the recruited worker).
     let mut l1 = over_ceiling;
-    let goal_id = recruiter.run_parallel(&parts, &mut l1);
+    let goal_id = recruiter.run_parallel(&parts, &mut l1, 0);
     // The recruited worker HAS headroom, so when it receives a (parallel ...)
     // part it runs its OWN run_parallel and handles the sub-parts locally.
     for (seq, part) in parts.iter().enumerate() {
@@ -1135,7 +1211,7 @@ fn test_recursive_fanout_halts_when_no_peer_has_headroom() {
     let mut vm = test_vm();
     let parts = parse_parts("(parallel (+ 1 1) (+ 2 2) (+ 3 3))");
     let mut measure = over_ceiling; // no headroom
-    let goal_id = vm.run_parallel(&parts, &mut measure);
+    let goal_id = vm.run_parallel(&parts, &mut measure, 0);
     // Terminated (we're here, not looping). No recruit emitted.
     assert_eq!(
         vm.recruit_ledger.len(),
@@ -1182,7 +1258,7 @@ fn test_deep_completion_propagates_up() {
 
     let parts = parse_parts("(parallel (parallel (+ 1 1) (+ 2 2)))");
     let mut root_m = over_ceiling; // root: no headroom -> recruit the part
-    let root_g = root.run_parallel(&parts, &mut root_m);
+    let root_g = root.run_parallel(&parts, &mut root_m, 0);
     assert_eq!(read_parallel(&root.parallel_result(root_g).unwrap()).0, 0); // pending
 
     // Middle: headroom for sub-part 0 only -> runs it, recruits sub-part 1.
@@ -1291,7 +1367,7 @@ fn test_deep_failure_propagates_up() {
     let mut grand = test_vm();
     let parts = parse_parts("(parallel (parallel (+ 1 1) (drop)))");
     let mut root_m = over_ceiling;
-    let root_g = root.run_parallel(&parts, &mut root_m);
+    let root_g = root.run_parallel(&parts, &mut root_m, 0);
     let mut mid_call = 0;
     let mut mid_m = || {
         mid_call += 1;
@@ -1485,7 +1561,7 @@ fn test_recursive_failure_propagates_through_two_levels() {
     let mut worker = test_vm();
     let parts = parse_parts("(parallel (parallel (+ 1 1) (drop)))");
     let mut l1 = over_ceiling;
-    let goal_id = recruiter.run_parallel(&parts, &mut l1);
+    let goal_id = recruiter.run_parallel(&parts, &mut l1, 0);
     let mut wm = under_ceiling;
     let reply = reply_of(worker.handle_recruit(goal_id, 0, &parts[0].to_string(), "recruiter", &mut wm));
     recruiter.process_chatter_msg(&reply);

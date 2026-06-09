@@ -589,6 +589,22 @@ pub fn parallel_parts(sexp: &crate::sexp::Sexp) -> Option<Vec<crate::sexp::Sexp>
     Some(items[1..].to_vec())
 }
 
+/// Estimated committed memory cost of a parallel sub-part, in MiB, for
+/// run_parallel's committed-work accounting. Known only for the `(alloc-mb N)`
+/// load generator (cost = N). Every other part — arithmetic, nested parallels,
+/// anything without a cost model — contributes 0: we do not invent a number, so
+/// such parts fall back to observed-measure-only admission as before.
+pub fn part_cost_mb(part: &crate::sexp::Sexp) -> u64 {
+    if let Some(items) = part.as_list() {
+        if items.len() == 2 {
+            if let (Some("alloc-mb"), Some(n)) = (items[0].as_atom(), items[1].as_number()) {
+                return n.max(0) as u64;
+            }
+        }
+    }
+    0
+}
+
 /// A parallel job: one ordered result slot per sub-part. A slot holds its
 /// sub-part's canonical result envelope once available (local parts fill
 /// immediately; recruited parts fill when their reply arrives).

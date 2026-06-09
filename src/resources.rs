@@ -315,6 +315,26 @@ fn from_proc_text(meminfo: &str, loadavg: &str, cpuinfo: &str, stat: &str) -> Ho
     }
 }
 
+/// The combined RAM + swap memory budget (MemTotal + SwapTotal) in kB, read
+/// from `/proc/meminfo`. Returns 0 when unavailable (no `/proc`, wasm, or a
+/// parse failure) — callers MUST treat 0 as "budget unknown" and disable
+/// committed-work accounting (fail-safe to observed-only admission). This is the
+/// denominator for run_parallel's per-call committed tally; it does NOT change
+/// `measure()` or any `HostResources` field.
+pub(crate) fn measure_mem_budget_kb() -> u64 {
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+    {
+        let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        let ram_total = parse_meminfo(&meminfo).map(|(t, _)| t).unwrap_or(0);
+        let (swap_total, _) = parse_swap(&meminfo);
+        ram_total + swap_total
+    }
+    #[cfg(not(all(not(target_arch = "wasm32"), target_os = "linux")))]
+    {
+        0
+    }
+}
+
 /// Parses `SwapTotal` and `SwapFree` (in kB) from `/proc/meminfo`. Either
 /// missing field defaults to 0, so a box without swap composes as RAM-only and
 /// the combined-budget formula reduces to the old RAM-only one.
