@@ -1024,6 +1024,22 @@ fn test_alloc_enable_word_then_allocates() {
 }
 
 #[test]
+fn test_alloc_mb_accumulates() {
+    // Each ALLOC-MB APPENDS a buffer (accumulate), so parts stack pressure —
+    // they don't replace a single buffer.
+    let mut vm = test_vm();
+    vm.alloc_enabled = true;
+    crate::sexp::eval_sexp(&mut vm, "(alloc-mb 1)");
+    crate::sexp::eval_sexp(&mut vm, "(alloc-mb 1)");
+    assert_eq!(vm.mem_ballast.len(), 2, "two calls must stack, not replace");
+    let total: usize = vm.mem_ballast.iter().map(|b| b.len()).sum();
+    assert_eq!(total, 2 * 1024 * 1024, "total retained ~= sum of calls");
+    // RECLAIM-MB frees ALL accumulated buffers.
+    vm.eval("RECLAIM-MB");
+    assert!(vm.mem_ballast.is_empty());
+}
+
+#[test]
 fn test_reclaim_works_regardless_of_gate() {
     // Freeing must never be blocked, even with the gate off.
     let mut vm = test_vm();

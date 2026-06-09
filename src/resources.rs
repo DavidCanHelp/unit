@@ -7,7 +7,8 @@
 //! this is just the sensor.
 //!
 //! Platform behavior:
-//! - Linux native: read `/proc/meminfo` (MemTotal, MemAvailable),
+//! - Linux native: read `/proc/meminfo` (MemTotal, MemAvailable, and SwapTotal/
+//!   SwapFree — RAM and swap form one combined memory budget),
 //!   `/proc/loadavg` (1-minute figure), and the logical CPU count from
 //!   `/proc/cpuinfo` (or `/proc/stat` as a fallback).
 //! - Other native (e.g. macOS): `/proc` isn't present, so we return a
@@ -178,12 +179,10 @@ impl HostResources {
         self.valid
     }
 
-    /// Builds a valid reading from already-parsed parts, deriving the
-    /// binding-constraint utilization / headroom pair.
-    ///
-    /// `mem_available_kb` is clamped to `mem_total_kb`. Utilization is the
-    /// larger of the memory-used fraction and the per-core load
-    /// (`load_one / n_cpus`); both it and headroom are clamped to `0.0..=1.0`.
+    /// Builds a valid RAM-only reading (no swap) — equivalent to
+    /// [`from_parts_with_swap`] with zero swap, so it composes exactly as it did
+    /// before swap was folded in. Kept for the many call sites and tests that
+    /// synthesize a RAM-only reading.
     ///
     /// `pub(crate)` so the spawn layer (and its tests) can synthesize a known
     /// reading without going through `/proc`.
@@ -193,9 +192,45 @@ impl HostResources {
         load_one: f64,
         n_cpus: u32,
     ) -> Self {
+        Self::from_parts_with_swap(mem_total_kb, mem_available_kb, 0, 0, load_one, n_cpus)
+    }
+
+    /// Builds a valid reading, deriving the binding-constraint utilization /
+    /// headroom pair over the COMBINED RAM + swap memory budget:
+    ///
+    /// ```text
+    /// mem_fraction = (ram_used + swap_used) / (ram_total + swap_total)
+    /// ```
+    ///
+    /// where `ram_used = MemTotal - MemAvailable` and
+    /// `swap_used = SwapTotal - SwapFree`. Swap exists so the system can pretend
+    /// it has more memory; unit takes that at face value and treats a page as a
+    /// page whether it lives in RAM or swap — a uniform rule (just a bigger
+    /// denominator), NOT a "detect swapping and recoil" special case, so there
+    /// is no discontinuity. The overall utilization is still the binding
+    /// constraint `max(mem_fraction, load_one / n_cpus)`; both it and headroom
+    /// are clamped to `0.0..=1.0`. `mem_available_kb` is clamped to
+    /// `mem_total_kb` and `swap_free_kb` to `swap_total_kb`.
+    ///
+    /// NOTE (future): this counts swap as capacity for SURVIVAL / correctness,
+    /// not performance — a swap-thrashing node is slow but not over-budget. A
+    /// performance-aware refinement is explicitly out of scope.
+    pub(crate) fn from_parts_with_swap(
+        mem_total_kb: u64,
+        mem_available_kb: u64,
+        swap_total_kb: u64,
+        swap_free_kb: u64,
+        load_one: f64,
+        n_cpus: u32,
+    ) -> Self {
         let available = mem_available_kb.min(mem_total_kb);
-        let mem_fraction = if mem_total_kb > 0 {
-            1.0 - (available as f64 / mem_total_kb as f64)
+        let ram_used = mem_total_kb - available;
+        let swap_free = swap_free_kb.min(swap_total_kb);
+        let swap_used = swap_total_kb - swap_free;
+        // RAM + swap is one combined memory budget; the 0.80 ceiling applies to it.
+        let budget_total = mem_total_kb + swap_total_kb;
+        let mem_fraction = if budget_total > 0 {
+            (ram_used + swap_used) as f64 / budget_total as f64
         } else {
             0.0
         };
@@ -269,12 +304,31 @@ pub fn headroom_pct_abundant(pct: u8) -> bool {
 /// fields, zero total memory, a malformed load figure, or no CPU count).
 fn from_proc_text(meminfo: &str, loadavg: &str, cpuinfo: &str, stat: &str) -> HostResources {
     let n_cpus = parse_cpu_count(cpuinfo).or_else(|| parse_cpu_count_from_stat(stat));
+    let (swap_total, swap_free) = parse_swap(meminfo);
     match (parse_meminfo(meminfo), parse_loadavg(loadavg), n_cpus) {
         (Some((total, available)), Some(load), Some(cpus)) => {
-            HostResources::from_parts(total, available, load, cpus)
+            HostResources::from_parts_with_swap(
+                total, available, swap_total, swap_free, load, cpus,
+            )
         }
         _ => HostResources::unavailable(),
     }
+}
+
+/// Parses `SwapTotal` and `SwapFree` (in kB) from `/proc/meminfo`. Either
+/// missing field defaults to 0, so a box without swap composes as RAM-only and
+/// the combined-budget formula reduces to the old RAM-only one.
+fn parse_swap(text: &str) -> (u64, u64) {
+    let mut total = 0;
+    let mut free = 0;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("SwapTotal:") {
+            total = parse_leading_kb(rest).unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("SwapFree:") {
+            free = parse_leading_kb(rest).unwrap_or(0);
+        }
+    }
+    (total, free)
 }
 
 /// Counts logical CPUs from `/proc/cpuinfo` — one `processor` line per core.
@@ -458,6 +512,58 @@ intr 12345
         let r = from_proc_text(SAMPLE_MEMINFO, SAMPLE_LOADAVG, "", SAMPLE_STAT);
         assert!(r.valid);
         assert_eq!(r.n_cpus, 4);
+    }
+
+    #[test]
+    fn test_swap_folds_into_combined_budget() {
+        // 456 MB RAM (all used) + 2 GB swap (fully free) -> ~2.5 GB budget. The
+        // combined fraction is well under the ceiling: full RAM alone is no
+        // longer over-budget once swap is counted as capacity.
+        let ram_total = 456 * 1024; // kB
+        let swap_total = 2048 * 1024;
+        let r = HostResources::from_parts_with_swap(ram_total, 0, swap_total, swap_total, 0.0, 1);
+        let expected = 456.0 / (456.0 + 2048.0); // ram_used / (ram+swap)
+        assert!(
+            (r.utilization - expected).abs() < 1e-6,
+            "util {} expected {}",
+            r.utilization,
+            expected
+        );
+        assert!(r.has_headroom(), "~18% over combined budget -> headroom");
+    }
+
+    #[test]
+    fn test_swap_usage_crosses_combined_ceiling() {
+        // Same box, but swap is now heavily used too -> combined fraction crosses
+        // 0.80 -> no headroom. The 0.80 ceiling applies to the combined budget.
+        let ram_total = 456 * 1024;
+        let swap_total = 2048 * 1024;
+        let swap_free = 200 * 1024; // 1848 MB swap used
+        let r = HostResources::from_parts_with_swap(ram_total, 0, swap_total, swap_free, 0.0, 1);
+        let expected = (456.0 + 1848.0) / (456.0 + 2048.0); // ~0.92
+        assert!((r.utilization - expected).abs() < 1e-6);
+        assert!(!r.has_headroom(), "combined budget over 0.80 -> refuse");
+    }
+
+    #[test]
+    fn test_from_proc_text_includes_swap() {
+        // meminfo WITH swap lines: RAM 50% used, swap fully free, so the combined
+        // budget (RAM+swap = 2,000,000 kB) puts the fraction at 0.25, not 0.5.
+        let meminfo = "MemTotal:        1000000 kB\nMemAvailable:     500000 kB\nSwapTotal:       1000000 kB\nSwapFree:        1000000 kB\n";
+        let r = from_proc_text(meminfo, SAMPLE_LOADAVG, SAMPLE_CPUINFO, SAMPLE_STAT);
+        assert!(r.valid);
+        assert!(
+            (r.utilization - 0.25).abs() < 1e-6,
+            "combined util {}",
+            r.utilization
+        );
+    }
+
+    #[test]
+    fn test_no_swap_lines_reduces_to_ram_only() {
+        // SAMPLE_MEMINFO has no Swap lines -> swap (0,0) -> identical to before.
+        let r = from_proc_text(SAMPLE_MEMINFO, SAMPLE_LOADAVG, SAMPLE_CPUINFO, SAMPLE_STAT);
+        assert!((r.utilization - 0.5).abs() < 1e-6, "unchanged when no swap");
     }
 
     #[test]
