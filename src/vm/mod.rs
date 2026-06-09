@@ -229,6 +229,8 @@ pub(crate) const P_SEXP_RESULT: usize = 423;
 pub(crate) const P_RECRUIT: usize = 424;
 pub(crate) const P_RECRUITS: usize = 425;
 pub(crate) const P_PARALLEL: usize = 426;
+pub(crate) const P_ALLOC_MB: usize = 427;
+pub(crate) const P_RECLAIM_MB: usize = 428;
 // JSON snapshot persistence
 pub(crate) const P_JSON_SNAPSHOT: usize = 430;
 pub(crate) const P_JSON_RESTORE: usize = 431;
@@ -409,6 +411,10 @@ pub struct VM {
     /// Back-references for deferred recruits: child job goal_id -> who to
     /// self-report to once that job completes (fan-in up the recruit tree).
     pub report_targets: std::collections::HashMap<u64, crate::distgoal::ReportTarget>,
+    /// Retained real-memory allocations from the ALLOC-MB load generator. Held
+    /// so the allocation stays resident (moves measured memory utilization);
+    /// freed by RECLAIM-MB. Empty in normal operation.
+    pub mem_ballast: Vec<Vec<u8>>,
     // --- Immune system ---
     pub challenge_registry: crate::challenges::ChallengeRegistry,
     pub problem_detector: crate::discovery::ProblemDetector,
@@ -495,6 +501,7 @@ impl VM {
             recruit_ledger: crate::distgoal::RecruitLedger::new(),
             parallel_jobs: std::collections::HashMap::new(),
             report_targets: std::collections::HashMap::new(),
+            mem_ballast: Vec::new(),
             challenge_registry: crate::challenges::ChallengeRegistry::new(&[0; 8]),
             problem_detector: crate::discovery::ProblemDetector::new(),
             energy: crate::energy::EnergyState::new(),
@@ -724,6 +731,9 @@ impl VM {
             ("RECRUIT\"", P_RECRUIT, true),
             ("RECRUITS", P_RECRUITS, false),
             ("PARALLEL\"", P_PARALLEL, true),
+            // Load generator (forces the resource ceiling for recruit-path tests)
+            ("ALLOC-MB", P_ALLOC_MB, false),
+            ("RECLAIM-MB", P_RECLAIM_MB, false),
             // JSON snapshot persistence
             ("JSON-SNAPSHOT", P_JSON_SNAPSHOT, false),
             ("JSON-RESTORE", P_JSON_RESTORE, false),
@@ -1311,6 +1321,8 @@ impl VM {
             P_RECRUIT => self.prim_recruit(),
             P_RECRUITS => self.prim_recruits(),
             P_PARALLEL => self.prim_parallel(),
+            P_ALLOC_MB => self.prim_alloc_mb(),
+            P_RECLAIM_MB => self.prim_reclaim_mb(),
             // JSON snapshot persistence
             P_JSON_SNAPSHOT => self.prim_json_snapshot(),
             P_JSON_RESTORE => self.prim_json_restore(),

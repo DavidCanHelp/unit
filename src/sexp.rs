@@ -265,6 +265,10 @@ fn translate_op(op: &str) -> String {
         "drop" => "DROP".to_string(),
         "swap" => "SWAP".to_string(),
         "over" => "OVER".to_string(),
+        // Load generator: (alloc-mb N) -> "N ALLOC-MB". The ONLY non-arithmetic
+        // form here — it exists to consume measurable memory (force the resource
+        // ceiling for recruit-path tests), not as general computation.
+        "alloc-mb" => "ALLOC-MB".to_string(),
         _ => op.to_uppercase(),
     }
 }
@@ -651,6 +655,12 @@ mod tests {
     fn test_to_forth_single_op() {
         let sexp = parse("(cr)").unwrap();
         assert_eq!(to_forth(&sexp), "CR");
+    }
+
+    #[test]
+    fn test_to_forth_alloc_mb() {
+        let sexp = parse("(alloc-mb 50)").unwrap();
+        assert_eq!(to_forth(&sexp), "50 ALLOC-MB");
     }
 
     #[test]

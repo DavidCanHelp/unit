@@ -1575,6 +1575,38 @@ impl VM {
         self.emit_str(&report);
     }
 
+    /// `N ALLOC-MB` — load generator. Allocate and RETAIN N MiB of real process
+    /// memory (every byte touched so the pages are resident), dropping
+    /// MemAvailable so the NEXT `HostResources::measure()` sees higher memory
+    /// utilization. This is the forcing function that drives a node over its
+    /// ceiling so `run_parallel` recruits overflow — memory is the instantaneous
+    /// axis (the 1-minute load average is too slow for the per-part re-measure).
+    /// Allocation is fallible (`try_reserve_exact`): an over-large request is
+    /// refused and pushes 0 rather than aborting. Pushes the MiB actually
+    /// allocated. Freed by RECLAIM-MB. NOT general computation — a load tool.
+    fn prim_alloc_mb(&mut self) {
+        let mb = self.pop().max(0) as usize;
+        let bytes = mb.saturating_mul(1024 * 1024);
+        let mut buf: Vec<u8> = Vec::new();
+        if bytes > 0 && buf.try_reserve_exact(bytes).is_ok() {
+            buf.resize(bytes, 1u8); // touch every byte -> resident
+            self.mem_ballast.push(buf);
+            self.stack.push(mb as i64);
+        } else {
+            // Refused (no memory) or zero -> fail-closed, push 0.
+            self.stack.push(0);
+        }
+    }
+
+    /// RECLAIM-MB — free all retained ALLOC-MB memory, returning it to the OS.
+    /// Pushes the number of chunks freed.
+    fn prim_reclaim_mb(&mut self) {
+        let freed = self.mem_ballast.len();
+        self.mem_ballast.clear();
+        self.mem_ballast.shrink_to_fit();
+        self.stack.push(freed as i64);
+    }
+
     /// Choose a peer to recruit to using the EXISTING placement logic
     /// (`transport::choose_destination`) over the gossiped peer headroom view —
     /// the same headroom-based selection placement and replication use. Returns

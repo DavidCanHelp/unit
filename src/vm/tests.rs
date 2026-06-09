@@ -986,6 +986,44 @@ fn test_parallel_word_fires() {
     );
 }
 
+// --- (alloc-mb N) load generator ---
+
+#[test]
+fn test_alloc_mb_through_eval_sexp() {
+    // (alloc-mb N) round-trips through the seam: it runs, retains memory, and
+    // returns the MiB allocated as its (trivial) result value.
+    let mut vm = test_vm();
+    let env = crate::sexp::eval_sexp(&mut vm, "(alloc-mb 2)");
+    assert_eq!(
+        crate::sexp::read_result(&env),
+        Some(crate::sexp::ResultView::Ok {
+            value: vec![2],
+            output: String::new()
+        })
+    );
+    assert!(!vm.mem_ballast.is_empty(), "memory should be retained");
+    // RECLAIM-MB releases it.
+    vm.eval("RECLAIM-MB");
+    assert!(vm.mem_ballast.is_empty(), "memory should be freed");
+}
+
+#[test]
+fn test_parallel_of_alloc_mb_parts_runs() {
+    // The point of the parts is to consume resources, not produce a value; they
+    // still run, return, and assemble in order. Small sizes keep the test cheap.
+    let mut vm = test_vm();
+    let parts = parse_parts("(parallel (alloc-mb 1) (alloc-mb 1) (alloc-mb 1))");
+    let mut measure = under_ceiling; // force all-local so the parts actually run
+    let goal_id = vm.run_parallel(&parts, &mut measure);
+    let (ok, views) = read_parallel(&vm.parallel_result(goal_id).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![1], vec![1], vec![1]]);
+    // Three 1 MiB chunks retained; reclaim so the test process doesn't keep them.
+    assert_eq!(vm.mem_ballast.len(), 3);
+    vm.eval("RECLAIM-MB");
+    assert!(vm.mem_ballast.is_empty());
+}
+
 // --- Recursive recruit fan-out (the decision recurses, ceiling-bounded) ---
 
 #[test]
