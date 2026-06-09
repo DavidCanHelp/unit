@@ -386,6 +386,33 @@ pub fn read_recruit_result(sexp: &crate::sexp::Sexp) -> Option<RecruitResult> {
     })
 }
 
+/// Job timeout for an alive-but-wedged recruit. Gossip-death (PEER_TIMEOUT,
+/// 15s) catches a crashed holder; this catches one that still heartbeats but
+/// never replies. Fixed, not scaled to the instruction: a healthy worker's
+/// flat eval is already wall-clock bounded on the worker side
+/// (`execution_timeout`, default 10s), so the recruiter needs no cost model.
+/// The one thing that legitimately stretches past this is a nested
+/// `(parallel ...)` whose reply defers until its own recruits finish — a
+/// deep-but-healthy subtree CAN exceed 60s of silence and be redundantly
+/// re-recruited. That is correct under first-write-wins result collection
+/// (see `ParallelJob::set` / `RecruitLedger::collect`), at the cost of
+/// duplicating the whole subtree; each recruiter in the tree supervises its
+/// own edge with this same constant, so recovery stays local to the wedged
+/// edge rather than restarting from the root.
+pub const RECRUIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Wall-clock for slot age. `None` on wasm32: `Instant::now()` traps there,
+/// and there is no mesh on wasm so supervision never runs — a slot that
+/// can't age simply never times out.
+#[cfg(not(target_arch = "wasm32"))]
+fn slot_now() -> Option<std::time::Instant> {
+    Some(std::time::Instant::now())
+}
+#[cfg(target_arch = "wasm32")]
+fn slot_now() -> Option<std::time::Instant> {
+    None
+}
+
 /// One recruit slot. Holds the sub-instruction (so the work can be re-recruited
 /// if the peer dies — mirrors confirm-before-release: don't discard the work
 /// until a result is confirmed), the peer currently holding it, and the
@@ -396,6 +423,14 @@ pub struct LedgerSlot {
     pub instr: String,
     pub peer: String,
     pub result: Option<RecruitResult>,
+    /// When this slot was last (re)assigned — the job-timeout clock. Set on
+    /// `open`, refreshed by `reassign` (so the timeout is per-attempt) and by
+    /// `touch` (fail-closed deadline reset when no candidate exists).
+    pub assigned_at: Option<std::time::Instant>,
+    /// How many times this slot has been re-recruited (gossip-death or job
+    /// timeout). Pure observability — surfaced by RECRUITS so re-recruit
+    /// cycling between wedged peers is visible on hardware; no cap in v1.
+    pub reassignments: u32,
 }
 
 /// Recruiter-side ledger binding outstanding recruit requests to their
@@ -428,17 +463,26 @@ impl RecruitLedger {
                 instr: instr.to_string(),
                 peer: peer.to_string(),
                 result: None,
+                assigned_at: slot_now(),
+                reassignments: 0,
             },
         );
     }
 
     /// Record a collected reply if it matches an outstanding request. Releases
     /// the retained instruction (the slot is settled — no re-recruit needed).
-    /// Returns true if it matched a known `(goal_id, seq)`; false otherwise (so
-    /// cross-node broadcasts that aren't ours are ignored).
+    /// FIRST-WRITE-WINS: a slot that already holds a result keeps it. After a
+    /// timeout re-recruit the same `(goal_id, seq)` can legitimately execute
+    /// twice; results are judged by identity, not sender — whichever reply
+    /// lands first settles the slot, and the duplicate is dropped here.
+    /// Returns true only when this reply settled the slot; false otherwise (so
+    /// cross-node broadcasts that aren't ours, and duplicates, are ignored).
     pub fn collect(&mut self, rr: RecruitResult) -> bool {
         let key = (rr.goal_id, rr.seq);
         if let Some(slot) = self.entries.get_mut(&key) {
+            if slot.result.is_some() {
+                return false; // already settled — duplicate reply dropped
+            }
             slot.result = Some(rr);
             slot.instr.clear();
             true
@@ -447,10 +491,24 @@ impl RecruitLedger {
         }
     }
 
-    /// Reassign an OPEN slot to a new peer (re-recruit). Keeps the instruction.
+    /// Reassign an OPEN slot to a new peer (re-recruit). Keeps the instruction,
+    /// restarts the job-timeout clock (the timeout is per-attempt, not
+    /// per-slot-lifetime), and counts the reassignment for observability.
     pub fn reassign(&mut self, goal_id: GoalId, seq: usize, new_peer: &str) {
         if let Some(slot) = self.entries.get_mut(&(goal_id, seq)) {
             slot.peer = new_peer.to_string();
+            slot.assigned_at = slot_now();
+            slot.reassignments += 1;
+        }
+    }
+
+    /// Restart an OPEN slot's job-timeout clock without reassigning it —
+    /// the fail-closed path when a slot expired but no other peer has
+    /// headroom: keep waiting on the current holder rather than fabricating
+    /// progress, and check again a full timeout from now.
+    pub fn touch(&mut self, goal_id: GoalId, seq: usize) {
+        if let Some(slot) = self.entries.get_mut(&(goal_id, seq)) {
+            slot.assigned_at = slot_now();
         }
     }
 
@@ -496,6 +554,30 @@ impl RecruitLedger {
             .collect()
     }
 
+    /// Open slots whose holder is STILL LIVE but has been silent past `age` —
+    /// the alive-but-wedged signal. Dead holders are excluded: they belong to
+    /// `open_slots_with_dead_holder` (the gossip-death pass runs first and
+    /// must not race this one on the same slot). Returns
+    /// `(goal_id, seq, instruction, wedged_peer)` — the holder is included so
+    /// the caller can exclude it from re-recruit candidates (unlike a dead
+    /// peer, a wedged one is still in the live view and could be re-chosen).
+    pub fn open_slots_past_deadline(
+        &self,
+        age: std::time::Duration,
+        live: &std::collections::HashSet<&str>,
+    ) -> Vec<(GoalId, usize, String, String)> {
+        self.entries
+            .iter()
+            .filter(|(_, s)| {
+                s.result.is_none()
+                    && !s.peer.is_empty()
+                    && live.contains(s.peer.as_str())
+                    && s.assigned_at.is_some_and(|t| t.elapsed() >= age)
+            })
+            .map(|((g, seq), s)| (*g, *seq, s.instr.clone(), s.peer.clone()))
+            .collect()
+    }
+
     /// Number of recruit requests opened (outstanding + collected). Lets a
     /// caller observe recruit emission — e.g. that a saturated mesh emits none.
     pub fn len(&self) -> usize {
@@ -518,10 +600,17 @@ impl RecruitLedger {
         for key in keys {
             let (g, s) = key;
             let slot = &self.entries[&key];
+            // Re-recruit count (gossip-death or job-timeout) — visible here so
+            // cycling between wedged peers shows up on hardware.
+            let re = if slot.reassignments > 0 {
+                format!(" (re-recruited {}x)", slot.reassignments)
+            } else {
+                String::new()
+            };
             match &slot.result {
                 None => out.push_str(&format!(
-                    "recruit #{} seq {} -> {}: pending\n",
-                    g, s, slot.peer
+                    "recruit #{} seq {} -> {}: pending{}\n",
+                    g, s, slot.peer, re
                 )),
                 Some(rr) => {
                     let body = match &rr.result {
@@ -533,8 +622,8 @@ impl RecruitLedger {
                         }
                     };
                     out.push_str(&format!(
-                        "recruit #{} seq {} from {}: {}\n",
-                        g, s, rr.from, body
+                        "recruit #{} seq {} from {}: {}{}\n",
+                        g, s, rr.from, body, re
                     ));
                 }
             }
@@ -623,11 +712,20 @@ impl ParallelJob {
     }
 
     /// Record a sub-part's result envelope at its slot index (no-op if out of
-    /// range).
-    pub fn set(&mut self, seq: usize, envelope: crate::sexp::Sexp) {
+    /// range). FIRST-WRITE-WINS: a filled slot keeps its envelope — after a
+    /// timeout re-recruit, both the wedged original and its replacement may
+    /// reply for the same seq; whichever lands first is the result, and the
+    /// duplicate is dropped here. Returns true only if this call filled the
+    /// slot, so the reply path can treat duplicates as silent no-ops instead
+    /// of re-running completion.
+    pub fn set(&mut self, seq: usize, envelope: crate::sexp::Sexp) -> bool {
         if let Some(slot) = self.slots.get_mut(seq) {
-            *slot = Some(envelope);
+            if slot.is_none() {
+                *slot = Some(envelope);
+                return true;
+            }
         }
+        false
     }
 
     /// True once every slot has a result.
@@ -682,6 +780,120 @@ impl ParallelJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- RecruitLedger job-timeout state ---
+
+    fn live<'a>(peers: &[&'a str]) -> std::collections::HashSet<&'a str> {
+        peers.iter().copied().collect()
+    }
+
+    fn ok_reply(goal_id: GoalId, seq: usize, from: &str, value: i64) -> RecruitResult {
+        let envelope = crate::sexp::msg_result(crate::sexp::EvalOutcome::Ok {
+            stack: &[value],
+            output: "",
+        });
+        let wrapped = sexp_recruit_result(goal_id, seq, from, &envelope);
+        read_recruit_result(&crate::sexp::parse(&wrapped).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn test_deadline_query_fires_only_on_live_stale_holders() {
+        let mut ledger = RecruitLedger::new();
+        ledger.open(1, 0, "(+ 1 1)", "W"); // live + (with age=0) stale -> fires
+        ledger.open(1, 1, "(+ 2 2)", "D"); // holder dead -> the death pass's job
+        ledger.open(1, 2, "(+ 3 3)", "S"); // will be settled -> never fires
+        assert!(ledger.collect(ok_reply(1, 2, "S", 6)));
+
+        let hits = ledger.open_slots_past_deadline(std::time::Duration::ZERO, &live(&["W", "S"]));
+        assert_eq!(hits.len(), 1, "only the live stale slot fires: {hits:?}");
+        let (gid, seq, instr, wedged) = &hits[0];
+        assert_eq!((*gid, *seq), (1, 0));
+        assert_eq!(instr, "(+ 1 1)");
+        assert_eq!(wedged, "W");
+
+        // A generous deadline fires on nothing — the slots are fresh.
+        assert!(ledger
+            .open_slots_past_deadline(RECRUIT_TIMEOUT, &live(&["W", "S"]))
+            .is_empty());
+    }
+
+    #[test]
+    fn test_reassign_restarts_deadline_and_counts() {
+        let mut ledger = RecruitLedger::new();
+        ledger.open(2, 0, "(* 6 7)", "W");
+        assert_eq!(ledger.entries[&(2, 0)].reassignments, 0);
+
+        ledger.reassign(2, 0, "Q");
+        // Counter is observability for re-recruit cycling (no cap in v1).
+        assert_eq!(ledger.entries[&(2, 0)].reassignments, 1);
+        assert_eq!(ledger.holder(2, 0), Some("Q"));
+        // The clock restarted: a fresh assignment is within any real deadline.
+        assert!(ledger
+            .open_slots_past_deadline(RECRUIT_TIMEOUT, &live(&["Q"]))
+            .is_empty());
+        // The instruction survives reassignment (it may be re-sent again).
+        assert_eq!(ledger.pending_instr(2, 0), Some("(* 6 7)"));
+    }
+
+    #[test]
+    fn test_touch_restarts_deadline_without_counting() {
+        let mut ledger = RecruitLedger::new();
+        ledger.open(3, 0, "(+ 1 2)", "W");
+        ledger.touch(3, 0);
+        assert_eq!(ledger.entries[&(3, 0)].reassignments, 0);
+        assert_eq!(ledger.holder(3, 0), Some("W"), "touch never reassigns");
+    }
+
+    #[test]
+    fn test_collect_is_first_write_wins() {
+        let mut ledger = RecruitLedger::new();
+        ledger.open(4, 0, "(+ 2 2)", "W");
+        // After a timeout re-recruit both W and its replacement may reply for
+        // the same (goal_id, seq). Whichever lands first settles the slot.
+        assert!(ledger.collect(ok_reply(4, 0, "W", 4)));
+        assert!(
+            !ledger.collect(ok_reply(4, 0, "Q", 999)),
+            "duplicate reply must be dropped, not collected"
+        );
+        let kept = ledger.get(4, 0).unwrap();
+        assert_eq!(kept.from, "W", "first reply wins regardless of sender");
+    }
+
+    #[test]
+    fn test_parallel_job_set_is_first_write_wins() {
+        let mut job = ParallelJob::new(5, 1);
+        let first = crate::sexp::msg_result(crate::sexp::EvalOutcome::Ok {
+            stack: &[4],
+            output: "",
+        });
+        let second = crate::sexp::msg_result(crate::sexp::EvalOutcome::Ok {
+            stack: &[999],
+            output: "",
+        });
+        job.set(0, first);
+        job.set(0, second);
+        let assembled = job.assemble();
+        let results = assembled.get_key(":results").and_then(|s| s.as_list()).unwrap();
+        let v = results[0]
+            .get_key(":value")
+            .and_then(|s| s.as_list())
+            .and_then(|l| l[0].as_number());
+        assert_eq!(v, Some(4), "the first envelope is kept");
+    }
+
+    #[test]
+    fn test_format_status_surfaces_reassignments() {
+        let mut ledger = RecruitLedger::new();
+        ledger.open(6, 0, "(+ 1 1)", "W");
+        assert!(!ledger.format_status().contains("re-recruited"));
+        ledger.reassign(6, 0, "Q");
+        ledger.reassign(6, 0, "R");
+        let status = ledger.format_status();
+        assert!(
+            status.contains("re-recruited 2x"),
+            "RECRUITS must show the counter: {status}"
+        );
+    }
 
     #[test]
     fn test_parse_pipe_expressions() {

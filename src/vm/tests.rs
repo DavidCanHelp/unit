@@ -1531,6 +1531,114 @@ fn test_recursive_supervision_re_recruits_whole_subtree() {
     assert_eq!(leaf_values(&nested[0]), vec![vec![2], vec![4]]);
 }
 
+// --- Job-timeout supervision (alive-but-wedged peers) ---
+
+#[test]
+fn test_timeout_re_recruits_away_from_wedged_live_peer() {
+    let mut parent = test_vm();
+    parent
+        .parallel_jobs
+        .insert(11, crate::distgoal::ParallelJob::new(11, 1));
+    parent.send_recruit("W", 11, 0, "(+ 2 2)");
+
+    // W is STILL LIVE (gossip-death won't fire) but silent past the deadline
+    // (zero timeout => every open slot is expired). Q has abundant headroom.
+    parent.supervise_recruit_timeouts(
+        &[
+            ("W".to_string(), 90, addr("127.0.0.1:9011")),
+            ("Q".to_string(), 90, addr("127.0.0.1:9012")),
+        ],
+        std::time::Duration::ZERO,
+    );
+
+    // Re-recruited to Q — the wedged holder is excluded from candidates even
+    // though it is live and has headroom. Identity and instruction survive.
+    assert_eq!(parent.recruit_ledger.holder(11, 0), Some("Q"));
+    assert_eq!(parent.recruit_ledger.pending_instr(11, 0), Some("(+ 2 2)"));
+    assert!(parent.recruit_ledger.is_pending(11, 0));
+}
+
+#[test]
+fn test_timeout_fail_closed_when_wedged_holder_is_only_peer() {
+    let mut parent = test_vm();
+    parent.send_recruit("W", 12, 0, "(+ 1 1)");
+
+    // The wedged holder is the only live peer: nowhere better to go. The
+    // slot keeps waiting on W (deadline reset, not reassigned).
+    parent.supervise_recruit_timeouts(
+        &[("W".to_string(), 90, addr("127.0.0.1:9013"))],
+        std::time::Duration::ZERO,
+    );
+
+    assert_eq!(parent.recruit_ledger.holder(12, 0), Some("W"));
+    assert!(parent.recruit_ledger.is_pending(12, 0));
+    assert!(
+        !parent.recruit_ledger.format_status().contains("re-recruited"),
+        "fail-closed touch must not count as a reassignment"
+    );
+}
+
+#[test]
+fn test_timeout_leaves_fresh_slots_alone() {
+    let mut parent = test_vm();
+    parent.send_recruit("W", 14, 0, "(+ 3 4)");
+    // Real production timeout: a just-opened slot is nowhere near expiry.
+    parent.supervise_recruit_timeouts(
+        &[
+            ("W".to_string(), 90, addr("127.0.0.1:9015")),
+            ("Q".to_string(), 90, addr("127.0.0.1:9016")),
+        ],
+        crate::distgoal::RECRUIT_TIMEOUT,
+    );
+    assert_eq!(parent.recruit_ledger.holder(14, 0), Some("W"), "unchanged");
+}
+
+#[test]
+fn test_slow_not_dead_first_reply_wins_duplicate_dropped() {
+    // The double-execution story end to end: W wedges, the slot re-recruits
+    // to Q, then W turns out to be slow-not-dead and replies FIRST. W's
+    // result settles the slot; Q's later duplicate is dropped silently.
+    let mut parent = test_vm();
+    parent
+        .parallel_jobs
+        .insert(13, crate::distgoal::ParallelJob::new(13, 1));
+    parent.send_recruit("W", 13, 0, "(+ 2 2)");
+    parent.supervise_recruit_timeouts(
+        &[
+            ("W".to_string(), 90, addr("127.0.0.1:9017")),
+            ("Q".to_string(), 90, addr("127.0.0.1:9018")),
+        ],
+        std::time::Duration::ZERO,
+    );
+    assert_eq!(parent.recruit_ledger.holder(13, 0), Some("Q"));
+
+    // W's late-but-first reply: the real evaluation.
+    let mut w = test_vm();
+    let mut m = under_ceiling;
+    let w_reply = reply_of(w.handle_recruit(13, 0, "(+ 2 2)", "parent", &mut m));
+    assert!(parent
+        .collect_recruit_result(&crate::sexp::parse(&w_reply).unwrap())
+        .is_none());
+    let (ok, views) = read_parallel(&parent.parallel_result(13).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![4]]);
+
+    // Q's duplicate arrives later carrying a DIFFERENT (fabricated) value so
+    // an overwrite would be visible. It must change nothing and not re-fire
+    // completion (collect returns None without re-assembling).
+    let fake = crate::sexp::msg_result(crate::sexp::EvalOutcome::Ok {
+        stack: &[999],
+        output: "",
+    });
+    let q_reply = crate::distgoal::sexp_recruit_result(13, 0, "Q", &fake);
+    assert!(parent
+        .collect_recruit_result(&crate::sexp::parse(&q_reply).unwrap())
+        .is_none());
+    let (ok, views) = read_parallel(&parent.parallel_result(13).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![4]], "first reply won; 999 dropped");
+}
+
 #[test]
 fn test_supervision_leaves_healthy_slots_alone() {
     let mut parent = test_vm();

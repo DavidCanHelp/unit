@@ -1295,6 +1295,10 @@ impl VM {
         };
         if !live_peers.is_empty() {
             self.supervise_recruits(&live_peers);
+            // Then the job-timeout pass: holders still live but silent past
+            // the deadline. Order matters — dead holders were just handled
+            // above, so this pass only ever sees wedged-but-alive ones.
+            self.supervise_recruit_timeouts(&live_peers, distgoal::RECRUIT_TIMEOUT);
         }
 
         // Check for timed-out sub-goals and fall back to local.
@@ -1422,9 +1426,14 @@ impl VM {
             self.recruit_ledger.collect(rr);
         }
         // Fill the parallel-job slot and check completion (borrow scoped).
+        // A duplicate reply for an already-filled slot (possible after a
+        // timeout re-recruit — first write won) is a silent no-op: don't
+        // re-assemble or re-announce a completion that already happened.
         let full = {
             let job = self.parallel_jobs.get_mut(&gid)?;
-            job.set(seq, env);
+            if !job.set(seq, env) {
+                return None;
+            }
             if job.is_complete() {
                 Some(job.assemble())
             } else {
@@ -1503,9 +1512,10 @@ impl VM {
     /// placement logic (`choose_destination`); the dead peer isn't in the view,
     /// so it can't be re-chosen. If no peer has headroom, the slot stays
     /// open/declined (fail-closed — no fabricated completion). This handles
-    /// crash/disappearance only; an alive-but-wedged peer needs a job-timeout,
-    /// deferred. Supervision nests for free: a re-recruited slot may itself hold
-    /// a `(parallel ...)` subtree, which the new peer re-runs normally.
+    /// crash/disappearance only; the alive-but-wedged case is the sibling pass
+    /// `supervise_recruit_timeouts`. Supervision nests for free: a re-recruited
+    /// slot may itself hold a `(parallel ...)` subtree, which the new peer
+    /// re-runs normally.
     pub(crate) fn supervise_recruits(&mut self, live_peers: &[(String, u8, std::net::SocketAddr)]) {
         let live: std::collections::HashSet<&str> =
             live_peers.iter().map(|(hex, _, _)| hex.as_str()).collect();
@@ -1527,6 +1537,55 @@ impl VM {
                 match crate::transport::choose_destination(&candidates, &mut self.rng) {
                     Some(c) => c.addr,
                     None => continue, // fail-closed: no capacity -> slot stays open
+                };
+            if let Some((hex, _, _)) = live_peers.iter().find(|(_, _, a)| *a == chosen_addr) {
+                let new_peer = hex.clone();
+                self.re_recruit(gid, seq, &new_peer, &instr);
+            }
+        }
+    }
+
+    /// SUPERVISION (job-timeout, alive-but-wedged). Re-recruit every OPEN slot
+    /// whose holder is STILL in the live view but has been silent past
+    /// `timeout` (production passes `distgoal::RECRUIT_TIMEOUT`; tests inject
+    /// their own). The wedged holder is excluded from candidates — unlike a
+    /// dead peer it is still live, so `choose_destination` could otherwise
+    /// re-pick it. If no other peer has headroom, the deadline is reset and
+    /// the slot keeps waiting on its current holder (fail-closed; the wedged
+    /// peer may yet finish, and its late reply still routes by identity).
+    /// Re-recruiting while the original holder lives means the same
+    /// `(goal_id, seq)` can execute twice; first-write-wins collection
+    /// (`ParallelJob::set` / `RecruitLedger::collect`) makes the duplicate
+    /// harmless. Run AFTER `supervise_recruits` in the same tick: dead-held
+    /// slots are either reassigned there (fresh deadline) or skipped here by
+    /// the live-containment filter.
+    pub(crate) fn supervise_recruit_timeouts(
+        &mut self,
+        live_peers: &[(String, u8, std::net::SocketAddr)],
+        timeout: std::time::Duration,
+    ) {
+        let live: std::collections::HashSet<&str> =
+            live_peers.iter().map(|(hex, _, _)| hex.as_str()).collect();
+        let expired = self.recruit_ledger.open_slots_past_deadline(timeout, &live);
+        for (gid, seq, instr, wedged) in expired {
+            // Same placement rule as gossip-death, minus the wedged holder.
+            let candidates: Vec<crate::transport::Candidate> = live_peers
+                .iter()
+                .filter(|(hex, _, _)| *hex != wedged)
+                .map(|(_, headroom, addr)| crate::transport::Candidate {
+                    headroom_pct: *headroom,
+                    addr: *addr,
+                })
+                .collect();
+            let chosen_addr =
+                match crate::transport::choose_destination(&candidates, &mut self.rng) {
+                    Some(c) => c.addr,
+                    None => {
+                        // Fail-closed: nowhere better to go. Keep waiting on
+                        // the current holder, a full timeout from now.
+                        self.recruit_ledger.touch(gid, seq);
+                        continue;
+                    }
                 };
             if let Some((hex, _, _)) = live_peers.iter().find(|(_, _, a)| *a == chosen_addr) {
                 let new_peer = hex.clone();
