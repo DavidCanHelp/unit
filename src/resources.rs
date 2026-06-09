@@ -54,6 +54,21 @@ pub const CEILING_UTILIZATION: f64 = 0.80;
 /// mislocation decisions still use the full ceiling via [`HostResources::has_headroom`].
 pub const ADMISSION_MARGIN: f64 = 0.05;
 
+/// Swap-used share of the combined RAM+swap budget above which the host is
+/// judged to be MEANINGFULLY leaning on swap (actively swapping, not just
+/// holding a few incidentally-paged-out inactive pages).
+///
+/// Above this, swap-I/O load is not allowed to bind utilization above the
+/// memory axis: the swapped pages are already counted in `mem_fraction` (swap is
+/// budget), so letting the I/O they cause ALSO bind via the (slow, ~60s-averaged)
+/// loadavg would double-penalize the box and keep a memory-bound-but-recovering
+/// peer invisible to placement for ~a minute. Below this, the load axis binds
+/// normally — a genuinely CPU-bound box still reads low headroom. See
+/// [`HostResources::from_parts_with_swap`]. Deliberately small; tunable. A
+/// precise swap-ACTIVITY signal would be `/proc/vmstat` pswpin/pswpout rates;
+/// this static swap-used share is a dependency-free proxy.
+pub const SWAP_LEAN_FLOOR: f64 = 0.05;
+
 // ---------------------------------------------------------------------------
 // HostResources
 // ---------------------------------------------------------------------------
@@ -240,8 +255,30 @@ impl HostResources {
         } else {
             load_one
         };
-        // The BINDING CONSTRAINT: whichever resource is tightest sets pressure.
-        let utilization = mem_fraction.max(load_normalized).clamp(0.0, 1.0);
+        // The BINDING CONSTRAINT: whichever resource is tightest sets pressure,
+        // with ONE refinement so swap-I/O load doesn't double-penalize a
+        // memory-bound peer. When the box is meaningfully leaning on swap
+        // (swap_used a real share of the budget, > SWAP_LEAN_FLOOR), the high
+        // load that swap I/O produces is NOT allowed to bind above the memory
+        // axis: those swapped pages are already counted in mem_fraction, and
+        // loadavg is a ~60s average that would otherwise hold headroom at ~0 for
+        // a minute after pressure clears. So in that regime MEMORY wins
+        // (`utilization = mem_fraction`), letting a recovering memory-bound peer
+        // advertise its real capacity. Otherwise (no/incidental swap) the load
+        // axis binds exactly as before (`max(mem, load)`) — a genuinely
+        // CPU-bound box still reads low headroom. Survival is unchanged: a truly
+        // full box has high mem_fraction and still reads no headroom either way.
+        let swap_share = if budget_total > 0 {
+            swap_used as f64 / budget_total as f64
+        } else {
+            0.0
+        };
+        let utilization = if swap_share > SWAP_LEAN_FLOOR {
+            mem_fraction
+        } else {
+            mem_fraction.max(load_normalized)
+        }
+        .clamp(0.0, 1.0);
         let headroom = (1.0 - utilization).clamp(0.0, 1.0);
         HostResources {
             valid: true,
@@ -584,6 +621,80 @@ intr 12345
         // SAMPLE_MEMINFO has no Swap lines -> swap (0,0) -> identical to before.
         let r = from_proc_text(SAMPLE_MEMINFO, SAMPLE_LOADAVG, SAMPLE_CPUINFO, SAMPLE_STAT);
         assert!((r.utilization - 0.5).abs() < 1e-6, "unchanged when no swap");
+    }
+
+    // --- Memory-leaning headroom: swap-I/O load must not double-penalize ---
+
+    #[test]
+    fn test_memory_full_still_no_headroom_survival() {
+        // Genuinely full (RAM + nearly all swap used) -> high mem_fraction -> no
+        // headroom, even though swap is in use. Survival/OOM safety preserved.
+        let r = HostResources::from_parts_with_swap(
+            456 * 1024,
+            0,
+            2048 * 1024,
+            100 * 1024,
+            8.0,
+            1,
+        );
+        // mem_fraction = (456 + 1948) / 2504 = 0.96.
+        assert!(r.utilization > CEILING_UTILIZATION);
+        assert!(!r.has_headroom());
+        assert!(!r.has_admission_headroom());
+    }
+
+    #[test]
+    fn test_swap_io_load_does_not_collapse_memory_bound_headroom() {
+        // THE FIX. Box leaning on swap (1024 MB of 2048 used -> ~41% of budget)
+        // with HEAVY load (4.0 on 1 core = swap I/O) but memory under the
+        // ceiling: utilization reflects the MEMORY axis, not the lagged load, so
+        // the peer advertises real capacity instead of a load-lagged ~0.
+        let r = HostResources::from_parts_with_swap(
+            456 * 1024,
+            0,
+            2048 * 1024,
+            1024 * 1024,
+            4.0,
+            1,
+        );
+        let mem_fraction = (456.0 + 1024.0) / 2504.0; // ~0.591
+        assert!(
+            (r.utilization - mem_fraction).abs() < 1e-6,
+            "util {} should be the memory axis {} (not load 4.0)",
+            r.utilization,
+            mem_fraction
+        );
+        assert!(
+            r.has_headroom(),
+            "memory under ceiling -> visible despite heavy swap-I/O load"
+        );
+        assert!(
+            r.advertised_headroom_pct() > 0,
+            "advertises real capacity, not a load-lagged 0"
+        );
+    }
+
+    #[test]
+    fn test_genuine_cpu_bound_still_low_headroom() {
+        // Genuine CPU load, LOW memory, NO meaningful swap -> load binds, low
+        // headroom. The load axis is intact for real compute.
+        let r = HostResources::from_parts_with_swap(1000, 900, 0, 0, 8.0, 8);
+        // mem_fraction = 0.1; load = 8/8 = 1.0; no swap -> max -> 1.0.
+        assert!((r.utilization - 1.0).abs() < 1e-6);
+        assert!(!r.has_headroom());
+        assert!(
+            r.advertised_headroom_pct() < 25,
+            "a genuinely CPU-bound box still advertises low headroom"
+        );
+    }
+
+    #[test]
+    fn test_no_swap_reduces_to_max_unchanged() {
+        // No swap -> exactly the old max(mem, load) for both binding regimes.
+        let load_bound = HostResources::from_parts(1000, 900, 6.0, 8); // mem 0.1, load 0.75
+        assert!((load_bound.utilization - 0.75).abs() < 1e-6);
+        let mem_bound = HostResources::from_parts(1000, 100, 0.1, 8); // mem 0.9
+        assert!((mem_bound.utilization - 0.9).abs() < 1e-6);
     }
 
     #[test]
