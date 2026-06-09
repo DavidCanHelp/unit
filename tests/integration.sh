@@ -339,24 +339,62 @@ cli_test() {
     fi
 }
 
-"$BINARY" --version 2>&1 | grep -qF 'unit v'
+# Capture output before grepping: piping the binary straight into `grep -q`
+# lets grep close the pipe on first match, and the still-writing binary then
+# panics on EPIPE (exit 101), aborting the whole suite under set -e/pipefail.
+CLI_OUT=$("$BINARY" --version 2>&1)
+echo "$CLI_OUT" | grep -qF 'unit v'
 cli_test "cli-version" $?
 
-"$BINARY" --help 2>&1 | grep -qF 'USAGE'
+CLI_OUT=$("$BINARY" --help 2>&1)
+echo "$CLI_OUT" | grep -qF 'USAGE'
 cli_test "cli-help" $?
 
-"$BINARY" --quiet --eval "2 3 + ." 2>/dev/null | grep -qF '5'
+CLI_OUT=$("$BINARY" --quiet --eval "2 3 + ." 2>/dev/null)
+echo "$CLI_OUT" | grep -qF '5'
 cli_test "cli-eval" $?
 
-"$BINARY" --quiet --eval ": SQ DUP * ; 7 SQ ." 2>/dev/null | grep -qF '49'
+CLI_OUT=$("$BINARY" --quiet --eval ": SQ DUP * ; 7 SQ ." 2>/dev/null)
+echo "$CLI_OUT" | grep -qF '49'
 cli_test "cli-eval-word" $?
 
-"$BINARY" --quiet --no-mesh --no-prelude --eval "BLARG" 2>/dev/null | grep -qF "error: unknown word"
+CLI_OUT=$("$BINARY" --quiet --no-mesh --no-prelude --eval "BLARG" 2>/dev/null)
+echo "$CLI_OUT" | grep -qF "error: unknown word"
 cli_test "cli-eval-error" $?
 
 QUIET_OUT=$(echo 'BYE' | "$BINARY" --quiet --no-mesh --no-prelude 2>/dev/null)
 echo "$QUIET_OUT" | grep -qvF 'seed online'
 cli_test "cli-quiet" $?
+
+# ---------------------------------------------------------------------------
+# 20. SPAWN ARGUMENT SAFETY (SPAWN-N / KILL-CHILD)
+# ---------------------------------------------------------------------------
+
+echo "--- 20. Spawn Argument Safety ---"
+
+# Bare calls must produce named errors instead of acting on garbage. A bare
+# KILL-CHILD once SIGTERM'd an arbitrary host process from a leftover value.
+run_test "spawn-n-bare"       "SPAWN-N"       "SPAWN-N: stack underflow"      contains
+run_test "kill-child-bare"    "KILL-CHILD"    "KILL-CHILD: stack underflow"   contains
+run_test "kill-child-foreign" "1 KILL-CHILD"  "not a child of this node"      contains
+
+# SPAWN-N happy path: batch-spawn real children. Two self-limiting brakes may
+# legitimately stop the batch — energy (each spawn costs SPAWN_COST) and the
+# 80% resource ceiling. Pass if the batch spawned at least one child, OR if
+# all 8 attempts were ceiling-refused (the argument was consumed and the loop
+# ran exactly n times on a host with no headroom). Bare-call validation and
+# the real SIGTERM path are covered deterministically in src/vm/tests.rs.
+SPAWN_OUT=$(echo "8 SPAWN-N
+BYE" | UNIT_PORT=0 "$BINARY" 2>&1)
+SPAWN_PIDS=$(echo "$SPAWN_OUT" | sed -n 's/.*spawned child pid=\([0-9][0-9]*\).*/\1/p')
+CEILING_REFUSALS=$(echo "$SPAWN_OUT" | grep -cF 'ceiling: host at/over' || true)
+if [ -n "$SPAWN_PIDS" ] || [ "$CEILING_REFUSALS" -eq 8 ]; then
+    cli_test "spawn-n-batch" 0
+else
+    cli_test "spawn-n-batch" 1
+fi
+# Clean up every child the batch produced.
+for p in $SPAWN_PIDS; do kill "$p" 2>/dev/null || true; done
 
 # ---------------------------------------------------------------------------
 # Summary

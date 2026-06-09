@@ -1912,3 +1912,88 @@ fn test_court_prelude_word_emits_signal() {
         "COURT should charge SAY_COST via the SAY! it calls"
     );
 }
+
+// -----------------------------------------------------------------------
+// SPAWN-N / KILL-CHILD argument safety
+//
+// A bare KILL-CHILD once popped a leftover stack value and SIGTERM'd an
+// arbitrary host process (pid 8). These tests pin the two guards: stack
+// depth is validated before popping, and KILL-CHILD only ever signals a
+// pid recorded in this node's children ledger.
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_spawn_n_bare_is_clean_underflow() {
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "SPAWN-N");
+    assert!(
+        out.contains("SPAWN-N: stack underflow"),
+        "expected named underflow error, got: {out}"
+    );
+    assert_eq!(vm.fault, Some(Fault::StackUnderflow));
+    assert!(vm.spawn_state.children.is_empty(), "must not spawn");
+}
+
+#[test]
+fn test_spawn_n_negative_is_range_error() {
+    // A negative cell cast to usize is ~2^64; before the bound check this
+    // looped effectively forever. Must return immediately with an error.
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "-1 SPAWN-N");
+    assert!(out.contains("SPAWN-N: n out of range"), "got: {out}");
+    assert!(vm.spawn_state.children.is_empty());
+}
+
+#[test]
+fn test_kill_child_bare_is_clean_error_no_signal() {
+    // Without the depth guard, pop substitutes 0 and the primitive calls
+    // kill(0, SIGTERM) — the entire process group, this test run included.
+    // Surviving the call is itself the no-signal assertion.
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "KILL-CHILD");
+    assert!(
+        out.contains("KILL-CHILD: stack underflow"),
+        "expected named underflow error, got: {out}"
+    );
+    assert_eq!(vm.fault, Some(Fault::StackUnderflow));
+    assert!(!out.contains("sent SIGTERM"), "must not signal: {out}");
+}
+
+#[test]
+fn test_kill_child_foreign_pid_refused_no_signal() {
+    // Use this very process as the "foreign" pid: if the ownership check
+    // were missing, the SIGTERM would kill the test harness.
+    let mut vm = test_vm();
+    let own_pid = std::process::id();
+    let out = eval(&mut vm, &format!("{} KILL-CHILD", own_pid));
+    assert!(
+        out.contains(&format!("pid {} is not a child of this node", own_pid)),
+        "expected ownership refusal, got: {out}"
+    );
+    assert!(!out.contains("sent SIGTERM"), "must not signal: {out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_kill_child_happy_path_signals_own_child() {
+    use std::os::unix::process::ExitStatusExt;
+    // Stand in for a spawned unit with a real child process we own, so the
+    // ownership check passes and the SIGTERM is observable.
+    let mut vm = test_vm();
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("spawn sleep");
+    let pid = child.id();
+    vm.spawn_state.children.push(crate::spawn::ChildInfo {
+        pid,
+        port: 0,
+        node_id: [0u8; 8],
+        spawned_at: std::time::Instant::now(),
+    });
+    let out = eval(&mut vm, &format!("{} KILL-CHILD", pid));
+    assert!(out.contains(&format!("sent SIGTERM to pid {}", pid)), "got: {out}");
+    assert!(vm.spawn_state.children.is_empty(), "child entry removed");
+    let status = child.wait().expect("reap child");
+    assert_eq!(status.signal(), Some(15), "child should die by SIGTERM");
+}

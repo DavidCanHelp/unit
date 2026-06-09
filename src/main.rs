@@ -3926,7 +3926,25 @@ impl VM {
     }
 
     fn prim_spawn_n(&mut self) {
-        let n = self.pop() as usize;
+        // Validate before popping: a bare SPAWN-N must fail clean rather than
+        // act on pop's substitute-0 or a leftover stack value.
+        if self.stack.is_empty() {
+            self.fault = Some(vm::Fault::StackUnderflow);
+            self.emit_str("SPAWN-N: stack underflow (expected n)\n");
+            return;
+        }
+        let n = self.pop();
+        // Bound n: a negative cell cast to usize is ~2^64, which would loop
+        // effectively forever on energy-refusal no-ops. max_children is the
+        // most a batch could ever land anyway.
+        if n < 1 || n > self.spawn_state.max_children as Cell {
+            self.emit_str(&format!(
+                "SPAWN-N: n out of range (expected 1..={}, got {})\n",
+                self.spawn_state.max_children, n
+            ));
+            return;
+        }
+        let n = n as usize;
         for i in 0..n {
             self.prim_spawn();
             // Override cooldown for batch spawns.
@@ -4013,7 +4031,26 @@ impl VM {
     }
 
     fn prim_kill_child(&mut self) {
+        // Validate before popping: a bare KILL-CHILD must fail clean. pop's
+        // substitute-0 here would mean kill(0, SIGTERM) — the entire process
+        // group — and a leftover stack value is a SIGTERM aimed at an
+        // arbitrary host process.
+        if self.stack.is_empty() {
+            self.fault = Some(vm::Fault::StackUnderflow);
+            self.emit_str("KILL-CHILD: stack underflow (expected child pid)\n");
+            return;
+        }
         let pid = self.pop() as u32;
+        // Never signal a pid this node didn't spawn. This is the real safety
+        // boundary: depth validation can't tell a leftover value from an
+        // intended argument, but the children ledger can.
+        if !self.spawn_state.children.iter().any(|c| c.pid == pid) {
+            self.emit_str(&format!(
+                "KILL-CHILD: pid {} is not a child of this node (no signal sent)\n",
+                pid
+            ));
+            return;
+        }
         #[cfg(unix)]
         {
             unsafe {
