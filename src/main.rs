@@ -1586,6 +1586,13 @@ impl VM {
     /// allocated. Freed by RECLAIM-MB. NOT general computation — a load tool.
     fn prim_alloc_mb(&mut self) {
         let mb = self.pop().max(0) as usize;
+        // Gated like SHELL": off by default, so evolved GP code can't reach the
+        // load generator. Refuse cleanly — no allocation, push 0.
+        if !self.alloc_enabled {
+            self.emit_str("alloc: disabled (use ALLOC-ENABLE from REPL)\n");
+            self.stack.push(0);
+            return;
+        }
         let bytes = mb.saturating_mul(1024 * 1024);
         let mut buf: Vec<u8> = Vec::new();
         if bytes > 0 && buf.try_reserve_exact(bytes).is_ok() {

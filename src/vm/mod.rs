@@ -231,6 +231,7 @@ pub(crate) const P_RECRUITS: usize = 425;
 pub(crate) const P_PARALLEL: usize = 426;
 pub(crate) const P_ALLOC_MB: usize = 427;
 pub(crate) const P_RECLAIM_MB: usize = 428;
+pub(crate) const P_ALLOC_ENABLE: usize = 429;
 // JSON snapshot persistence
 pub(crate) const P_JSON_SNAPSHOT: usize = 430;
 pub(crate) const P_JSON_RESTORE: usize = 431;
@@ -366,6 +367,10 @@ pub struct VM {
     // --- Sandbox / Security ---
     pub sandbox_active: bool,
     pub shell_enabled: bool,
+    /// Gate for the ALLOC-MB memory-pressure load generator. Off by default
+    /// (mirrors `shell_enabled`): a side-effecting primitive that must not be
+    /// reachable by evolved GP code. Toggled by ALLOC-ENABLE.
+    pub alloc_enabled: bool,
     pub trusted_peers: HashSet<[u8; 8]>,
     pub io_log: VecDeque<String>,
     // --- Mutation ---
@@ -475,6 +480,7 @@ impl VM {
             code_strings: Vec::new(),
             sandbox_active: false,
             shell_enabled: false,
+            alloc_enabled: false,
             trusted_peers: HashSet::new(),
             io_log: VecDeque::new(),
             mutation_history: Vec::new(),
@@ -734,6 +740,7 @@ impl VM {
             // Load generator (forces the resource ceiling for recruit-path tests)
             ("ALLOC-MB", P_ALLOC_MB, false),
             ("RECLAIM-MB", P_RECLAIM_MB, false),
+            ("ALLOC-ENABLE", P_ALLOC_ENABLE, false),
             // JSON snapshot persistence
             ("JSON-SNAPSHOT", P_JSON_SNAPSHOT, false),
             ("JSON-RESTORE", P_JSON_RESTORE, false),
@@ -1323,6 +1330,17 @@ impl VM {
             P_PARALLEL => self.prim_parallel(),
             P_ALLOC_MB => self.prim_alloc_mb(),
             P_RECLAIM_MB => self.prim_reclaim_mb(),
+            P_ALLOC_ENABLE => {
+                self.alloc_enabled = !self.alloc_enabled;
+                self.emit_str(&format!(
+                    "alloc: {}\n",
+                    if self.alloc_enabled {
+                        "ENABLED"
+                    } else {
+                        "DISABLED"
+                    }
+                ));
+            }
             // JSON snapshot persistence
             P_JSON_SNAPSHOT => self.prim_json_snapshot(),
             P_JSON_RESTORE => self.prim_json_restore(),

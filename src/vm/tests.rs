@@ -989,10 +989,60 @@ fn test_parallel_word_fires() {
 // --- (alloc-mb N) load generator ---
 
 #[test]
+fn test_alloc_mb_refuses_when_disabled() {
+    // Default gate is off: ALLOC-MB must NOT allocate, and pushes 0.
+    let mut vm = test_vm();
+    assert!(!vm.alloc_enabled, "gate must default off");
+    let env = crate::sexp::eval_sexp(&mut vm, "(alloc-mb 4)");
+    match crate::sexp::read_result(&env).unwrap() {
+        crate::sexp::ResultView::Ok { value, output } => {
+            assert_eq!(value, vec![0], "refused -> push 0");
+            assert!(output.contains("disabled"), "should report disabled: {}", output);
+        }
+        other => panic!("expected ok envelope, got {:?}", other),
+    }
+    assert!(vm.mem_ballast.is_empty(), "no allocation when disabled");
+}
+
+#[test]
+fn test_alloc_enable_word_then_allocates() {
+    let mut vm = test_vm();
+    // The enable word toggles the gate (mirrors SHELL-ENABLE).
+    let out = vm.eval("ALLOC-ENABLE");
+    assert!(out.contains("ENABLED"), "enable status: {}", out);
+    assert!(vm.alloc_enabled);
+    let env = crate::sexp::eval_sexp(&mut vm, "(alloc-mb 2)");
+    assert_eq!(
+        crate::sexp::read_result(&env),
+        Some(crate::sexp::ResultView::Ok {
+            value: vec![2],
+            output: String::new()
+        })
+    );
+    assert_eq!(vm.mem_ballast.len(), 1);
+    vm.eval("RECLAIM-MB");
+}
+
+#[test]
+fn test_reclaim_works_regardless_of_gate() {
+    // Freeing must never be blocked, even with the gate off.
+    let mut vm = test_vm();
+    vm.alloc_enabled = true;
+    crate::sexp::eval_sexp(&mut vm, "(alloc-mb 1)");
+    assert_eq!(vm.mem_ballast.len(), 1);
+    // Disable the gate, then RECLAIM-MB must still free the retained memory.
+    vm.alloc_enabled = false;
+    let out = vm.eval("RECLAIM-MB ."); // prints the freed-chunk count
+    assert_eq!(out.trim(), "1", "freed 1 chunk: {}", out);
+    assert!(vm.mem_ballast.is_empty(), "memory recovered despite gate off");
+}
+
+#[test]
 fn test_alloc_mb_through_eval_sexp() {
     // (alloc-mb N) round-trips through the seam: it runs, retains memory, and
     // returns the MiB allocated as its (trivial) result value.
     let mut vm = test_vm();
+    vm.alloc_enabled = true; // gated off by default
     let env = crate::sexp::eval_sexp(&mut vm, "(alloc-mb 2)");
     assert_eq!(
         crate::sexp::read_result(&env),
@@ -1012,6 +1062,7 @@ fn test_parallel_of_alloc_mb_parts_runs() {
     // The point of the parts is to consume resources, not produce a value; they
     // still run, return, and assemble in order. Small sizes keep the test cheap.
     let mut vm = test_vm();
+    vm.alloc_enabled = true; // gated off by default
     let parts = parse_parts("(parallel (alloc-mb 1) (alloc-mb 1) (alloc-mb 1))");
     let mut measure = under_ceiling; // force all-local so the parts actually run
     let goal_id = vm.run_parallel(&parts, &mut measure);
