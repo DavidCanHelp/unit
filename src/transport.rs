@@ -558,15 +558,18 @@ pub fn start_transport_listener(
             // burst's units aren't yet reflected in this fresh measure(). The
             // margin's slack covers that gap.
             //
-            // TODO(v0.31+): tighten further by counting just-accepted-not-yet-
-            // instantiated inbound and treating them as additional load when
-            // deciding admission — e.g. share an AtomicUsize "pending admits"
+            // Committed-work accounting is half-done by design. The OUTBOUND
+            // side landed in v0.32 (run_parallel's per-call recruit tally) and
+            // was hardware-validated: under burst on swap-backed boxes the
+            // tally correctly declined overflow work. Still deferred is the
+            // INBOUND side: counting work this node has admitted but not yet
+            // instantiated — e.g. an AtomicUsize "pending admits" shared
             // between this listener and the main loop (incremented here,
-            // decremented after each landing), and add an estimated per-unit
-            // util to the reading before the check. Deferred: it needs a
+            // decremented after each landing), with an estimated per-unit
+            // util added to the reading before the check. It needs the
             // per-unit-footprint estimate (total_mem / per-unit size) that is
-            // easy to get wrong, and the margin alone is the meaningful safety
-            // win. Kept simple and zero-dep here.
+            // easy to get wrong; until then the margin's slack carries the
+            // accept-to-instantiate gap alone. Kept simple and zero-dep here.
             let res = crate::resources::HostResources::measure();
             if let Ok(result) = handle_transport_frame(&frame, &res) {
                 // Confirm first (the origin is waiting on it before releasing)...

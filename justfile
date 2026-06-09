@@ -6,13 +6,28 @@ default:
 build:
     cargo build --release
 
-# Build WASM target
+# Build WASM target and stage it for the web demo (web/unit.wasm is
+# untracked; CI builds its own copy for the Pages deploy)
 wasm:
     cargo build --target wasm32-unknown-unknown --release
+    @mkdir -p web
+    @cp target/wasm32-unknown-unknown/release/unit.wasm web/unit.wasm
+    @echo "WASM binary: web/unit.wasm"
 
 # Run all tests
 test:
     cargo test
+
+# Quick end-to-end smoke: pipe a few words through the real release binary
+# (arithmetic, goals, persistence) — cheaper than tests/integration.sh
+smoke: build
+    @echo "=== basic test ==="
+    echo '2 3 + . BYE' | ./target/release/unit
+    @echo "=== goal test ==="
+    echo '5 GOAL{ 6 7 * } DROP GOALS BYE' | UNIT_PORT=0 ./target/release/unit
+    @echo "=== persistence test ==="
+    echo 'SAVE BYE' | UNIT_PORT=0 ./target/release/unit
+    @echo "=== smoke passed ==="
 
 # Run clippy (must be warning-free)
 lint:

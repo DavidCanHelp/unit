@@ -58,8 +58,9 @@ pub mod niche;
 /// Inter-unit signaling — direct (peer inbox) and environmental layers.
 pub mod signaling;
 
-/// Host resource reader — memory, load, headroom. Foundation for
-/// resource-aware migration; not yet wired into the host.
+/// Host resource reader — memory, load, headroom. Drives the spawn
+/// ceiling, transport admission (measured at accept time), and placement
+/// (headroom-ranked destination choice).
 #[allow(dead_code)]
 pub mod resources;
 
@@ -70,8 +71,9 @@ pub mod persist;
 pub mod spawn;
 
 /// Unit self-transport — relocate the complete self to another coordinate
-/// with confirm-before-release semantics. Mechanism only; placement and the
-/// Forth word come later.
+/// with confirm-before-release semantics. Placement (sufficient-first,
+/// headroom-ranked) and resource-gated admission live here too; the host
+/// fires it via the mislocation rule each tick.
 #[allow(dead_code)]
 pub mod transport;
 

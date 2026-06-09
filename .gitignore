@@ -1,3 +1,5 @@
 /target
 polyglot/go/unit-go
+web/unit.wasm
 .claude/
+.DS_Store
