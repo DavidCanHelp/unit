@@ -14,11 +14,22 @@ The purpose is extrinsic: a unit is a substrate for doing work given from outsid
 
 ## Self-replication boundary (safety + honesty)
 
-- **Within a host:** a unit self-replicates for real — local process fork via the already-present binary (`std::env::current_exe()` + `std::process::Command`, zero-dep). Fully autonomous, fully safe because the binary is already local. Recursive (copies can replicate) and governed by the resource ceiling so it self-limits.
+- **Within a host:** a unit self-replicates for real — local process fork via the already-present binary (`std::env::current_exe()` + `std::process::Command`, zero-dep). Fully autonomous, fully safe because the binary is already local. Recursive (copies can replicate) and self-limiting under two independent brakes — the resource ceiling and the energy economy (see below).
 - **Across hosts:** adding a host is a *human* act — copy the `unit` binary over and run it; it then does everything a `cargo install unit` unit would. The mesh NEVER ships binaries. A unit cannot acquire new ground on its own.
 - **State across the mesh:** unit state (pattern) transports freely between running units — that's data, governed by existing trust/admission logic.
 
 This boundary is deliberate: the dangerous capability was never "fork a process," it was "autonomously place my binary on a machine I chose." That one combination is made structurally impossible. Nothing scientifically interesting is lost; the worm hazard is removed by construction. (Consequence: no on-the-wire binary-hash-verification or code-trust tiers are needed, because code never crosses the wire.)
+
+## Two independent replication brakes (hardware-confirmed 2026-06-08)
+
+Replication self-limits under two brakes that measure different things and fail independently:
+
+- **The resource ceiling** is *extrinsic and shared*: a fresh host measurement (memory + load) taken at spawn/admission time, refusing at/over 80% and failing closed when the host can't be measured. It protects the host from all units collectively, no matter how the pressure arose.
+- **The energy economy** is *intrinsic and per-unit*: every spawn costs `SPAWN_COST` from the parent's ledger, the child starts with at most a third of what remains, and a unit that cannot afford the cost is refused with "insufficient energy to spawn." It bounds any single lineage's growth to its energy income, even on a host with abundant headroom.
+
+An accidental `8 SPAWN-N` during the 2026-06-08 hardware session confirmed the second brake live: parent energy depleted per spawn (267 → 201 → 134 → 1 → −65 observed across the batch) and the batch halted at "insufficient energy to spawn" — 8 requested, 6 real children produced. The ceiling never had to fire.
+
+How they interact: the energy check runs first (a unit that can't pay doesn't get as far as measuring the host), the ceiling second; either refuses alone. They also cover each other's blind spots in time — the ceiling reads a measurement that can lag a rapid burst (the admission margin exists to absorb that gap), while energy is debited synchronously on every spawn, so a tight replication loop is stopped by its own ledger before the host measurement would even move. Conversely, a unit with a full ledger on a saturated host is still refused by the ceiling. Both are refusal walls, not targets; both fail closed.
 
 ## The layering
 
