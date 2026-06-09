@@ -382,6 +382,14 @@ pub(crate) struct MeshState {
     /// unit. Set from a `HostResources` reading; 0 means "no room" (also the
     /// fail-closed default before the first measurement).
     headroom: u8,
+    /// While true (the default), the heartbeat thread refreshes `headroom`
+    /// from a fresh `HostResources` measurement on every beat. An explicit
+    /// `set_headroom` call takes authority and turns this off (the
+    /// `--multi-unit` host advertises its own reading per tick; tests script
+    /// values). Without the auto refresh, a plain single-unit `unit` process
+    /// never set headroom at all and gossiped the fail-closed 0 forever — so
+    /// no peer ever saw room to recruit, place, or replicate toward it.
+    auto_headroom: bool,
     /// Log of recent mesh events (ring buffer, for MESH-STATUS).
     event_log: VecDeque<String>,
     /// Goal and task registry, shared across the mesh via gossip.
@@ -622,6 +630,7 @@ impl MeshNode {
             load: 0,
             capacity: DEFAULT_CAPACITY,
             headroom: 0,
+            auto_headroom: true,
             event_log: VecDeque::new(),
             goals: GoalRegistry::new(&id),
             fitness: 0,
@@ -650,6 +659,11 @@ impl MeshNode {
         {
             let mut st = state.lock().unwrap();
             for addr in &seed_peers {
+                // A seed list that includes this node's own address (common in
+                // copy-pasted fleet configs) must not become a self-peer.
+                if is_self_addr(addr, local_port) {
+                    continue;
+                }
                 // We don't know their ID yet; use a placeholder that will be
                 // replaced when their first heartbeat arrives. We key by addr
                 // temporarily by generating a deterministic pseudo-ID from addr.
@@ -759,8 +773,13 @@ impl MeshNode {
     /// Set this node's advertised resource headroom (`0..=100`), gossiped in
     /// subsequent heartbeats so peers can judge whether we have room for a
     /// transported unit. Callers derive it from a `HostResources` reading.
+    /// An explicit set takes authority: it disables the heartbeat thread's
+    /// per-beat auto measurement (see `MeshState::auto_headroom`), so the
+    /// caller is then responsible for keeping the value fresh.
     pub fn set_headroom(&self, headroom: u8) {
-        self.state.lock().unwrap().headroom = headroom;
+        let mut st = self.state.lock().unwrap();
+        st.headroom = headroom;
+        st.auto_headroom = false;
     }
 
     /// Send one heartbeat synchronously (out-of-band of the network thread's
@@ -840,14 +859,26 @@ impl MeshNode {
         let mut out = String::from("--- mesh status ---\n");
         out.push_str(&format!("id:       {}\n", id_to_hex(&st.id)));
         out.push_str(&format!("port:     {}\n", st.port));
-        out.push_str(&format!("load:     {}/{}\n", st.load, st.capacity));
+        // `load` is the legacy work metric (dictionary words on a single-unit
+        // host, unit count under --multi-unit) — it is NOT a host resource
+        // reading and 254/100 on an idle box is normal. The resource truth
+        // peers act on is the advertised headroom.
+        out.push_str(&format!(
+            "load:     {}/{} (legacy work metric — not host resources)\n",
+            st.load, st.capacity
+        ));
+        out.push_str(&format!(
+            "headroom: {}% (advertised resource headroom; what peers act on)\n",
+            st.headroom
+        ));
         out.push_str(&format!("peers:    {}\n", st.peers.len()));
         for peer in st.peers.iter() {
             let age = peer.last_seen.elapsed().as_secs();
             out.push_str(&format!(
-                "  {} @ {} load={}/{} seen={}s ago\n",
+                "  {} @ {} headroom={}% load={}/{} seen={}s ago\n",
                 id_to_hex(&peer.id),
                 peer.addr,
+                peer.headroom,
                 peer.load,
                 peer.capacity,
                 age
@@ -1824,7 +1855,14 @@ fn network_thread(socket: UdpSocket, state: Arc<Mutex<MeshState>>, my_id: NodeId
 }
 
 fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &NodeId) {
+    // Fresh resource measurement per beat (outside the lock — it reads /proc).
+    // Applied below only while auto_headroom holds; an explicit set_headroom
+    // (multi-unit host, tests) takes authority and is never stomped.
+    let measured = crate::resources::HostResources::measure().advertised_headroom_pct();
     let mut st = state.lock().unwrap();
+    if st.auto_headroom {
+        st.headroom = measured;
+    }
     let port = st.port;
     let load = st.load;
     let capacity = st.capacity;
@@ -2062,8 +2100,10 @@ fn handle_heartbeat(
 
     // Add gossiped peers we don't know about yet (transitive discovery).
     for addr in gossip_addrs {
-        // Don't add ourselves.
-        if addr.port() == my_port && addr.ip().is_loopback() {
+        // Don't add ourselves — peers gossip OUR address back to us. The
+        // loopback-only version of this check missed our public address on
+        // real hardware (ghost self-peer); see is_self_addr.
+        if is_self_addr(&addr, my_port) {
             continue;
         }
         // Check if we already know a peer at this address.
@@ -2918,6 +2958,34 @@ fn prune_peers(state: &Arc<Mutex<MeshState>>) {
     }
 }
 
+/// True if `addr` is THIS node: our mesh port on loopback or on any of this
+/// host's own interface addresses. Used to keep a node from admitting itself
+/// as a peer — peers legitimately gossip our public address back to us, and
+/// the old loopback-only check let it through on real hardware, creating a
+/// ghost pseudo-ID self-peer (`...ffff @ <own address> load=0/0`) that sat in
+/// the table until PEER_TIMEOUT pruned it. The non-loopback case uses the
+/// route-source trick: a connected UDP socket's local address toward one of
+/// our own interface IPs is that IP itself (a local syscall — `connect` on
+/// UDP sends no packets). Zero-dep; errs toward "not us" (a missed ghost
+/// still times out; wrongly dropping a real peer would not).
+fn is_self_addr(addr: &SocketAddr, my_port: u16) -> bool {
+    if addr.port() != my_port {
+        // A different port on our own IP is a DIFFERENT unit process
+        // legitimately sharing this host — a real peer.
+        return false;
+    }
+    if addr.ip().is_loopback() {
+        return true;
+    }
+    match std::net::UdpSocket::bind(("0.0.0.0", 0)).and_then(|s| {
+        s.connect(addr)?;
+        s.local_addr()
+    }) {
+        Ok(local) => local.ip() == addr.ip(),
+        Err(_) => false,
+    }
+}
+
 /// Derive a deterministic pseudo-ID from a socket address. Used as a
 /// temporary key for seed peers before we learn their real ID.
 fn addr_to_pseudo_id(addr: &SocketAddr) -> NodeId {
@@ -3318,6 +3386,114 @@ mod peer_table_tests {
             max,
             expected,
             dev
+        );
+    }
+}
+
+#[cfg(test)]
+mod headroom_and_self_addr_tests {
+    use super::*;
+
+    /// The hardware bug this pins: a plain single-unit `unit` process never
+    /// called set_headroom, so it gossiped the fail-closed 0 forever and no
+    /// peer ever saw room to recruit. The heartbeat thread now refreshes the
+    /// advertisement from a fresh HostResources measurement on every beat.
+    /// force_heartbeat runs one beat synchronously, so no sleeping here.
+    #[test]
+    fn idle_node_advertises_measured_headroom_without_set_headroom() {
+        let node = MeshNode::start(0, vec![]).expect("mesh start");
+        node.force_heartbeat();
+        let advertised = node.headroom();
+        let expected = crate::resources::HostResources::measure().advertised_headroom_pct();
+        // Two measurements a moment apart can drift a little on a live box
+        // (and are both exactly 0 where /proc is unavailable — fail closed).
+        let diff = (advertised as i16 - expected as i16).abs();
+        assert!(
+            diff <= 5,
+            "advertised {advertised}% should track measured {expected}%"
+        );
+    }
+
+    #[test]
+    fn explicit_set_headroom_takes_authority_over_auto_measure() {
+        let node = MeshNode::start(0, vec![]).expect("mesh start");
+        node.set_headroom(57);
+        // A later beat must NOT stomp the scripted value with a measurement.
+        node.force_heartbeat();
+        assert_eq!(node.headroom(), 57);
+    }
+
+    #[test]
+    fn pseudo_id_signature_ends_ffff() {
+        // The ghost-self-peer forensic signature: address-derived pseudo-IDs
+        // keep their 0xFF padding in the last two bytes, so they render as
+        // hex ids ending "ffff" (e.g. 1069a45a95aaffff = 164.90.149.170:4201).
+        let id = addr_to_pseudo_id(&SocketAddr::from(([164, 90, 149, 170], 4201)));
+        assert_eq!(&id[6..], &[0xFF, 0xFF]);
+        assert_eq!(id_to_hex(&id), "1069a45a95aaffff");
+    }
+
+    #[test]
+    fn is_self_addr_loopback_and_port_rules() {
+        let me: SocketAddr = "127.0.0.1:4201".parse().unwrap();
+        assert!(is_self_addr(&me, 4201), "own port on loopback is us");
+        assert!(
+            !is_self_addr(&me, 4202),
+            "different port = a different unit process sharing the host"
+        );
+        let remote: SocketAddr = "8.8.8.8:4201".parse().unwrap();
+        assert!(!is_self_addr(&remote, 4201), "a remote IP is never us");
+    }
+
+    #[test]
+    fn is_self_addr_recognizes_own_interface_ip() {
+        // Discover this host's outbound interface IP via the same route-source
+        // trick (connect on UDP sends nothing). Skip quietly when the host has
+        // no route at all (fully offline CI).
+        let probe = match std::net::UdpSocket::bind(("0.0.0.0", 0))
+            .and_then(|s| {
+                s.connect("8.8.8.8:53")?;
+                s.local_addr()
+            }) {
+            Ok(a) if !a.ip().is_loopback() && !a.ip().is_unspecified() => a.ip(),
+            _ => return,
+        };
+        let own = SocketAddr::new(probe, 4201);
+        assert!(
+            is_self_addr(&own, 4201),
+            "our own non-loopback interface address ({own}) must be recognized as self"
+        );
+        assert!(!is_self_addr(&own, 4200), "same IP, other port = real peer");
+    }
+
+    #[test]
+    fn seed_list_containing_own_address_creates_no_self_peer() {
+        // Bind first on an ephemeral port to learn a usable port number, then
+        // start a node seeded with its OWN loopback address.
+        let placeholder = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = placeholder.local_addr().unwrap().port();
+        drop(placeholder);
+        let own: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let node = MeshNode::start(port, vec![own]).expect("mesh start");
+        assert_eq!(
+            node.peer_count(),
+            0,
+            "a node must never admit its own address as a peer"
+        );
+    }
+
+    #[test]
+    fn status_labels_legacy_load_and_shows_headroom() {
+        let node = MeshNode::start(0, vec![]).expect("mesh start");
+        node.set_headroom(42);
+        let status = node.format_status();
+        assert!(
+            status.contains("legacy work metric"),
+            "the load line must say what it is: {status}"
+        );
+        assert!(
+            status.contains("headroom: 42%"),
+            "STATUS must show the metric peers act on: {status}"
         );
     }
 }
