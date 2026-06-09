@@ -612,6 +612,6 @@ VARIABLE OBS-COUNT
 : COURT FITNESS SAY! ;
 
 \ --- Boot ---
-." unit v0.31.0 -- seed online" CR
+." unit v0.32.0 -- seed online" CR
 MESH-HELLO
 AUTO-CLAIM

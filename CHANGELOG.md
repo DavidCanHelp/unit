@@ -3,6 +3,116 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.32.0] - 2026-06-09
+
+The step-2 recruit tree from the work-execution-model design record
+([docs/design/work-execution-model.md](docs/design/work-execution-model.md),
+recorded in f9294d8) — distributed work that fans out as a tree and reports back
+up — plus a resource model for operating on genuinely restricted RAM+swap boxes.
+
+### Distributed work execution (the recruit tree)
+
+- **S-expression eval seam with structured runtime faults.** A canonical
+  `eval_sexp` seam (`SEXP-EVAL"` at the REPL) parses an s-expression instruction,
+  evaluates it in the Forth VM, and returns a `(result :ok …)` envelope. `pop`/
+  `rpop` now raise a structured `Fault` (StackUnderflow / ReturnStackUnderflow)
+  instead of only printing, so a failed evaluation surfaces as `:ok 0 :error …
+  :kind runtime` rather than being silently swallowed. The reply path preserves
+  success/error end to end.
+- **Recruit / recruit-result mesh pair and the mechanical recruiter.** A
+  `(recruit …)` / `(recruit-result …)` message pair carries an s-expr instruction
+  to a peer and the canonical result envelope back, nested under the routing
+  fields. `RecruitLedger` tracks outstanding/collected round-trips; `send_recruit`
+  emits; `RECRUIT"` / `RECRUITS` are the manual trigger and viewer. Failure is
+  visible end to end through the recruiter, not just the worker.
+- **`(parallel …)` split-and-recruit decision on local resource pressure.** A unit
+  handed `(parallel (e1) (e2) …)` runs each sub-part locally while it has headroom
+  under the ceiling and recruits the overflow to a placement-chosen peer — a
+  reactive, measured decision (not predictive). Results are *collected* into an
+  ordered `(parallel-result …)`, deliberately not combined.
+- **Recursive fan-out, ceiling-bounded, no depth cap.** A recruited `(parallel …)`
+  re-applies the same split-and-recruit decision on the recruited peer, so work
+  fans out as a tree. There is no recursion-depth limit by design: fan-out is
+  bounded only by the resource ceiling — a peer recruits a part only when it lacks
+  headroom *and* placement finds a peer that has it, so a saturated mesh stops the
+  tree growing. The per-level ceiling check is the brake.
+- **Report-once-when-complete result propagation (fan-in).** Each unit
+  self-reports its complete result to whoever recruited it, once, when whole; a
+  parent fills its slot and, when its last slot fills, reports up to its own
+  recruiter. The root surfaces the whole answer. Results are immutable/settled —
+  report once, no streaming partials. No coordinator: each unit holds only its own
+  expectations (back-references) and obligations (ledger slots).
+- **Let-it-crash supervision via gossip-death.** When a peer holding an open
+  recruit slot disappears from the mesh's pruned peer view (the existing
+  `PEER_TIMEOUT` signal), the parent re-recruits that slot's retained instruction
+  to a different peer with headroom; if none is available the slot stays
+  open/declined (fail-closed). Supervision nests up the tree by the same
+  mechanism. Alive-but-wedged peers (a job-level timeout) are deferred.
+
+### Resource model for restricted-resource operation
+
+- **`(alloc-mb N)` gated memory-pressure load generator + `RECLAIM-MB`.** Allocates
+  and retains N MiB of real, resident process memory to drive measured memory
+  utilization (the instantaneous axis); `RECLAIM-MB` frees it. Off by default
+  behind `ALLOC-ENABLE` and kept out of the GP-reachable surface like `SHELL"`, so
+  any ceiling-crossing is a deliberate `(alloc-mb)` and never evolved code.
+- **Combined RAM + swap memory budget.** `mem_fraction = (ram_used + swap_used) /
+  (ram_total + swap_total)`: swap is treated uniformly as capacity (a page is a
+  page whether in RAM or swap), and the 0.80 ceiling applies to the combined
+  budget. Reduces exactly to prior behavior when there is no swap. Counts swap as
+  capacity for survival/correctness, not performance.
+- **Committed-work accounting in `run_parallel` admission.** A per-call tally of
+  work just committed locally is added to the observed reading before each part's
+  admission check, so the node counts what it already decided this call — defeating
+  the `measure()` lag (loadavg averaging + swap absorption). Per-call scratch only;
+  it never persists across calls or ticks.
+- **Memory-leaning advertised headroom.** When a box is meaningfully leaning on
+  swap, the memory axis binds so swap-I/O load doesn't double-penalize a
+  memory-bound peer (the swapped pages are already counted in `mem_fraction`); the
+  load axis still binds for genuine CPU load with no/incidental swap. `CEILING`
+  and `ADMISSION_MARGIN` unchanged; survival preserved.
+
+### Validated on hardware
+
+- **Committed-work accounting** was confirmed on three 456 MB-RAM + 2 GB-swap
+  SFO3 droplets: with the gate enabled, `(parallel (alloc-mb 400) ×5)` correctly
+  ran three parts locally and declined the overflow rather than running all five
+  blind — the behavior the accounting was added to produce.
+- **The recruit tree was NOT witnessed landing a live cross-mesh recruit this
+  cycle.** It is covered by 442 passing tests, and the message-pair / decision /
+  dispatch paths were verified by code inspection. On the test droplets a resident
+  GP-EVOLVE colony kept every peer CPU-saturated, so no peer ever advertised
+  headroom and no recruit was ever placed. That is the correct emergent brake (a
+  saturated mesh refuses to fan out), but it also prevented a live recruit
+  demonstration. This release does **not** claim hardware validation of the
+  recruit path — unlike v0.31, whose headline admission-margin feature was
+  hardware-witnessed.
+
+### Known limitations
+
+- Per-part admission still reads signals that lag a fast burst on the **load
+  axis** (loadavg is a 1-minute average). The committed-work tally addresses the
+  within-call case; the **cross-tick inbound-burst gap (#16)** and a general,
+  node-level committed-work model remain deferred.
+- Result combination (reducing a `(parallel-result …)`'s collected envelopes) and
+  streaming partials are out of scope; results are collected, not combined.
+
+### Changed
+
+- VERSION → v0.32.0; prelude banner and web demo title/cache-bust updated.
+
+### Design principles held
+
+- **No central coordinator.** The recruit tree has no scheduler, master, or
+  control plane: each unit decides from its own measured pressure and gossiped
+  view, holds only its own back-references and ledger slots, and the supervision
+  tree emerges from the recruitment structure rather than being designed apart.
+- **Fail closed; the ceiling is a refusal wall, not a target.** No peer with
+  headroom ⇒ no recruit; an unmeasurable host ⇒ no headroom; a dead peer's slot
+  re-recruits or stays declined. Fan-out is bounded by the ceiling at every level,
+  not a depth cap.
+- **Zero new dependencies.** Cargo.lock still contains only the `unit` crate.
+
 ## [0.31.0] - 2026-06-05
 
 Three fixes for the failure modes the v0.30 multi-machine soak surfaced once a
