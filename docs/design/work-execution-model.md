@@ -66,6 +66,18 @@ Gossip-death covers crash; a peer that still heartbeats but never replies needs 
 - **Orphaned sub-recruits are accepted waste.** When a wedged mid-tree peer's own recruits complete, they reply to a parent that never reports up — their results die there. This is named here so it doesn't read as a leak in logs: it is the bounded cost of refusing distributed cancellation.
 - **Observability over caps.** Every slot counts its reassignments (gossip-death or timeout), surfaced by `RECRUITS`, so re-recruit cycling between wedged peers is visible on hardware. No reassignment cap in v1 — each cycle costs one message per timeout period, and a cap would be a guess; add one only if cycling is actually observed. (Extended after the 2026-06-10 hardware session: fail-closed deadline resets are counted and surfaced too — without that, "timeout pass failing closed every 60s" and "timeout pass not firing at all" rendered identically as a bare pending slot.)
 
+### Hardware-validated (2026-06-10, three 512MB+2GB-swap droplets, binary e61165d)
+
+The full wedged-peer path above was observed end to end on real hardware, with zero operator input during recovery. The wedge was honest — issuer A full (no local headroom), peer C killed, holder B carrying a recruited `(parallel (200 200 200))` subtree via the Deferred path with no placement candidates anywhere. Observed on A, in order:
+
+1. Initial supervision re-recruit (`re-recruited 1x`).
+2. The fail-closed loop, visible exactly as designed: `timeout expired, no candidate with headroom — deadline reset (1x/2x/3x/4x), still held by <B>` printing asynchronously on the ~60s cadence.
+3. C rejoined with fresh headroom; the next expiry found a candidate and re-recruited the subtree to C (`re-recruited 2x`).
+4. C evaluated and replied nested; `settle_nested` closed the slot with the `<nested parallel-result>` summary; the root job completed with correctly nested results.
+5. Final slot line: `ok ... (re-recruited 2x) (deadline reset 4x)`.
+
+The deadline-reset observability also retroactively resolved the prior day's ambiguity: the silent multi-minute hold on the input-gated binary had been the pass *not firing*; the timer-driven pass speaks every cycle. With this run, v0.32's recruit / supervision / timeout machinery — placement by honest headroom, gossip-death and job-timeout re-recruits, wedged-holder exclusion, fail-closed holds, nested-subtree settlement, first-write-wins, and both observability counters — is hardware-validated end to end.
+
 ## Open consideration: placement proportionality (recorded 2026-06-10, no action yet)
 
 Observed on hardware: first-sufficient placement keeps the largest part local whenever it fits the local tally, exporting only the trivial parts — a node at 92% headroom kept a 600MB subtree on a 456MB box while shipping its 50MB leaf to a peer. Tier-2 placement (most-headroom among ABUNDANT peers) is never consulted when tier-1 says "I fit", so part size and destination capacity are never matched against each other.
