@@ -1420,10 +1420,22 @@ impl VM {
         let gid = sexp.get_key(":id")?.as_number()? as u64;
         let seq = sexp.get_key(":seq")?.as_number()? as usize;
         let env = sexp.get_key(":result")?.clone();
-        // Record decodable single-result replies in the ledger (generic recruits);
-        // a nested parallel-result doesn't decode and is handled via the job.
+        // Record decodable single-result replies in the ledger (generic
+        // recruits). A nested parallel-result doesn't decode into a flat
+        // ResultView, but its ledger slot MUST still settle — left open, it
+        // showed as pending in RECRUITS forever and the supervision passes
+        // would re-recruit the already-completed subtree (every 60s via the
+        // timeout pass, or on holder death).
         if let Some(rr) = crate::distgoal::read_recruit_result(sexp) {
             self.recruit_ledger.collect(rr);
+        } else if crate::sexp::msg_type(&env) == Some("parallel-result") {
+            let from = sexp
+                .get_key(":from")
+                .and_then(|s| s.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let ok = env.get_key(":ok").and_then(|s| s.as_number()) == Some(1);
+            self.recruit_ledger.settle_nested(gid, seq, &from, ok);
         }
         // Fill the parallel-job slot and check completion (borrow scoped).
         // A duplicate reply for an already-filled slot (possible after a
@@ -1582,8 +1594,14 @@ impl VM {
                     Some(c) => c.addr,
                     None => {
                         // Fail-closed: nowhere better to go. Keep waiting on
-                        // the current holder, a full timeout from now.
-                        self.recruit_ledger.touch(gid, seq);
+                        // the current holder, a full timeout from now — and
+                        // SAY so: a silent fail-closed expiry is
+                        // indistinguishable from the pass never firing.
+                        let resets = self.recruit_ledger.touch(gid, seq);
+                        self.emit_str(&format!(
+                            "recruit #{} seq {}: timeout expired, no candidate with headroom — deadline reset ({}x), still held by {}\n",
+                            gid, seq, resets, wedged
+                        ));
                         continue;
                     }
                 };
@@ -5952,6 +5970,7 @@ impl VM {
                         let _ = write!(stdout, " ok\n> ");
                     }
                     let _ = stdout.flush();
+                    self.needs_prompt_redraw = false; // prompt just printed
                 }
                 // Idle: no input this interval — run the duties anyway.
                 // (Skipped mid-definition, same as the per-line path: a
@@ -5959,6 +5978,18 @@ impl VM {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if !self.compiling {
                         self.repl_tick();
+                        // Tick-driven output (e.g. "parallel #N complete:")
+                        // leaves the cursor mid-line with no prompt, which
+                        // reads as a hang. Redraw it. (Characters typed but
+                        // not yet submitted stay in the terminal's line
+                        // buffer and still apply — we can't re-echo them
+                        // without raw mode, so they appear above the fresh
+                        // prompt but are not lost.)
+                        if self.needs_prompt_redraw {
+                            let _ = write!(stdout, "> ");
+                            let _ = stdout.flush();
+                            self.needs_prompt_redraw = false;
+                        }
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,

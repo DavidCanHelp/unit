@@ -1594,6 +1594,90 @@ fn test_timeout_leaves_fresh_slots_alone() {
 }
 
 #[test]
+fn test_nested_subtree_reply_settles_ledger_slot() {
+    // Hardware finding (2026-06-10): after a recruited (parallel ...) subtree
+    // completed and reported up, RECRUITS still showed its slot pending — the
+    // nested parallel-result envelope doesn't decode into a flat ResultView,
+    // so the ledger was never settled and the supervision passes would have
+    // re-recruited the COMPLETED subtree (every 60s, or on holder death).
+    let mut parent = test_vm();
+    parent
+        .parallel_jobs
+        .insert(21, crate::distgoal::ParallelJob::new(21, 1));
+    parent.send_recruit("W", 21, 0, "(parallel (+ 1 1) (+ 2 2))");
+    assert!(parent.recruit_ledger.is_pending(21, 0));
+
+    // W has headroom for both leaves -> completes locally, replies with a
+    // NESTED parallel-result envelope.
+    let mut w = test_vm();
+    let mut m = under_ceiling;
+    let reply = reply_of(w.handle_recruit(21, 0, "(parallel (+ 1 1) (+ 2 2))", "parent", &mut m));
+    parent.collect_recruit_result(&crate::sexp::parse(&reply).unwrap());
+
+    // The job completed AND the ledger slot settled.
+    assert!(parent.parallel_result(21).is_some());
+    assert!(
+        !parent.recruit_ledger.is_pending(21, 0),
+        "completed subtree slot must not stay pending"
+    );
+    assert_eq!(parent.recruit_ledger.pending_instr(21, 0), None);
+
+    // Neither supervision pass touches the settled slot: no re-recruit of
+    // already-completed work even with an instantly-expired deadline.
+    parent.supervise_recruit_timeouts(
+        &[
+            ("W".to_string(), 90, addr("127.0.0.1:9021")),
+            ("Q".to_string(), 90, addr("127.0.0.1:9022")),
+        ],
+        std::time::Duration::ZERO,
+    );
+    assert_eq!(parent.recruit_ledger.holder(21, 0), Some("W"), "unchanged");
+    assert!(!parent.recruit_ledger.format_status().contains("re-recruited"));
+}
+
+#[test]
+fn test_fail_closed_expiry_is_logged_and_counted() {
+    // Hardware finding (2026-06-10): a fail-closed timeout expiry was
+    // indistinguishable from the pass never firing. It must now log a line
+    // and bump a counter RECRUITS renders.
+    let mut parent = test_vm();
+    parent.send_recruit("W", 22, 0, "(+ 1 1)");
+
+    parent.output_buffer = Some(String::new());
+    // Wedged holder is the only live peer: expiry must fail closed, loudly.
+    parent.supervise_recruit_timeouts(
+        &[("W".to_string(), 90, addr("127.0.0.1:9023"))],
+        std::time::Duration::ZERO,
+    );
+    let out = parent.output_buffer.take().unwrap_or_default();
+    assert!(
+        out.contains("deadline reset (1x)") && out.contains("still held by W"),
+        "fail-closed expiry must announce itself: {out:?}"
+    );
+    let status = parent.recruit_ledger.format_status();
+    assert!(
+        status.contains("deadline reset 1x"),
+        "RECRUITS must render the reset count: {status}"
+    );
+    assert!(parent.recruit_ledger.is_pending(22, 0), "still fail-closed");
+}
+
+#[test]
+fn test_direct_emit_sets_prompt_redraw_flag() {
+    // The REPL idle tick redraws "> " after asynchronous output; the flag is
+    // set only by DIRECT (unbuffered) emits — captured/sandboxed output must
+    // not trigger a redraw.
+    let mut vm = test_vm();
+    vm.needs_prompt_redraw = false;
+    vm.output_buffer = Some(String::new());
+    vm.emit_str("captured");
+    assert!(!vm.needs_prompt_redraw, "buffered emit must not set the flag");
+    vm.output_buffer = None;
+    vm.emit_str("\n"); // direct print (a newline, to keep test output clean)
+    assert!(vm.needs_prompt_redraw, "direct emit must set the flag");
+}
+
+#[test]
 fn test_slow_not_dead_first_reply_wins_duplicate_dropped() {
     // The double-execution story end to end: W wedges, the slot re-recruits
     // to Q, then W turns out to be slow-not-dead and replies FIRST. W's

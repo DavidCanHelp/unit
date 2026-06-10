@@ -431,6 +431,12 @@ pub struct LedgerSlot {
     /// timeout). Pure observability — surfaced by RECRUITS so re-recruit
     /// cycling between wedged peers is visible on hardware; no cap in v1.
     pub reassignments: u32,
+    /// How many times the job timeout expired with NO candidate to re-recruit
+    /// to (the fail-closed `touch` path). Pure observability, surfaced by
+    /// RECRUITS: without it, "timeout pass firing and failing closed every
+    /// 60s" and "timeout pass not firing at all" render identically as a bare
+    /// pending slot — indistinguishable on hardware.
+    pub deadline_resets: u32,
 }
 
 /// Recruiter-side ledger binding outstanding recruit requests to their
@@ -465,6 +471,7 @@ impl RecruitLedger {
                 result: None,
                 assigned_at: slot_now(),
                 reassignments: 0,
+                deadline_resets: 0,
             },
         );
     }
@@ -505,10 +512,53 @@ impl RecruitLedger {
     /// Restart an OPEN slot's job-timeout clock without reassigning it —
     /// the fail-closed path when a slot expired but no other peer has
     /// headroom: keep waiting on the current holder rather than fabricating
-    /// progress, and check again a full timeout from now.
-    pub fn touch(&mut self, goal_id: GoalId, seq: usize) {
+    /// progress, and check again a full timeout from now. Counts the reset
+    /// (observability — see `deadline_resets`) and returns the new count so
+    /// the caller can log it.
+    pub fn touch(&mut self, goal_id: GoalId, seq: usize) -> u32 {
         if let Some(slot) = self.entries.get_mut(&(goal_id, seq)) {
             slot.assigned_at = slot_now();
+            slot.deadline_resets += 1;
+            slot.deadline_resets
+        } else {
+            0
+        }
+    }
+
+    /// Settle a slot whose reply carries a NESTED `(parallel-result ...)`
+    /// envelope, which `read_result` cannot decode into a flat `ResultView`
+    /// (so the normal `collect` path never fires). Without this, a completed
+    /// subtree's slot stayed OPEN forever: RECRUITS showed it pending and the
+    /// supervision passes would re-recruit already-completed work — every 60s
+    /// via the timeout pass, or on holder death. Same first-write-wins rule
+    /// as `collect`. The stored view is a synthesized summary; the real
+    /// nested envelope lives in the parallel job's slot.
+    pub fn settle_nested(&mut self, goal_id: GoalId, seq: usize, from: &str, ok: bool) -> bool {
+        if let Some(slot) = self.entries.get_mut(&(goal_id, seq)) {
+            if slot.result.is_some() {
+                return false; // already settled — duplicate reply dropped
+            }
+            let result = if ok {
+                crate::sexp::ResultView::Ok {
+                    value: vec![],
+                    output: "<nested parallel-result>".to_string(),
+                }
+            } else {
+                crate::sexp::ResultView::Err {
+                    kind: "nested".to_string(),
+                    msg: "nested parallel-result reported :ok 0".to_string(),
+                }
+            };
+            slot.result = Some(RecruitResult {
+                goal_id,
+                seq,
+                from: from.to_string(),
+                result,
+            });
+            slot.instr.clear();
+            true
+        } else {
+            false
         }
     }
 
@@ -600,13 +650,17 @@ impl RecruitLedger {
         for key in keys {
             let (g, s) = key;
             let slot = &self.entries[&key];
-            // Re-recruit count (gossip-death or job-timeout) — visible here so
-            // cycling between wedged peers shows up on hardware.
-            let re = if slot.reassignments > 0 {
-                format!(" (re-recruited {}x)", slot.reassignments)
-            } else {
-                String::new()
-            };
+            // Supervision history — visible here so re-recruit cycling and
+            // fail-closed timeout expiries both show up on hardware. Without
+            // the reset count, a fail-closed pass firing every 60s and a pass
+            // not firing at all rendered identically.
+            let mut re = String::new();
+            if slot.reassignments > 0 {
+                re.push_str(&format!(" (re-recruited {}x)", slot.reassignments));
+            }
+            if slot.deadline_resets > 0 {
+                re.push_str(&format!(" (deadline reset {}x)", slot.deadline_resets));
+            }
             match &slot.result {
                 None => out.push_str(&format!(
                     "recruit #{} seq {} -> {}: pending{}\n",
@@ -842,6 +896,50 @@ mod tests {
         ledger.touch(3, 0);
         assert_eq!(ledger.entries[&(3, 0)].reassignments, 0);
         assert_eq!(ledger.holder(3, 0), Some("W"), "touch never reassigns");
+    }
+
+    #[test]
+    fn test_touch_counts_deadline_resets_and_status_shows_them() {
+        // The fail-closed path must be distinguishable from "pass never
+        // fired": each touch counts, and RECRUITS renders the count.
+        let mut ledger = RecruitLedger::new();
+        ledger.open(7, 0, "(+ 1 2)", "W");
+        assert!(!ledger.format_status().contains("deadline reset"));
+        assert_eq!(ledger.touch(7, 0), 1);
+        assert_eq!(ledger.touch(7, 0), 2);
+        assert_eq!(ledger.entries[&(7, 0)].deadline_resets, 2);
+        let status = ledger.format_status();
+        assert!(
+            status.contains("deadline reset 2x"),
+            "RECRUITS must show fail-closed expiries: {status}"
+        );
+        assert!(
+            !status.contains("re-recruited"),
+            "touches are not reassignments: {status}"
+        );
+    }
+
+    #[test]
+    fn test_settle_nested_settles_slot_first_write_wins() {
+        // A nested parallel-result reply can't decode into a flat ResultView;
+        // settle_nested must still close the ledger slot so supervision stops
+        // watching completed work.
+        let mut ledger = RecruitLedger::new();
+        ledger.open(8, 0, "(parallel (+ 1 1) (+ 2 2))", "W");
+        assert!(ledger.settle_nested(8, 0, "W", true));
+        assert!(!ledger.is_pending(8, 0), "slot settled");
+        assert_eq!(ledger.pending_instr(8, 0), None, "instruction released");
+        // First-write-wins: duplicates (re-recruit race) are dropped.
+        assert!(!ledger.settle_nested(8, 0, "Q", true));
+        assert!(!ledger.collect(ok_reply(8, 0, "Q", 999)));
+        assert_eq!(ledger.get(8, 0).unwrap().from, "W");
+        // And it never fires either supervision query again.
+        assert!(ledger
+            .open_slots_past_deadline(std::time::Duration::ZERO, &live(&["W"]))
+            .is_empty());
+        assert!(ledger
+            .open_slots_with_dead_holder(&live(&["Q"]))
+            .is_empty());
     }
 
     #[test]

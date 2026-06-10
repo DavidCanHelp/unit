@@ -351,6 +351,11 @@ pub struct VM {
     pub mesh: Option<crate::mesh::MeshNode>,
     /// When set, output goes here instead of stdout (sandbox mode).
     pub output_buffer: Option<String>,
+    /// Set whenever emit_str/emit_char prints directly to stdout (no capture
+    /// buffer). The REPL's idle tick checks it to redraw the `> ` prompt
+    /// after asynchronous output (e.g. "parallel #N complete:"), which
+    /// otherwise leaves the cursor mid-line and reads as a hang.
+    pub needs_prompt_redraw: bool,
     /// Execution deadline for sandboxed task execution.
     pub deadline: Option<Instant>,
     /// Set when execution exceeds the deadline.
@@ -472,6 +477,7 @@ impl VM {
             silent: false,
             mesh: None,
             output_buffer: None,
+            needs_prompt_redraw: false,
             deadline: None,
             timed_out: false,
             fault: None,
@@ -1737,6 +1743,7 @@ impl VM {
         } else {
             print!("{}", ch);
             let _ = io::stdout().flush();
+            self.needs_prompt_redraw = true;
         }
     }
 
@@ -1746,6 +1753,7 @@ impl VM {
         } else {
             print!("{}", s);
             let _ = io::stdout().flush();
+            self.needs_prompt_redraw = true;
         }
     }
 
