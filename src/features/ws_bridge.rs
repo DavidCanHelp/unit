@@ -375,11 +375,13 @@ fn serve_http(stream: &mut TcpStream, request: &str) {
         ),
         "/unit.wasm" => {
             // COUPLING: web/unit.wasm is gitignored (a build artifact), so
-            // build.rs guarantees this path exists at compile time by writing
-            // a 0-byte stub when the real wasm wasn't built. Do not remove
-            // the file from the build without updating build.rs, and vice
-            // versa. An empty embed means this build has no bundled web UI.
-            const WASM: &[u8] = include_bytes!("../../web/unit.wasm");
+            // build.rs stages it into OUT_DIR at compile time — the real
+            // artifact when present, a 0-byte stub when not. (OUT_DIR, not
+            // the source path: cargo publish rejects build scripts that
+            // modify the source tree.) Do not change this embed without
+            // updating build.rs, and vice versa. An empty embed means this
+            // build has no bundled web UI.
+            const WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/unit.wasm"));
             if WASM.is_empty() {
                 let body = "web UI not bundled in this build: web/unit.wasm \
                             was absent at compile time (a stub was embedded). \
