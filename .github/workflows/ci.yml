@@ -35,6 +35,7 @@ jobs:
       - run: cargo build --release
       - run: cargo test
       - run: chmod +x tests/integration.sh && ./tests/integration.sh ./target/release/unit
+      - run: chmod +x tests/idle_tick_test.sh && ./tests/idle_tick_test.sh ./target/release/unit
       - uses: actions/upload-artifact@v5
         with:
           name: unit-native
