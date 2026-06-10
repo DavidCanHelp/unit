@@ -12,7 +12,7 @@
 
 ```
 $ unit
-unit v0.32.0 -- seed online
+unit v0.33.0 -- seed online
 Mesh node a1b2c3d4e5f67890 gen=0 peers=0 fitness=0
 > 2 3 + .
 5  ok
