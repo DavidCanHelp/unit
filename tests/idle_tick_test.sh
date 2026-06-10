@@ -135,12 +135,19 @@ if [ "$(uname)" = "Linux" ]; then
         exit 1
     fi
 
-    printf 'RECRUIT" %s (+ 3 4)"\n' "$CID" >&13
-    sleep 1
-    # Kill the holder. From here the issuer gets NO input: gossip expiry
-    # (PEER_TIMEOUT 15s) then the death pass must fire on an idle tick,
-    # re-recruit to B, and B (also idle) must evaluate and reply.
+    # Kill the victim BEFORE recruiting to it. (Killing after doesn't work
+    # anymore: an idle holder now evaluates within one REPL_TICK, so trivial
+    # work settles the slot before any kill can land — which is the very fix
+    # under test.) C stays in A's peer view until the PEER_TIMEOUT prune, so
+    # the recruit below opens a slot held by a corpse.
     kill -9 "$C_PID" 2>/dev/null || true
+    wait "$C_PID" 2>/dev/null || true
+    sleep 1
+
+    printf 'RECRUIT" %s (+ 3 4)"\n' "$CID" >&13
+    # From here the issuer gets NO input: gossip expiry (PEER_TIMEOUT 15s)
+    # then the death pass must fire on an idle tick, re-recruit to B, and B
+    # (also idle) must evaluate and reply.
     sleep 20
     printf 'RECRUITS\n' >&13
     sleep 1
