@@ -3,6 +3,78 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.33.0] - 2026-06-10
+
+The published 0.32.0 shipped the distributed work-execution *design*; 0.33.0
+is the week of hardware sessions that made it real. The recruit/supervision/
+timeout machinery is now **hardware-validated end to end on a 3-node mesh**
+(DigitalOcean 512MB+2GB-swap droplets): first inter-machine recruits ever,
+placement by honest headroom, full wedge recovery with zero operator input —
+final slot line `ok … (re-recruited 2x) (deadline reset 4x)`.
+
+Note: 0.32.0 has been yanked from crates.io — its bare `KILL-CHILD` could
+signal arbitrary host pids (or the process group on an empty stack), and its
+headline distributed features were inert on real hardware. 0.33.0 supersedes
+it.
+
+### Distributed execution actually fires on real hardware
+
+- **Headroom advertisement fix.** Single-unit hosts never called
+  `set_headroom`, gossiping the fail-closed 0 forever — no peer ever saw
+  room, so recruits, placement, and replication-toward-peers could not fire
+  across machines. The mesh heartbeat thread now takes a fresh
+  `HostResources` measurement every beat; an explicit `set_headroom` still
+  takes authority (multi-unit host, tests).
+- **Timer-driven tick loop.** Every VM-side periodic duty was gated on stdin
+  input; an idle node never evaluated recruited work, never ran supervision,
+  never accepted replications, and had frozen metabolism. The REPL now ticks
+  every 250ms while idle (stdin moved to a reader thread; EOF/piped-input
+  semantics unchanged) — workers and supervisors are autonomous.
+
+### Work-execution model completed
+
+- **Job timeout for wedged peers** (`RECRUIT_TIMEOUT`, 60s per assignment):
+  re-recruits an alive-but-silent holder through the same placement path as
+  gossip-death, excluding the wedged holder from candidates; fail-closed when
+  no candidate exists. At-least-once execution with first-write-wins
+  collection — replies are judged by `(goal_id, seq)` identity, not sender;
+  duplicates drop silently.
+- **Fail-closed observability.** Every fail-closed expiry logs `timeout
+  expired, no candidate with headroom — deadline reset (Nx)`, and RECRUITS
+  renders `(re-recruited Nx) (deadline reset Nx)` — "failing closed every
+  60s" and "not firing at all" are no longer indistinguishable.
+- **Nested-result settlement.** A recruited `(parallel …)` subtree's reply
+  now settles its ledger slot (`settle_nested`); previously it stayed open
+  forever — pending in RECRUITS, and eligible for re-recruit of
+  already-completed work.
+
+### Safety and correctness
+
+- **SPAWN-N / KILL-CHILD validate their argument.** A bare KILL-CHILD once
+  SIGTERM'd an arbitrary host process; an empty stack would have meant
+  `kill(0, SIGTERM)` — the entire process group. Both words now fail clean on
+  underflow, and KILL-CHILD refuses any pid not in this node's children
+  ledger — never signal a process we didn't spawn.
+- **Ghost self-peer fix.** Peers gossip your public address back to you; the
+  loopback-only self-check admitted it as a pseudo-id peer (`…ffff`).
+  `is_self_addr` now recognizes the host's own interface addresses (zero-dep
+  route-source trick) in both the gossip loop and the seed list.
+- **GP-EVOLVE tick report** reads `evolution.best.fitness` instead of the
+  mesh fitness ledger — no more "best fitness 0" while evolution progresses.
+
+### Operator experience
+
+- STATUS labels the legacy `load:` metric for what it is (dictionary words /
+  unit count — not host resources) and shows advertised headroom for self and
+  every peer; the REPL redraws its prompt after asynchronous tick output.
+
+### Packaging
+
+- `web/unit.wasm` is untracked (CI builds the deploy copy; `just wasm` stages
+  one locally); `build.rs` stages it into OUT_DIR with a 0-byte stub fallback
+  — a stub build answers `/unit.wasm` with a clear 404. Makefile folded into
+  the justfile (`just smoke`).
+
 ## [0.32.0] - 2026-06-09
 
 The step-2 recruit tree from the work-execution-model design record
