@@ -122,7 +122,7 @@ pub fn parse(input: &str) -> Result<Sexp, ParseError> {
     if pos >= input.len() {
         return Err(ParseError("empty input".into()));
     }
-    let result = parse_one(input, &mut pos)?;
+    let result = parse_one(input, &mut pos, 0)?;
     skip_whitespace(input, &mut pos);
     if pos < input.len() {
         return Err(ParseError(format!("trailing input at position {}", pos)));
@@ -137,19 +137,29 @@ pub fn parse_at(input: &str, pos: &mut usize) -> Result<Sexp, ParseError> {
     if *pos >= input.len() {
         return Err(ParseError("unexpected end of input".into()));
     }
-    parse_one(input, pos)
+    parse_one(input, pos, 0)
 }
 
-fn parse_one(input: &str, pos: &mut usize) -> Result<Sexp, ParseError> {
+/// Cap on S-expression nesting. Mesh messages flow straight into this
+/// recursive-descent parser, so without a bound a peer could send deeply
+/// nested `(((…` and overflow the receiver's stack (an uncatchable abort).
+/// Legitimate messages nest only a handful of levels; 256 is far beyond that
+/// while keeping recursion cheap.
+const MAX_PARSE_DEPTH: usize = 256;
+
+fn parse_one(input: &str, pos: &mut usize, depth: usize) -> Result<Sexp, ParseError> {
+    if depth > MAX_PARSE_DEPTH {
+        return Err(ParseError("nesting too deep".into()));
+    }
     let bytes = input.as_bytes();
     match bytes[*pos] {
-        b'(' => parse_list(input, pos),
+        b'(' => parse_list(input, pos, depth),
         b'"' => parse_string(input, pos),
         _ => parse_atom_or_number(input, pos),
     }
 }
 
-fn parse_list(input: &str, pos: &mut usize) -> Result<Sexp, ParseError> {
+fn parse_list(input: &str, pos: &mut usize, depth: usize) -> Result<Sexp, ParseError> {
     *pos += 1; // skip '('
     let mut items = Vec::new();
     loop {
@@ -161,7 +171,7 @@ fn parse_list(input: &str, pos: &mut usize) -> Result<Sexp, ParseError> {
             *pos += 1;
             return Ok(Sexp::List(items));
         }
-        items.push(parse_one(input, pos)?);
+        items.push(parse_one(input, pos, depth + 1)?);
     }
 }
 

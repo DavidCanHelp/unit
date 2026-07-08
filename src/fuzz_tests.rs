@@ -1,0 +1,267 @@
+// fuzz_tests.rs — property/fuzz tests for the untrusted-input surface.
+//
+// unit rewrites its own dictionary (SMART-MUTATE, genetic programming) and
+// ingests data it did not author: S-expressions off the mesh, UREP packages
+// from replication, snapshot blobs from disk. The invariant these tests defend
+// is simple and load-bearing for a self-replicating system:
+//
+//     no input — however malformed, hostile, or randomly mutated — may panic.
+//
+// Everything here is hand-rolled: a small deterministic PRNG and grammar-aware
+// generators, driven through `std::panic::catch_unwind`. Zero dependencies, and
+// deterministic seeds so any failure reproduces exactly. These run under the
+// normal `cargo test`, so they double as permanent regression guards.
+
+#![cfg(test)]
+
+use crate::vm::VM;
+use crate::{persist, sexp, spawn};
+use std::panic::{self, catch_unwind, AssertUnwindSafe};
+
+// --- deterministic PRNG (xorshift64) ---------------------------------------
+
+struct Rng(u64);
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)
+    }
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    fn below(&mut self, n: usize) -> usize {
+        if n == 0 {
+            0
+        } else {
+            (self.next() % n as u64) as usize
+        }
+    }
+    fn byte(&mut self) -> u8 {
+        (self.next() >> 24) as u8
+    }
+    /// true with probability 1/n
+    fn chance(&mut self, n: usize) -> bool {
+        self.below(n) == 0
+    }
+}
+
+// --- generators ------------------------------------------------------------
+
+fn rand_bytes(rng: &mut Rng, max: usize) -> Vec<u8> {
+    let n = rng.below(max + 1);
+    (0..n).map(|_| rng.byte()).collect()
+}
+
+/// A random (valid UTF-8) string: mostly printable ASCII, with control bytes
+/// and the occasional higher code point mixed in.
+fn rand_str(rng: &mut Rng, max: usize) -> String {
+    let n = rng.below(max + 1);
+    let mut s = String::new();
+    for _ in 0..n {
+        let r = rng.below(100);
+        let c = if r < 78 {
+            char::from((0x20 + rng.below(95)) as u8) // printable ASCII
+        } else if r < 90 {
+            char::from(rng.below(32) as u8) // control
+        } else {
+            char::from_u32(rng.below(0x2FFF) as u32).unwrap_or('?')
+        };
+        s.push(c);
+    }
+    s
+}
+
+/// Forth tokens that never introduce an unbounded loop or a recursive word
+/// definition (those would stack-overflow — an uncatchable abort — which is a
+/// property of the un-sandboxed REPL, not a bug the fuzzer should trip on).
+/// Deliberately excludes `:` `;` `DO` `LOOP` `BEGIN` `AGAIN` `UNTIL` and the
+/// like; it keeps `IF`/`ELSE`/`THEN` (branch, no iteration) and everything
+/// that stresses parsing, dispatch, the stacks, and data-space bounds.
+const FORTH_TOKENS: &[&str] = &[
+    "DUP", "DROP", "SWAP", "OVER", "ROT", "NIP", "TUCK", "2DUP", "2DROP", "DEPTH", "?DUP",
+    "+", "-", "*", "/", "MOD", "=", "<", ">", "AND", "OR", "NOT", "INVERT",
+    "NEGATE", "ABS", "MIN", "MAX", "1+", "1-", "2*", "2/", "0=", "0<",
+    "@", "!", "C@", "C!", "HERE", ",", "C,", "CELLS", "ALLOT",
+    ".", ".S", "EMIT", "CR", "SPACE",
+    "IF", "ELSE", "THEN",
+    "VARIABLE", "CONSTANT", "CREATE", "SEE", "WORDS",
+    "(", ")", "\\", "[", "]", "'",
+    // number literals, in-range so size arithmetic (CELLS/ALLOT) can't overflow
+    "0", "1", "-1", "2", "10", "255", "256", "1024", "65535",
+    // tokens that fail i64 parse -> exercised as unknown words, not values
+    "3.14", "0x10", "999999999999999999999", "-", "abc",
+];
+
+fn rand_forth(rng: &mut Rng, max_tokens: usize) -> String {
+    let n = rng.below(max_tokens) + 1;
+    let mut s = String::new();
+    for _ in 0..n {
+        if rng.chance(9) {
+            // in-range random integer (kept modest so ALLOT can't OOM and
+            // CELLS can't overflow); still far beyond data-space bounds so the
+            // `@`/`!` bounds checks are exercised.
+            let v = (rng.next() % 200_001) as i64 - 100_000;
+            s.push_str(&v.to_string());
+        } else if rng.chance(13) {
+            // a garbage atom, with `:` `;` stripped so no definition can form
+            let atom: String = rand_str(rng, 6)
+                .chars()
+                .filter(|c| *c != ':' && *c != ';')
+                .collect();
+            s.push_str(&atom);
+        } else {
+            s.push_str(FORTH_TOKENS[rng.below(FORTH_TOKENS.len())]);
+        }
+        s.push(if rng.chance(8) { '\n' } else { ' ' });
+    }
+    s
+}
+
+/// A random S-expression string, bounded in nesting depth, with malformed
+/// variants (unbalanced parens, stray quotes) mixed in.
+fn rand_sexp(rng: &mut Rng, depth: usize, out: &mut String) {
+    if depth == 0 || rng.chance(2) {
+        match rng.below(4) {
+            0 => out.push_str(&(rng.next() as i64).to_string()),
+            1 => {
+                out.push('"');
+                out.push_str(&rand_str(rng, 6).replace('"', "'"));
+                if !rng.chance(6) {
+                    out.push('"'); // sometimes leave it unterminated
+                }
+            }
+            _ => out.push_str(["foo", "bar", "*", "+", "goal", "result", "peer"][rng.below(7)]),
+        }
+        return;
+    }
+    out.push('(');
+    let items = rng.below(5);
+    for _ in 0..items {
+        rand_sexp(rng, depth - 1, out);
+        out.push(' ');
+    }
+    if !rng.chance(7) {
+        out.push(')'); // sometimes leave it unbalanced
+    }
+}
+
+// --- the harness -----------------------------------------------------------
+
+/// Run `body` under a suppressed panic hook; return Ok(()) or the repro seed.
+fn hammer(iters: usize, base_seed: u64, mut body: impl FnMut(&mut Rng)) -> Result<(), u64> {
+    let prev = panic::take_hook();
+    panic::set_hook(Box::new(|_| {})); // stay quiet unless we actually fail
+    let mut result = Ok(());
+    for i in 0..iters {
+        let seed = base_seed ^ (i as u64).wrapping_mul(0x2545_f491_4f6c_dd1d);
+        let mut rng = Rng::new(seed);
+        if catch_unwind(AssertUnwindSafe(|| body(&mut rng))).is_err() {
+            result = Err(seed);
+            break;
+        }
+    }
+    panic::set_hook(prev);
+    result
+}
+
+const ITERS: usize = 30_000;
+
+#[test]
+fn fuzz_sexp_parser_never_panics() {
+    // Random bytes-as-string and grammar-aware s-exprs into the full parse path
+    // (parse -> to_forth, plus the mesh-message entry point).
+    let r = hammer(ITERS, 0xA5E1, |rng| {
+        let input = if rng.chance(2) {
+            let mut s = String::new();
+            rand_sexp(rng, 8, &mut s);
+            s
+        } else {
+            rand_str(rng, 64)
+        };
+        if let Ok(sx) = sexp::parse(&input) {
+            let _ = sexp::to_forth(&sx);
+        }
+        let _ = sexp::try_parse_mesh_msg(&input);
+    });
+    assert!(r.is_ok(), "sexp parser panicked; reproduce with seed {:#x}", r.unwrap_err());
+}
+
+#[test]
+fn fuzz_sexp_eval_never_panics() {
+    // The mesh-facing eval: parse + translate + execute in a sandbox.
+    let r = hammer(ITERS / 4, 0x5EE7, |rng| {
+        let mut s = String::new();
+        rand_sexp(rng, 6, &mut s);
+        let mut vm = VM::new();
+        let _ = sexp::eval_sexp(&mut vm, &s);
+    });
+    assert!(r.is_ok(), "sexp eval panicked; reproduce with seed {:#x}", r.unwrap_err());
+}
+
+#[test]
+fn fuzz_deeply_nested_sexp_is_rejected_not_overflowed() {
+    // Regression guard for the mesh DoS: a peer sending thousands of nested
+    // parens must get a graceful error, never a stack overflow.
+    for n in [300usize, 1_000, 50_000] {
+        let input = "(".repeat(n);
+        let got = catch_unwind(|| sexp::parse(&input));
+        assert!(got.is_ok(), "parser aborted (stack overflow?) at depth {n}");
+        assert!(got.unwrap().is_err(), "expected a parse error at depth {n}");
+    }
+    // A well-formed but very deep expression is also rejected, not crashed.
+    let deep = format!("{}{}", "(".repeat(10_000), ")".repeat(10_000));
+    let got = catch_unwind(|| sexp::parse(&deep));
+    assert!(got.is_ok() && got.unwrap().is_err(), "deep balanced expr should error, not abort");
+}
+
+#[test]
+fn fuzz_forth_vm_never_panics() {
+    // Random (loop-free, definition-free) Forth into the interpreter.
+    let r = hammer(ITERS, 0xF0_47, |rng| {
+        let src = rand_forth(rng, 40);
+        let mut vm = VM::new();
+        let _ = vm.eval(&src);
+    });
+    assert!(r.is_ok(), "Forth VM panicked; reproduce with seed {:#x}", r.unwrap_err());
+}
+
+#[test]
+fn fuzz_forth_vm_random_text_never_panics() {
+    // Pure garbage text (not grammar-aware) into the interpreter.
+    let r = hammer(ITERS, 0x9A_BC, |rng| {
+        let src = rand_str(rng, 96);
+        let mut vm = VM::new();
+        let _ = vm.eval(&src);
+    });
+    assert!(r.is_ok(), "Forth VM panicked on random text; seed {:#x}", r.unwrap_err());
+}
+
+#[test]
+fn fuzz_unpack_package_never_panics() {
+    // Random bytes, plus bytes that start with the real UREP magic so the
+    // length/section parsing (not just the magic check) gets exercised.
+    let r = hammer(ITERS, 0x0DEC0, |rng| {
+        let data = if rng.chance(2) {
+            let mut v = b"UREP".to_vec();
+            v.extend(rand_bytes(rng, 64));
+            v
+        } else {
+            rand_bytes(rng, 96)
+        };
+        let _ = spawn::unpack_package(&data);
+    });
+    assert!(r.is_ok(), "unpack_package panicked; reproduce with seed {:#x}", r.unwrap_err());
+}
+
+#[test]
+fn fuzz_deserialize_snapshot_never_panics() {
+    let r = hammer(ITERS, 0x50A9, |rng| {
+        let data = rand_bytes(rng, 128);
+        let _ = persist::deserialize_snapshot(&data);
+    });
+    assert!(r.is_ok(), "deserialize_snapshot panicked; reproduce with seed {:#x}", r.unwrap_err());
+}

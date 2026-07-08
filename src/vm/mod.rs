@@ -1388,11 +1388,13 @@ impl VM {
                 }
             }
             P_ALLOT => {
+                // `n` is an untrusted cell (negative or huge values become an
+                // enormous usize); checked_add keeps a hostile ALLOT from
+                // overflowing `here` instead of being rejected.
                 let n = self.pop() as usize;
-                if self.here + n <= self.memory.len() {
-                    self.here += n;
-                } else {
-                    self.emit_str("error: not enough memory\n");
+                match self.here.checked_add(n) {
+                    Some(end) if end <= self.memory.len() => self.here = end,
+                    _ => self.emit_str("error: not enough memory\n"),
                 }
             }
             P_CELLS => {} // cells are 1 unit each — no-op

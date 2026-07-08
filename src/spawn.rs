@@ -71,9 +71,26 @@ pub fn unpack_package(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String
     let state_size = u64::from_be_bytes(data[13..21].try_into().unwrap()) as usize;
     let prelude_size = u64::from_be_bytes(data[21..29].try_into().unwrap()) as usize;
 
-    let expected = HEADER_SIZE + binary_size + state_size + prelude_size;
-    if data.len() < expected {
-        return Err(format!("truncated: have {} need {}", data.len(), expected));
+    // The three sizes come straight off the wire (a peer's replication
+    // package); sum them with checked arithmetic so a hostile/corrupt header
+    // can't overflow `expected` and wrap past the length check into an
+    // out-of-bounds slice below.
+    let expected = HEADER_SIZE
+        .checked_add(binary_size)
+        .and_then(|x| x.checked_add(state_size))
+        .and_then(|x| x.checked_add(prelude_size));
+    match expected {
+        Some(exp) if data.len() >= exp => {}
+        _ => {
+            return Err(format!(
+                "truncated or invalid sizes: have {} need {}+{}+{}+{}",
+                data.len(),
+                HEADER_SIZE,
+                binary_size,
+                state_size,
+                prelude_size
+            ));
+        }
     }
 
     let mut pos = HEADER_SIZE;

@@ -5,6 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hardened the untrusted-input surface against panics (three fixes found by
+  fuzzing).** A self-replicating unit ingests data it did not author — mesh
+  S-expressions, replication packages, snapshot blobs — so a panic there is a
+  crash/DoS vector:
+  - **Mesh DoS:** the S-expression parser (`sexp::parse`) recursed with no
+    depth bound, so a peer could send deeply nested `(((…` and overflow the
+    receiver's stack (an uncatchable abort). Added a 256-level depth cap;
+    over-deep input now returns a parse error.
+  - **`ALLOT` overflow:** `here + n` for an untrusted/negative cell count could
+    overflow (debug panic; release wrap). Now uses `checked_add` and rejects.
+  - **`unpack_package` overflow:** the three section lengths in a UREP header
+    come off the wire; their sum could overflow past the length check into an
+    out-of-bounds slice. Now summed with `checked_add`.
+
+### Added
+
+- **`fuzz_tests.rs` — a zero-dependency fuzz/property harness** guarding the
+  invariant *no input may panic the VM*. Hand-rolled deterministic PRNG and
+  grammar-aware generators drive the Forth interpreter, the S-expression
+  parser/evaluator, `unpack_package`, and `deserialize_snapshot` through
+  `catch_unwind`; deterministic seeds make any failure reproducible. Runs in
+  the normal `cargo test` (30k iterations/target) as a permanent regression
+  guard. These tests are what surfaced the three fixes above.
+
 ### Changed
 
 - **Split the monolithic `impl VM` into a `words` module tree.** Every

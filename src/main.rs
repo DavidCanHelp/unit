@@ -41,6 +41,10 @@ pub mod multi_unit;
 #[cfg(test)]
 mod integration_tests;
 
+// --- Fuzz / property tests (untrusted-input surface) ---
+#[cfg(test)]
+mod fuzz_tests;
+
 // --- Core nanobot ---
 #[allow(dead_code)]
 pub mod goals;
