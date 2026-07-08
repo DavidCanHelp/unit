@@ -251,6 +251,8 @@ remaining walls (in-process scheduler fairness, async eval) are explicit in
 ```
 src/
 ├── vm/               # Forth virtual machine (~200 primitives)
+├── words/            # Primitive-word impls, split by concern (18 modules)
+│                     #   mesh, immune, evolution, goals, io, spawn, …
 ├── mesh.rs           # UDP gossip, peer discovery, bounded-k fan-out
 ├── multi_unit.rs     # In-process multi-unit host + mesh bridge
 ├── metrics.rs        # Lightweight timing + counter histograms
@@ -270,6 +272,10 @@ src/
 polyglot/go/          # Go organism (expression trees)
 polyglot/python/      # Python organism (AST symbolic regression)
 ```
+
+The `vm/` core defines the `VM` type and the opcode dispatch; the `words/`
+tree provides the primitive implementations as `impl VM` blocks grouped by
+domain, so no single file carries the whole surface.
 
 The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 

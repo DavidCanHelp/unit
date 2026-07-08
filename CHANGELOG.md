@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+
+- **Split the monolithic `impl VM` into a `words` module tree.** Every
+  primitive word (`prim_*`, `do_*`, `rt_*`, and their helpers) previously
+  lived in one ~4,600-line `impl VM` block in `main.rs`. They are now grouped
+  by concern into 18 submodules under `src/words/` (mesh, immune, evolution,
+  goals, io, spawn, persistence, …), each contributing `impl VM` methods that
+  Rust applies to the single `VM` type. `main.rs` drops from 6,526 to ~1,900
+  lines. Methods are `pub(crate)` so the opcode dispatch in `vm/mod.rs` still
+  reaches them across the module boundary. Pure reorganization — no behavior,
+  wire-protocol, or word-set change; all 470 tests pass, `cargo clippy` is
+  warning-free, and the zero-dependency invariant is unchanged.
+
 ## [0.33.0] - 2026-06-10
 
 The published 0.32.0 shipped the distributed work-execution *design*; 0.33.0
