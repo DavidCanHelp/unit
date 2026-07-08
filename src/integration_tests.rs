@@ -422,6 +422,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    // These assertions compare `const` energy values, so clippy sees constant
+    // operands. That is the point: this test guards the *relationships* between
+    // the constants and fails if a future edit weakens an invariant (e.g. makes
+    // spawning unaffordable from the initial energy budget).
+    #[allow(clippy::assertions_on_constants)]
     fn test_constant_consistency() {
         // Verify energy constants are sane.
         assert!(INITIAL_ENERGY > 0);
