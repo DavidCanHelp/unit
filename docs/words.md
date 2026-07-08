@@ -1,9 +1,9 @@
 # unit — Word Reference
 
 339 words in the live dictionary (run `WORDS` to list them). Organized by
-category below. Note: the categorized tables cover the core word set; some
-prelude-defined colony/persona words and a few ops words are in the dictionary
-but not yet tabulated here.
+category below. Stack effects use standard Forth notation `( before -- after )`;
+words shown without one are `( -- )` (pure side effect / print). Words whose
+name ends in `"` parse a trailing string argument up to a closing `"`.
 
 ## Stack
 
@@ -19,9 +19,12 @@ but not yet tabulated here.
 
 | Word | Effect | | Word | Effect |
 |------|--------|-|------|--------|
-| `+` `-` `*` `/` `MOD` | arithmetic | | `=` `<` `>` | comparison |
-| `AND` `OR` `NOT` | bitwise logic | | `ABS` `NEGATE` `MIN` `MAX` | math |
+| `+` `-` `*` `/` `MOD` | arithmetic | | `=` `<` `>` `>=` | comparison |
+| `AND` `OR` `NOT` `INVERT` | bitwise logic | | `ABS` `NEGATE` `MIN` `MAX` | math |
 | `1+` `1-` `2*` `2/` | shortcuts | | `0=` `0<` `<>` `TRUE` `FALSE` | predicates |
+
+`>=` is `( a b -- flag )`; `INVERT` is `( n -- ~n )` (bitwise complement, alias
+of `NOT`).
 
 ## Memory
 
@@ -29,7 +32,11 @@ but not yet tabulated here.
 |------|-------------|
 | `@` `!` | fetch / store |
 | `HERE` `,` `C,` `ALLOT` `CELLS` | data space allocation |
-| `VARIABLE` `CONSTANT` `CREATE` | data words |
+| `VARIABLE` `CONSTANT` `CREATE` `DOES>` | data words |
+
+`DOES>` attaches runtime behavior to the most recently `CREATE`d word
+(seed-level approximation — the code after `DOES>` in a definition becomes that
+word's action).
 
 ## I/O
 
@@ -50,13 +57,21 @@ but not yet tabulated here.
 | `DO` `LOOP` `I` `J` | counted loop |
 | `BEGIN` `UNTIL` `WHILE` `REPEAT` | indefinite loop |
 | `:` `;` `RECURSE` | word definitions |
-| `WORDS` `SEE` `EVAL"` | introspection |
+| `(` `\` | comments — `( ... )` inline, `\` to end of line |
+| `WORDS` `SEE` `EVAL"` `HELP` | introspection |
+| `BYE` `QUIT` | leave the REPL — `BYE` auto-saves first, `QUIT` exits immediately |
+
+`HELP` prints the top-level guide; the topic pages are `HELP-STACK`
+`HELP-MATH` `HELP-MESH` `HELP-GOALS` `HELP-MONITOR` `HELP-SPAWN` `HELP-IO`
+`HELP-COLONY` `HELP-PERSIST` `HELP-EVOLVE` `HELP-DIST` `HELP-MEMORY`
+`HELP-IMMUNE` (all `( -- )`).
 
 ## S-Expressions
 
 | Word | Description |
 |------|-------------|
 | `SEXP"` | parse S-expression, translate to Forth, execute |
+| `SEXP-EVAL"` | evaluate an S-expression in a sandbox, print its `(result ...)` envelope |
 | `SEXP-SEND"` | broadcast S-expression to mesh peers |
 | `SEXP-RECV` | drain inbound S-expression messages |
 
@@ -64,13 +79,19 @@ but not yet tabulated here.
 
 | Word | Description |
 |------|-------------|
-| `PEERS` `MESH-STATUS` `ID` `MY-ADDR` | mesh info |
+| `PEERS` `MESH-STATUS` `ID` `MY-ADDR` `MESH-HELLO` | mesh info |
+| `PEER-COUNT` | `( -- n )` count of connected peers |
+| `MESH-AVG-FITNESS` | `( -- avg )` mean fitness across self + peers |
+| `LOAD` `CAPACITY` | `( -- n )` local load metric / capacity threshold |
 | `PEER-TABLE` `MESH-STATS` `MESH-KEY` | cross-machine |
 | `CONNECT"` `DISCONNECT"` | manual peer management |
 | `SEND` `RECV` | raw messaging |
+| `PROPOSE` `REPLICATE` | broadcast this unit's serialized state (consensus / direct) |
 | `DISCOVER` `AUTO-DISCOVER` | LAN discovery |
 | `SHARE"` `SHARE-ALL` `AUTO-SHARE` `SHARED-WORDS` | word sharing |
-| `SWARM-ON` `SWARM-OFF` `SWARM-STATUS` | swarm mode |
+| `SWARM-ON` `SWARM-OFF` `SWARM` `SWARM-STATUS` | swarm mode |
+| `AUTO-SPAWN` `AUTO-CULL` | toggle population auto-grow / auto-shrink |
+| `MIN-UNITS` `MAX-UNITS` | `( n -- )` population bounds for auto-spawn/cull |
 
 ## Distributed Computation
 
@@ -79,6 +100,9 @@ but not yet tabulated here.
 | `DIST-GOAL{` | distribute pipe-separated expressions across peers |
 | `DIST-STATUS` | show active distributed goals |
 | `DIST-CANCEL` | cancel all distributed goals |
+| `RECRUIT"` | send `"<peer> <s-expr>"` as a recruit round-trip |
+| `RECRUITS` | show outstanding and collected recruit round-trips |
+| `PARALLEL"` | run `"(parallel (e1) (e2) ...)"` under local resource pressure, print collected results |
 
 ## Genetic Programming
 
@@ -116,9 +140,19 @@ but not yet tabulated here.
 |------|-------------|
 | `GOAL"` | `( priority -- id )` description-only goal |
 | `GOAL{` `}` | `( priority -- id )` executable Forth goal |
-| `GOALS` `TASKS` `REPORT` `CLAIM` `COMPLETE` | lifecycle |
+| `GOALS` `TASKS` `REPORT` `CLAIM` `COMPLETE` `STATUS` | lifecycle |
+| `TASK-STATUS` | `( goal-id -- )` task breakdown for one goal |
+| `CANCEL` | `( goal-id -- )` cancel a goal and its tasks |
+| `STEER` | `( goal-id priority -- )` change a goal's priority |
+| `RESULT` | `( task-id -- )` print a completed task's result |
+| `GOAL-RESULT` | `( goal-id -- )` combined results across a goal's tasks |
 | `SUBTASK{` `FORK` `RESULTS` `REDUCE"` `PROGRESS` | decomposition |
 | `AUTO-CLAIM` `TIMEOUT` | execution control |
+| `GOAL-COUNT` | `( -- total pending active completed failed )` goal tallies |
+| `TASK-COUNT` | `( -- total waiting running done failed )` task tallies |
+
+Built-in demo goals (each `( -- id )`): `PING-GOAL` `MATH-GOAL` `STRESS-GOAL`
+`WORDS-GOAL` `HELLO-WORLD`.
 
 ## Monitoring
 
@@ -127,7 +161,11 @@ but not yet tabulated here.
 | `WATCH"` `WATCH-FILE"` `WATCH-PROC"` | create watches |
 | `WATCHES` `UNWATCH` `WATCH-LOG` `UPTIME` | manage watches |
 | `ON-ALERT"` `ALERTS` `ACK` `ALERT-HISTORY` `HEAL` | alerting |
+| `ALERT-THRESHOLD` | `( level -- )` set alert level; reads a trailing `watch-id"` |
+| `CHECK-WATCHES` `RUN-HANDLERS` | `( -- )` run due checks / fire alert handlers |
+| `WATCH-COUNT` `ALERT-COUNT` | `( -- n )` watch / active-alert counts |
 | `DASHBOARD` `HEALTH` `OPS` | overview |
+| `HEALTH-PORT` | `( -- port )` replication port (0 if mesh offline) |
 | `EVERY` `SCHEDULE` `UNSCHED` | scheduling |
 
 ## Fitness & Mutation
@@ -136,8 +174,11 @@ but not yet tabulated here.
 |------|-------------|
 | `FITNESS` `LEADERBOARD` `RATE` | scoring |
 | `MUTATE` `MUTATE-WORD"` `UNDO-MUTATE` `MUTATIONS` | mutation |
+| `MUTATE-RANDOM` | `( -- flag )` mutate a random word; `-1` on success, `0` if none |
+| `UNDO-LAST-MUTATION` | `( -- )` revert the most recent mutation |
 | `SMART-MUTATE` `MUTATION-REPORT` `MUTATION-STATS` | smart mutation |
 | `EVOLVE` `AUTO-EVOLVE` `BENCHMARK"` | fitness-driven evolution |
+| `RUN-BENCHMARK` | `( -- score )` run the benchmark, push its score |
 
 ## Spawn & Replication
 
@@ -147,7 +188,9 @@ but not yet tabulated here.
 | `PACKAGE` `PACKAGE-SIZE` | build UREP package |
 | `REPLICATE-TO"` | remote replication |
 | `TRANSPORT` | self-relocate to a sufficient-first destination with confirm-before-release (costs 150; no-op when not mislocated, no destination, or starving). Unit-invoked, GP-mutable. See [self-replication.md](self-replication.md) |
-| `CHILDREN` `FAMILY` `GENERATION` `KILL-CHILD` | lineage |
+| `CHILDREN` `FAMILY` `FAMILY-TREE` `GENERATION` `KILL-CHILD` | lineage |
+| `CHILD-COUNT` | `( -- n )` number of local children |
+| `SPAWN-TEST` | `( -- )` spawn one child and announce it (demo helper) |
 | `ACCEPT-REPLICATE` `DENY-REPLICATE` `QUARANTINE` `MAX-CHILDREN` | safety |
 
 ## Reproduction
@@ -186,6 +229,7 @@ See [signaling.md](signaling.md) for the design rationale.
 | Word | Description |
 |------|-------------|
 | `TRUST-ALL` `TRUST-MESH` `TRUST-FAMILY` `TRUST-NONE` | trust levels |
+| `TRUST` | `( id -- )` add one node ID to the trusted-peer set |
 | `TRUST-LEVEL` `REQUESTS` `ACCEPT` `DENY` `DENY-ALL` | consent flow |
 | `REPLICATION-LOG` | audit trail |
 
@@ -201,3 +245,75 @@ See [signaling.md](signaling.md) for the design rationale.
 | `SAVE` `LOAD-STATE` `RESET` | binary state management |
 | `SNAPSHOT` `SNAPSHOTS` `RESTORE` | binary versioned backups |
 | `AUTO-SAVE` | binary auto-save |
+| `REIDENTIFY` | `( -- )` generate a new node ID and migrate saved state |
+| `PERSIST-TEST` | `( -- )` `SAVE` and confirm (demo helper) |
+
+## WebSocket Bridge
+
+Live browser view of the mesh. All `( -- )`.
+
+| Word | Description |
+|------|-------------|
+| `WS-STATUS` | bridge running state |
+| `WS-CLIENTS` | connected browser clients |
+| `WS-PORT` | `( -- port )` WebSocket port (0 if not running) |
+| `WS-BROADCAST"` | push a `"message"` to all connected browsers |
+
+## Resource Load
+
+Load generator that forces the resource ceiling for recruit-path testing. Gated
+by `ALLOC-ENABLE` (off by default) so evolved GP code cannot reach it.
+
+| Word | Description |
+|------|-------------|
+| `ALLOC-ENABLE` | `( -- )` toggle the gate that lets `ALLOC-MB` allocate |
+| `ALLOC-MB` | `( mb -- allocated )` allocate & retain N MiB; pushes MiB actually taken (0 if refused/disabled) |
+| `RECLAIM-MB` | `( -- freed )` free all retained allocations; pushes chunk count freed |
+
+## Colony, Persona & Lifecycle
+
+Prelude-defined "creature" vocabulary — a unit is a nanobot, not a process.
+All `( -- )` unless noted. See `HELP-COLONY`.
+
+| Word | Description |
+|------|-------------|
+| `HELLO` | introduce this unit (id, generation, peers, fitness) |
+| `HEADCOUNT` | how many units are in the mesh |
+| `ROLL-CALL` | self report plus the fitness leaderboard |
+| `WORKFORCE` | available units and pending task load |
+| `PATROL` | check watches; run handlers if alerts, else "all clear" |
+| `CHECKUP` | full status: `PATROL` `PROUD` `INTROSPECT` |
+| `PROUD` | one-line fitness / generation / children |
+| `STRETCH` | warm-up busy loop |
+| `BORN` | birth announcement |
+| `GROW` | `EVOLVE` then `MUTATE`, then report fitness |
+| `REPRODUCE` | announce package size and `SPAWN` a child |
+| `REST` `WAKE` | save state / load state (with a message) |
+| `MORNING` `EVENING` | start a shift (`WAKE HELLO CHECKUP`) / end one (`REST`) |
+| `SWARM` | swarm overview: `SWARM-STATUS MESH-STATUS LEADERBOARD` |
+| `SECURE-SWARM` | `SWARM-ON` with mesh-only trust |
+| `LOCKDOWN` | `TRUST-NONE` and `QUARANTINE` — block replication |
+| `JOYFUL` | `( -- flag )` true when this unit has peers |
+| `JOY` | express mesh-connection joy (varies by peer count) |
+| `HOW-ARE-YOU` | status as a mood, varying by fitness and peers |
+| `LONELY` `BUSY` | mood by peer count / task load |
+| `SAY-SOMETHING` | state-driven utterance (cycles via `PERSONALITY-SEED`) |
+| `PERSONALITY-SEED` | `( -- addr )` variable seeding `SAY-SOMETHING` |
+
+## Self-Programming
+
+Words that rewrite the unit's own Forth to match its current state. All `( -- )`
+unless noted. See `HELP-COLONY`.
+
+| Word | Description |
+|------|-------------|
+| `OBSERVE` | record one self-observation (bumps `OBS-COUNT`) |
+| `OBS-COUNT` | `( -- addr )` variable counting adaptations/observations |
+| `COMPOSE-ROUTINE` | pick a routine (social vs. solo) for the current state |
+| `INVENT-GREETER` `INVENT-STRATEGY` | derive a greeter / strategy from state |
+| `MY-ROUTINE` `MY-STRATEGY` `GREET` | default composable words (redefined by `ADAPT`) |
+| `ADAPT` | recompose routine, greeter, and strategy for now |
+| `TEACH` | `ADAPT` then `SHARE-ALL` with the mesh |
+| `REFLECT` | decide whether adaptation is needed |
+| `DREAM` | deep cycle: reflect, invent, compose, mutate, teach |
+| `INTROSPECT` | mood plus adaptation-count history |
