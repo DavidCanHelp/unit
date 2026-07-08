@@ -40,8 +40,11 @@ just wasm        # build the browser demo target
 python3 -m http.server -d web 8000  # serve the demo at http://localhost:8000
 ```
 
-`just --list` shows the rest. `just ci` runs what GitHub Actions runs
-(fmt-check + clippy + tests).
+`just --list` shows the rest. `just ci` runs the core gates GitHub Actions
+enforces on the Rust tree — clippy (`-D warnings`) and the test suite. CI
+additionally runs the shell integration tests and the WASM/Go/Python builds;
+it does **not** run rustfmt, and the tree is hand-formatted, so there is no
+formatting gate to satisfy.
 
 ## The shape of a contribution
 
