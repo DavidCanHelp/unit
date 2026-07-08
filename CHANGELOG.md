@@ -17,6 +17,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   reaches them across the module boundary. Pure reorganization — no behavior,
   wire-protocol, or word-set change; all 470 tests pass, `cargo clippy` is
   warning-free, and the zero-dependency invariant is unchanged.
+- **Split the rest of `main.rs` into focused modules.** The remaining tail —
+  the benchmark harness, the multi-unit runtime (smoke demo + resource-aware
+  node loop), the REPL loop, and CLI parsing — moved out of `main.rs` into
+  `bench.rs`, `node.rs`, `repl.rs`, and `cli.rs`. `main.rs` is now 458 lines:
+  module wiring plus `fn main()`. `bench`/`node` are native-only and cfg'd out
+  on wasm. Same pure-reorganization guarantees: default/http/wasm all build,
+  clippy clean, 470 tests pass, behavior verified end-to-end (REPL, `--eval`,
+  `--bench`, `--multi-unit`), zero dependencies.
 
 ### Documentation
 

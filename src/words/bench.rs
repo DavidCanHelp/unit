@@ -34,12 +34,12 @@ impl VM {
             "sizeof(PeerInfo) = {} bytes (one entry in the per-unit peer table)",
             mesh::peer_info_size_bytes()
         );
-        println!("self RSS at start: {} kB", crate::read_rss_kb());
+        println!("self RSS at start: {} kB", crate::bench::read_rss_kb());
         println!();
 
         // Measure the cost of one real fork once, up-front. Capture as locals
         // because metrics::reset() between populations would otherwise erase it.
-        let (fork_ns, pkg_ns) = crate::bench_measure_one_fork(self);
+        let (fork_ns, pkg_ns) = crate::bench::bench_measure_one_fork(self);
 
         // Largest population for which we will *measurably* build a peer table
         // and run the chatter dispatch loop. Above this we project linearly.
@@ -60,14 +60,14 @@ impl VM {
                 let measure_pop = pop.min(SCALE_CAP);
                 self.run_bench_one(measure_pop, Some(8), "gossip k=8 (capped)");
                 if pop > SCALE_CAP {
-                    crate::project_gossip_to(pop, measure_pop);
+                    crate::bench::project_gossip_to(pop, measure_pop);
                 }
             }
 
             // Memory + peer-table operations at scale.
-            crate::run_scale_bench(pop, SCALE_CAP);
+            crate::bench::run_scale_bench(pop, SCALE_CAP);
             // Spawn projection at this population.
-            crate::project_spawn_to(pop, fork_ns, pkg_ns);
+            crate::bench::project_spawn_to(pop, fork_ns, pkg_ns);
             println!();
         }
     }
@@ -146,7 +146,7 @@ impl VM {
         println!(
             "projected per-tick chatter dispatch [{}]: {} dispatches × {}ns ≈ {:.2}ms",
             label,
-            crate::fmt_human_count(mean_dispatch),
+            crate::bench::fmt_human_count(mean_dispatch),
             mean_proc_ns,
             projected_ms
         );
