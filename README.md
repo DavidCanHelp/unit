@@ -4,7 +4,7 @@
 
 ![unit demo](unit-demo.gif)
 
-**[Try the live demo](https://davidcanhelp.github.io/unit/)** | **Install**: `cargo install unit`
+**[Try the live demo](https://davidcanhelp.github.io/unit/)** · **[Watch it evolve](https://davidcanhelp.github.io/unit/evolve.html)** | **Install**: `cargo install unit`
 
 [![CI](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml/badge.svg)](https://github.com/DavidCanHelp/unit/actions/workflows/ci.yml)
 

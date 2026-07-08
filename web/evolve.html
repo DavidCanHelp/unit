@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="A live genetic-programming arena for the unit nanobot: a real in-browser Forth VM breeds random token-soup into working programs, challenge after challenge — a faithful miniature of unit's Rust evolve.rs.">
+<meta property="og:title" content="unit — watch code evolve itself">
+<meta property="og:description" content="Watch a colony of Forth programs evolve to solve challenges in your browser. Real VM, real genetic programming — a miniature of the unit nanobot's engine.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://davidcanhelp.github.io/unit/evolve.html">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="unit — watch code evolve itself">
+<meta name="twitter:description" content="A live genetic-programming arena: watch random Forth token-soup evolve into working programs, challenge after challenge.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%230a1216' width='100' height='100' rx='16'/><text x='50' y='73' font-size='66' font-family='monospace' fill='%23f2c14e' text-anchor='middle'>u</text></svg>">
+<title>unit — watch code evolve itself</title>
+<style>
+  /* ---- token system ------------------------------------------------ */
+  :root {
+    color-scheme: light dark;
+
+    /* light — "daylight lab" */
+    --bg: #e7ebe4;
+    --panel: #f6f8f3;
+    --panel-2: #eef2ea;
+    --ink: #15201b;
+    --muted: #56645c;
+    --faint: #7d8a81;
+    --line: #ccd6cc;
+    --line-soft: #dde4dc;
+    --accent: #a9701a;         /* amber, darkened for light ground */
+    --accent-ink: #6f4a10;
+    --cool: #3a4c96;
+    --good: #2f7d52;
+    --shadow: 0 1px 2px rgba(20,30,25,.06), 0 8px 30px rgba(20,30,25,.06);
+    --arena-bg: #0c1418;       /* the arena stays dark in both themes: it is glass over a culture */
+    --arena-line: #1c2f35;
+    --arena-ink: #d7e4dd;
+    --arena-muted: #6f847e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a1216;
+      --panel: #0f1c21;
+      --panel-2: #12232a;
+      --ink: #e6efe9;
+      --muted: #829892;
+      --faint: #61756f;
+      --line: #20363c;
+      --line-soft: #182a30;
+      --accent: #f2c14e;
+      --accent-ink: #f7d67a;
+      --cool: #7d90e0;
+      --good: #58c98b;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 14px 40px rgba(0,0,0,.45);
+      --arena-bg: #0c1418;
+      --arena-line: #1c2f35;
+      --arena-ink: #d7e4dd;
+      --arena-muted: #6f847e;
+    }
+  }
+  /* explicit toggle wins both directions */
+  :root[data-theme="light"] {
+    --bg:#e7ebe4; --panel:#f6f8f3; --panel-2:#eef2ea; --ink:#15201b;
+    --muted:#56645c; --faint:#7d8a81; --line:#ccd6cc; --line-soft:#dde4dc;
+    --accent:#a9701a; --accent-ink:#6f4a10; --cool:#3a4c96; --good:#2f7d52;
+    --shadow:0 1px 2px rgba(20,30,25,.06), 0 8px 30px rgba(20,30,25,.06);
+    --arena-bg:#0c1418; --arena-line:#1c2f35; --arena-ink:#d7e4dd; --arena-muted:#6f847e;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0a1216; --panel:#0f1c21; --panel-2:#12232a; --ink:#e6efe9;
+    --muted:#829892; --faint:#61756f; --line:#20363c; --line-soft:#182a30;
+    --accent:#f2c14e; --accent-ink:#f7d67a; --cool:#7d90e0; --good:#58c98b;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 14px 40px rgba(0,0,0,.45);
+    --arena-bg:#0c1418; --arena-line:#1c2f35; --arena-ink:#d7e4dd; --arena-muted:#6f847e;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(120% 80% at 50% -10%, color-mix(in oklab, var(--accent) 7%, var(--bg)) 0%, var(--bg) 46%),
+      var(--bg);
+    color: var(--ink);
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: clamp(20px, 5vw, 56px) clamp(16px, 4vw, 40px) 72px; }
+
+  /* ---- masthead ---------------------------------------------------- */
+  .top { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: baseline; gap: 12px; }
+  .brand b { font-size: 20px; letter-spacing: .04em; font-weight: 700; }
+  .brand span { color: var(--muted); font-size: 12.5px; letter-spacing: .12em; text-transform: uppercase; }
+  .themebtn {
+    font: inherit; font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); background: transparent; border: 1px solid var(--line);
+    padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .themebtn:hover { color: var(--ink); border-color: var(--accent); }
+  .themebtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---- hero / thesis ----------------------------------------------- */
+  .hero { margin: clamp(28px, 6vw, 64px) 0 clamp(22px, 4vw, 40px); }
+  .eyebrow { color: var(--accent-ink); font-size: 12.5px; letter-spacing: .2em; text-transform: uppercase; }
+  .thesis {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif;
+    font-weight: 500;
+    font-size: clamp(28px, 5.4vw, 50px);
+    line-height: 1.08; letter-spacing: -.01em; text-wrap: balance;
+    margin: 14px 0 0; max-width: 20ch;
+  }
+  .thesis em { font-style: italic; color: var(--accent); }
+  .lede {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif;
+    font-size: clamp(16px, 2.1vw, 19px); line-height: 1.55; color: var(--muted);
+    max-width: 60ch; margin: 20px 0 0;
+  }
+  .lede b { color: var(--ink); font-weight: 600; }
+
+  /* ---- arena ------------------------------------------------------- */
+  .arena {
+    margin-top: clamp(24px, 4vw, 40px);
+    background: var(--arena-bg);
+    border: 1px solid var(--arena-line);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    color: var(--arena-ink);
+  }
+  .arena-head {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 16px 20px; border-bottom: 1px solid var(--arena-line);
+  }
+  .arena-head .label { font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--arena-muted); }
+  .target-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+  .pill {
+    font: inherit; font-size: 13px; font-variant-numeric: tabular-nums;
+    color: var(--arena-ink); background: transparent;
+    border: 1px solid var(--arena-line); border-radius: 8px; padding: 5px 11px; cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .pill:hover { border-color: color-mix(in oklab, var(--accent) 60%, var(--arena-line)); }
+  .pill[aria-pressed="true"] {
+    color: #0c1418; background: var(--accent);
+    border-color: var(--accent); font-weight: 700;
+  }
+  .pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .arena-body { display: grid; grid-template-columns: 1fr; gap: 0; }
+  @media (min-width: 720px) { .arena-body { grid-template-columns: 1.35fr 1fr; } }
+
+  .grid-wrap { position: relative; padding: 20px; }
+  .grid-wrap::after { /* soft glass vignette */
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(100% 70% at 50% 0%, transparent 55%, rgba(4,8,10,.55) 100%);
+  }
+  canvas#pop { width: 100%; height: auto; display: block; border-radius: 8px; }
+
+  .side { padding: 20px; border-top: 1px solid var(--arena-line); }
+  @media (min-width: 720px) { .side { border-top: none; border-left: 1px solid var(--arena-line); } }
+
+  .champ-label { font-size: 11.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--arena-muted); }
+  .champ {
+    margin: 10px 0 2px; min-height: 58px;
+    display: flex; flex-wrap: wrap; gap: 5px; align-content: flex-start;
+  }
+  .tok {
+    font-size: 15px; font-variant-numeric: tabular-nums;
+    padding: 3px 8px; border-radius: 6px;
+    background: color-mix(in oklab, var(--accent) 8%, transparent);
+    border: 1px solid color-mix(in oklab, var(--accent) 22%, var(--arena-line));
+    color: var(--arena-ink);
+  }
+  .tok.op { color: var(--accent); }
+  .tok.flash { animation: flash .6s ease; }
+  @keyframes flash {
+    0% { background: var(--accent); color: #0c1418; transform: translateY(-2px); }
+    100% { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+  }
+  .champ-out { font-size: 13px; color: var(--arena-muted); margin-top: 6px; }
+  .champ-out b { color: var(--arena-ink); font-weight: 600; }
+
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px 18px; margin-top: 20px; }
+  .stat .k { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--arena-muted); }
+  .stat .v { font-size: 22px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .stat .v.solved { color: var(--accent); }
+
+  .spark { margin-top: 18px; }
+  .spark .k { font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--arena-muted); }
+  canvas#spark { width: 100%; height: 46px; display: block; margin-top: 6px; }
+
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 20px; border-top: 1px solid var(--arena-line); }
+  .btn {
+    font: inherit; font-size: 13px; letter-spacing: .04em;
+    padding: 8px 16px; border-radius: 9px; cursor: pointer;
+    border: 1px solid var(--arena-line); background: color-mix(in oklab, #ffffff 4%, var(--arena-bg)); color: var(--arena-ink);
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn.primary { background: var(--accent); color: #0c1418; border-color: var(--accent); font-weight: 700; }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .speed { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--arena-muted); font-size: 12px; }
+  .speed input { accent-color: var(--accent); }
+
+  .mesh { display: flex; align-items: center; gap: 10px; padding: 0 20px 18px; color: var(--arena-muted); font-size: 12.5px; }
+  .nodes { display: inline-flex; gap: 7px; }
+  .node { width: 11px; height: 11px; border-radius: 50%; background: var(--arena-line); transition: background .4s, box-shadow .4s; }
+  .node.lit { background: var(--accent); box-shadow: 0 0 10px 1px color-mix(in oklab, var(--accent) 70%, transparent); }
+  .mesh .said { color: var(--arena-ink); }
+
+  /* ---- essay ------------------------------------------------------- */
+  .essay { margin-top: clamp(40px, 7vw, 76px); }
+  .essay h2 {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif;
+    font-weight: 500; font-size: clamp(21px, 3vw, 27px); letter-spacing: -.01em; margin: 0 0 6px;
+  }
+  .essay p {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif;
+    color: var(--muted); max-width: 64ch; font-size: 16.5px; margin: 12px 0 0;
+  }
+  .essay p b { color: var(--ink); font-weight: 600; }
+  .concerns { list-style: none; padding: 0; margin: 26px 0 0; display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .concerns li { display: grid; grid-template-columns: 128px 1fr; gap: 16px; padding: 14px 18px; background: var(--panel); }
+  @media (max-width: 520px){ .concerns li { grid-template-columns: 1fr; gap: 3px; } }
+  .concerns .c { color: var(--accent-ink); text-transform: uppercase; letter-spacing: .1em; font-size: 12px; padding-top: 2px; }
+  .concerns .d { color: var(--muted); font-size: 14px; }
+  .concerns .d b { color: var(--ink); font-weight: 600; }
+
+  /* ---- repl -------------------------------------------------------- */
+  .repl { margin-top: clamp(38px, 6vw, 64px); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+  .repl-head { padding: 15px 18px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .repl-head b { letter-spacing: .04em; }
+  .repl-head span { color: var(--muted); font-size: 13px; }
+  .repl-out { padding: 14px 18px; min-height: 132px; max-height: 240px; overflow-y: auto; font-size: 13.5px; }
+  .repl-out .line { white-space: pre-wrap; word-break: break-word; }
+  .repl-out .in { color: var(--ink); }
+  .repl-out .in .caret { color: var(--accent); }
+  .repl-out .ok { color: var(--muted); }
+  .repl-out .res { color: var(--good); }
+  .repl-out .err { color: #d1584f; }
+  @media (prefers-color-scheme: dark) { .repl-out .err { color: #f0857a; } }
+  :root[data-theme="dark"] .repl-out .err { color: #f0857a; }
+  :root[data-theme="light"] .repl-out .err { color: #d1584f; }
+  .repl-in { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--line-soft); padding: 12px 18px; }
+  .repl-in .caret { color: var(--accent); }
+  .repl-in input {
+    flex: 1; font: inherit; font-size: 14px; color: var(--ink);
+    background: transparent; border: none; outline: none;
+  }
+  .repl-in input::placeholder { color: var(--faint); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 18px 15px; }
+  .chip { font: inherit; font-size: 12px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 7px; padding: 4px 9px; cursor: pointer; }
+  .chip:hover { border-color: var(--accent); color: var(--ink); }
+  .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---- footer ------------------------------------------------------ */
+  footer { margin-top: clamp(44px, 7vw, 76px); padding-top: 22px; border-top: 1px solid var(--line); color: var(--faint); font-size: 13px; line-height: 1.7; }
+  footer a { color: var(--accent-ink); text-decoration: none; border-bottom: 1px solid color-mix(in oklab, var(--accent) 40%, transparent); }
+  footer a:hover { color: var(--accent); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tok.flash { animation: none; }
+    .node { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand"><b>unit</b><span>a software nanobot</span></div>
+    <button class="themebtn" id="themebtn" type="button" aria-label="Toggle light or dark theme">◐ theme</button>
+  </div>
+
+  <header class="hero">
+    <div class="eyebrow">Artificial life · genetic programming · zero dependencies</div>
+    <h1 class="thesis">The dictionary is the genome. The code is the <em>organism</em>.</h1>
+    <p class="lede">Below is a real genetic-programming engine running in your browser — a faithful miniature of unit's Rust
+      <b>evolve.rs</b>. Eighty-four candidate programs start as random Forth token-soup. None were written; they're
+      <b>bred</b> — scored by fitness, culled by tournament, recombined and reshaped by five mutation operators. Pick a
+      target and watch one converge.</p>
+  </header>
+
+  <!-- ================= ARENA ================= -->
+  <section class="arena" aria-label="Live evolution arena">
+    <div class="arena-head">
+      <span class="label">Population · fitness map</span>
+      <div class="target-pills" id="targets" role="group" aria-label="Choose a target value">
+        <button class="pill" data-t="42" type="button">→ 42</button>
+        <button class="pill" data-t="55" type="button">→ 55</button>
+        <button class="pill" data-t="100" type="button">→ 100</button>
+        <button class="pill" data-t="256" type="button">→ 256</button>
+        <button class="pill" data-t="rand" type="button">→ ?</button>
+      </div>
+    </div>
+
+    <div class="arena-body">
+      <div class="grid-wrap">
+        <canvas id="pop" width="600" height="392" aria-label="Grid of candidate programs colored by fitness"></canvas>
+      </div>
+
+      <div class="side">
+        <div class="champ-label">Fittest specimen · generation <span id="genlabel">0</span></div>
+        <div class="champ" id="champ" aria-live="polite"></div>
+        <div class="champ-out" id="champout">stack top: <b>—</b></div>
+
+        <div class="stats">
+          <div class="stat"><div class="k">Target</div><div class="v" id="s-target">55</div></div>
+          <div class="stat"><div class="k">Distance</div><div class="v" id="s-dist">—</div></div>
+          <div class="stat"><div class="k">Generation</div><div class="v" id="s-gen">0</div></div>
+          <div class="stat"><div class="k">Metabolism</div><div class="v" id="s-energy">5000</div></div>
+        </div>
+
+        <div class="spark">
+          <div class="k">Best fitness over time</div>
+          <canvas id="spark" width="520" height="92"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="btn primary" id="run" type="button">Evolve ▸</button>
+      <button class="btn" id="step" type="button">Step +1</button>
+      <button class="btn" id="reset" type="button">Reset</button>
+      <label class="speed">slow
+        <input type="range" id="speed" min="1" max="30" value="9" aria-label="Generations per second">
+        fast</label>
+    </div>
+
+    <div class="mesh" aria-live="polite">
+      <span>mesh</span>
+      <span class="nodes" id="nodes" aria-hidden="true"></span>
+      <span id="meshtext">idle — evolve a solution and it broadcasts as an antibody.</span>
+    </div>
+  </section>
+
+  <!-- ================= ESSAY ================= -->
+  <section class="essay">
+    <h2>What you just watched</h2>
+    <p>There is no separation here between the program and the thing being optimized. In unit, a Forth <b>word</b> —
+      a named sequence of instructions in the dictionary — <em>is</em> a gene. To mutate the organism is to edit its
+      code; to run it is to express its phenotype. Selection acts directly on the source.</p>
+    <p>That collapse is the whole idea, and everything else grows from it: a unit can inspect itself (<b>SEE</b>),
+      mutate itself (<b>SMART-MUTATE</b>), share a discovered word with neighbours (<b>SHARE-ALL</b>), and spawn a
+      child that inherits the entire dictionary (<b>SPAWN</b>). When a real unit can't solve a problem, it registers
+      the failure as a challenge and broadcasts it; every unit on the mesh evolves in parallel, and the first verified
+      solution installs as an antibody (<b>SOL-*</b>) that children inherit. The arena above is that loop, shrunk to
+      one machine.</p>
+
+    <ul class="concerns">
+      <li><span class="c">Execute</span><span class="d"><b>Forth VM</b> — stacks, a dictionary, an inner interpreter that defines new words at runtime.</span></li>
+      <li><span class="c">Communicate</span><span class="d"><b>S-expressions over UDP</b> — units gossip, discover peers, and broadcast in a form any language can parse.</span></li>
+      <li><span class="c">Replicate</span><span class="d"><b>SPAWN</b> — a unit reads its own binary, packages its state, and forks a child that boots with the parent's genome.</span></li>
+      <li><span class="c">Mutate</span><span class="d"><b>Genetic programming</b> — tournament selection over a population, five token-level operators: swap · insert · delete · replace · double.</span></li>
+      <li><span class="c">Persist</span><span class="d"><b>JSON snapshots</b> — hibernate and resurrect exactly where it left off.</span></li>
+    </ul>
+  </section>
+
+  <!-- ================= REPL ================= -->
+  <section class="repl" aria-label="Interactive Forth">
+    <div class="repl-head"><b>Now you try</b><span>a real Forth — define a word and it joins the genome</span></div>
+    <div class="repl-out" id="rout"></div>
+    <div class="repl-in">
+      <span class="caret">›</span>
+      <input id="rin" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="2 3 + .   or   : SQUARE DUP * ;   then   7 SQUARE .">
+    </div>
+    <div class="chips" id="chips" aria-label="Example programs">
+      <button class="chip" type="button" data-x="2 3 + .">2 3 + .</button>
+      <button class="chip" type="button" data-x=": SQUARE DUP * ;">: SQUARE DUP * ;</button>
+      <button class="chip" type="button" data-x="7 SQUARE .">7 SQUARE .</button>
+      <button class="chip" type="button" data-x="5 9 * 9 + 1 + .">5 9 * 9 + 1 + .</button>
+      <button class="chip" type="button" data-x=".S">.S</button>
+    </div>
+  </section>
+
+  <footer>
+    A playable miniature. The real <b>unit</b> is a ~1.5&nbsp;MB, zero-dependency Rust binary that also speaks a UDP
+    gossip mesh, spawns child processes, and runs three orders of meta-evolution — 339 words, 470 tests.
+    <br>Source and the live WASM build: <a href="https://github.com/DavidCanHelp/unit" target="_blank" rel="noopener">github.com/DavidCanHelp/unit</a>.
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- theme toggle ---------- */
+  const root = document.documentElement;
+  document.getElementById("themebtn").addEventListener("click", () => {
+    const cur = root.getAttribute("data-theme")
+      || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    root.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
+    drawSpark();
+  });
+
+  /* =====================================================================
+     A small but real Forth VM. Shared by the GP engine and the REPL.
+     ===================================================================== */
+  const PRIMS = {
+    "+": s => { const b=s.pop(), a=s.pop(); s.push((a+b)|0); },
+    "-": s => { const b=s.pop(), a=s.pop(); s.push((a-b)|0); },
+    "*": s => { const b=s.pop(), a=s.pop(); s.push(Math.max(-1e9, Math.min(1e9, a*b))|0); },
+    "/": s => { const b=s.pop(), a=s.pop(); if(b===0) throw "division by zero"; s.push((a/b)|0); },
+    "MOD": s => { const b=s.pop(), a=s.pop(); if(b===0) throw "division by zero"; s.push((a%b)|0); },
+    "DUP": s => { const a=s.pop(); s.push(a); s.push(a); },
+    "DROP": s => { s.pop(); },
+    "SWAP": s => { const b=s.pop(), a=s.pop(); s.push(b); s.push(a); },
+    "OVER": s => { const b=s.pop(), a=s.pop(); s.push(a); s.push(b); s.push(a); },
+    "ROT": s => { const c=s.pop(), b=s.pop(), a=s.pop(); s.push(b); s.push(c); s.push(a); },
+    "NEGATE": s => { s.push((-s.pop())|0); },
+    "ABS": s => { s.push(Math.abs(s.pop())|0); },
+  };
+
+  // A checked stack: underflow throws (this is how a real unit fails a challenge).
+  function makeStack() {
+    const a = [];
+    return {
+      push: v => a.push(v),
+      pop: () => { if (a.length === 0) throw "stack underflow"; return a.pop(); },
+      get length(){ return a.length; },
+      arr: a,
+    };
+  }
+
+  // Run a flat token list (numbers + primitive names). Returns the stack array.
+  function runTokens(tokens, budget = 4000) {
+    const s = makeStack();
+    let steps = 0;
+    for (const t of tokens) {
+      if (++steps > budget) throw "step budget exceeded";
+      if (t === "" ) continue;
+      const n = Number(t);
+      if (Number.isInteger(n) && /^-?\d+$/.test(t)) { s.push(n); continue; }
+      const p = PRIMS[t];
+      if (!p) throw "unknown word " + t;
+      p(s);
+    }
+    return s.arr;
+  }
+
+  /* =====================================================================
+     Genetic programming — faithful to the shape of evolve.rs:
+     population, gradient fitness, tournament selection, elitism, and the
+     five token-level mutation operators.
+     ===================================================================== */
+  const ALPHABET = ["1","2","3","4","5","6","7","8","9","+","-","*","DUP","SWAP","OVER"];
+  const OPSET = new Set(["+","-","*","DUP","SWAP","OVER","ROT","NEGATE","ABS","MOD","/"]);
+  const POP = 84, GRID_C = 12, GRID_R = 7;   // 12 × 7 = 84
+  const TOURNEY = 5, ELITE = 3, MAXLEN = 18;
+
+  let rngState = 1234567;
+  function rnd() { // deterministic-ish PRNG so a session is reproducible
+    rngState ^= rngState << 13; rngState ^= rngState >>> 17; rngState ^= rngState << 5;
+    return ((rngState >>> 0) % 100000) / 100000;
+  }
+  const ri = n => Math.floor(rnd() * n);
+  const pick = arr => arr[ri(arr.length)];
+
+  function randProgram() {
+    const len = 2 + ri(6);
+    const p = [];
+    for (let i = 0; i < len; i++) p.push(pick(ALPHABET));
+    return p;
+  }
+
+  // evaluate: returns {result|null, fitness 0..1, ok}
+  function evaluate(prog, target) {
+    let top = null, ok = true;
+    try {
+      const st = runTokens(prog);
+      if (st.length === 0) { ok = false; }
+      else top = st[st.length - 1];
+    } catch (e) { ok = false; }
+    if (!ok || top === null) return { result: null, fitness: 0.0005, ok: false };
+    const dist = Math.abs(top - target);
+    // sharp gradient toward the target, with a light parsimony pressure
+    let f = 1 / (1 + dist * dist * 0.25);
+    f *= 1 - Math.min(0.15, (prog.length / MAXLEN) * 0.15);
+    return { result: top, fitness: f, ok: true };
+  }
+
+  // the five operators
+  function mutate(prog) {
+    let p = prog.slice();
+    const op = ri(5);
+    if (p.length >= MAXLEN && (op === 1 || op === 4)) return p; // respect length cap
+    switch (op) {
+      case 0: if (p.length) p[ri(p.length)] = pick(ALPHABET); break;          // replace
+      case 1: p.splice(ri(p.length + 1), 0, pick(ALPHABET)); break;            // insert
+      case 2: if (p.length > 1) p.splice(ri(p.length), 1); break;             // delete
+      case 3: if (p.length > 1) { const i=ri(p.length), j=ri(p.length); const t=p[i]; p[i]=p[j]; p[j]=t; } break; // swap
+      case 4: if (p.length) { const i=ri(p.length); p.splice(i, 0, p[i]); } break; // double
+    }
+    return p;
+  }
+
+  // single-point recombination — two parents, one child
+  function crossover(a, b) {
+    const i = ri(a.length + 1), j = ri(b.length + 1);
+    let c = a.slice(0, i).concat(b.slice(j));
+    if (c.length > MAXLEN) c = c.slice(0, MAXLEN);
+    if (c.length === 0) c = [pick(ALPHABET)];
+    return c;
+  }
+
+  function tournament(pop) {
+    let best = null;
+    for (let i = 0; i < TOURNEY; i++) {
+      const c = pop[ri(pop.length)];
+      if (!best || c.fit > best.fit) best = c;
+    }
+    return best;
+  }
+
+  /* ---------- simulation state ---------- */
+  let target = 100;
+  let pop = [];          // [{prog, fit, res, ok}]
+  let gen = 0;
+  let best = null;       // {prog, fit, res}
+  let history = [];      // best fitness per gen
+  let energy = 5000;     // metabolic budget — evolving costs, living regenerates
+  let solved = false;
+  let bestFit = 0, stale = 0;   // stagnation tracking for extinction events
+
+  function seed() {
+    rngState = ((Math.random() * 4294967296) >>> 0) || 1;  // fresh evolution each run
+    pop = [];
+    for (let i = 0; i < POP; i++) {
+      const prog = randProgram();
+      const e = evaluate(prog, target);
+      pop.push({ prog, fit: e.fitness, res: e.result, ok: e.ok });
+    }
+    gen = 0; history = []; energy = 5000; solved = false;
+    bestFit = 0; stale = 0;
+    recomputeBest();
+    setMesh("idle — evolve a solution and it broadcasts as an antibody.", false);
+  }
+
+  function recomputeBest() {
+    best = pop.reduce((m, c) => (c.fit > m.fit ? c : m), pop[0]);
+    history.push(best.fit);
+    if (history.length > 220) history.shift();
+  }
+
+  function nextGen() {
+    if (solved) return;
+    // track stagnation on the best fitness
+    if (best.fit > bestFit + 1e-9) { bestFit = best.fit; stale = 0; } else stale++;
+
+    const sorted = pop.slice().sort((a, b) => b.fit - a.fit);
+    const next = sorted.slice(0, ELITE);   // elitism: carry the fittest forward
+
+    // escalating "extinction event" — the longer the colony stalls at a local
+    // optimum, the more fresh random blood it takes in to break out.
+    let injFrac = 0;
+    if (stale > 140) { injFrac = 0.5; bestFit *= 0.98; }  // let a stuck record decay
+    else if (stale > 60) injFrac = 0.28;
+    else if (stale > 25) injFrac = 0.15;
+    const inject = Math.floor(POP * injFrac);
+
+    while (next.length < POP) {
+      let childProg;
+      if (next.length < POP - inject) {
+        const p1 = tournament(pop);
+        // half recombine two parents, half clone one — then mutate 1–3 times
+        childProg = rnd() < 0.5 ? crossover(p1.prog, tournament(pop).prog) : p1.prog.slice();
+        const rounds = 1 + (rnd() < 0.5 ? 1 : 0) + (rnd() < 0.2 ? 1 : 0);
+        for (let r = 0; r < rounds; r++) childProg = mutate(childProg);
+      } else {
+        childProg = randProgram();   // fresh blood
+      }
+      const e = evaluate(childProg, target);
+      next.push({ prog: childProg, fit: e.fitness, res: e.result, ok: e.ok });
+    }
+    pop = next;
+    gen++;
+    energy = Math.max(0, energy - 5 + 3);   // metabolism: cost to evolve, passive regen
+    recomputeBest();
+    if (best.res === target) onSolved();
+  }
+
+  /* ---------- rendering: population canvas ---------- */
+  const popCanvas = document.getElementById("pop");
+  const pctx = popCanvas.getContext("2d");
+  let dpr = Math.min(2, window.devicePixelRatio || 1);
+
+  function sizePop() {
+    const w = popCanvas.clientWidth || 600;
+    const cell = w / GRID_C;
+    const h = cell * GRID_R;
+    popCanvas.width = Math.round(w * dpr);
+    popCanvas.height = Math.round(h * dpr);
+    popCanvas.style.height = h + "px";
+  }
+
+  // metabolic fitness ramp: indigo → violet → ember → gold
+  const STOPS = [
+    [0.00, [35, 42, 77]],
+    [0.40, [109, 63, 138]],
+    [0.72, [199, 107, 63]],
+    [1.00, [244, 207, 90]],
+  ];
+  function ramp(t) {
+    t = Math.max(0, Math.min(1, t));
+    for (let i = 1; i < STOPS.length; i++) {
+      if (t <= STOPS[i][0]) {
+        const [t0, c0] = STOPS[i - 1], [t1, c1] = STOPS[i];
+        const k = (t - t0) / (t1 - t0);
+        return c0.map((v, j) => Math.round(v + (c1[j] - v) * k));
+      }
+    }
+    return STOPS[STOPS.length - 1][1];
+  }
+
+  function drawPop(time) {
+    const W = popCanvas.width, H = popCanvas.height;
+    pctx.clearRect(0, 0, W, H);
+    const cw = W / GRID_C, ch = H / GRID_R;
+    const pad = Math.max(1.5, cw * 0.05);
+    // order cells by fitness so the map reads as a gradient field
+    const order = pop.map((p, i) => i).sort((a, b) => pop[b].fit - pop[a].fit);
+    for (let idx = 0; idx < POP; idx++) {
+      const p = pop[order[idx]];
+      const gx = idx % GRID_C, gy = (idx / GRID_C) | 0;
+      const x = gx * cw + pad, y = gy * ch + pad;
+      const w = cw - pad * 2, h = ch - pad * 2;
+      // fitness → color; scale fitness for visual contrast
+      const shown = Math.pow(p.fit, 0.5);
+      const [r, g, b] = ramp(shown);
+      // gentle metabolic pulse (unless reduced motion)
+      const pulse = reduceMotion ? 1 : 0.82 + 0.18 * Math.sin(time / 620 + idx * 0.5);
+      pctx.fillStyle = `rgba(${r},${g},${b},${(0.35 + 0.65 * shown) * pulse})`;
+      roundRect(pctx, x, y, w, h, Math.min(6 * dpr, w * 0.18));
+      pctx.fill();
+      // champion ring
+      if (order[idx] === pop.indexOf(best)) {
+        pctx.strokeStyle = "rgba(244,207,90," + (reduceMotion ? 0.9 : (0.6 + 0.4 * Math.sin(time / 300))) + ")";
+        pctx.lineWidth = 1.6 * dpr;
+        roundRect(pctx, x - 1, y - 1, w + 2, h + 2, Math.min(7 * dpr, w * 0.2));
+        pctx.stroke();
+      }
+    }
+  }
+  function roundRect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  /* ---------- rendering: sparkline ---------- */
+  const sparkCanvas = document.getElementById("spark");
+  const sctx = sparkCanvas.getContext("2d");
+  function drawSpark() {
+    const cssW = sparkCanvas.clientWidth || 520, cssH = 46;
+    sparkCanvas.width = cssW * dpr; sparkCanvas.height = cssH * dpr;
+    sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    sctx.clearRect(0, 0, cssW, cssH);
+    if (history.length < 2) return;
+    const accent = "#f2c14e";
+    const n = history.length;
+    const x = i => (i / (n - 1)) * cssW;
+    const y = v => cssH - 4 - v * (cssH - 8);
+    // area
+    sctx.beginPath();
+    sctx.moveTo(0, cssH);
+    history.forEach((v, i) => sctx.lineTo(x(i), y(v)));
+    sctx.lineTo(cssW, cssH); sctx.closePath();
+    const grad = sctx.createLinearGradient(0, 0, 0, cssH);
+    grad.addColorStop(0, "rgba(242,193,78,.28)");
+    grad.addColorStop(1, "rgba(242,193,78,0)");
+    sctx.fillStyle = grad; sctx.fill();
+    // line
+    sctx.beginPath();
+    history.forEach((v, i) => (i ? sctx.lineTo(x(i), y(v)) : sctx.moveTo(x(i), y(v))));
+    sctx.strokeStyle = accent; sctx.lineWidth = 1.6; sctx.lineJoin = "round"; sctx.stroke();
+    // endpoint
+    const lv = history[n - 1];
+    sctx.beginPath(); sctx.arc(x(n - 1), y(lv), 2.6, 0, 7); sctx.fillStyle = accent; sctx.fill();
+  }
+
+  /* ---------- champion panel ---------- */
+  const champEl = document.getElementById("champ");
+  const champOut = document.getElementById("champout");
+  let prevProg = [];
+  function drawChamp() {
+    const prog = best.prog;
+    champEl.innerHTML = "";
+    prog.forEach((t, i) => {
+      const span = document.createElement("span");
+      span.className = "tok" + (OPSET.has(t) ? " op" : "") + (prevProg[i] !== t ? " flash" : "");
+      span.textContent = t;
+      champEl.appendChild(span);
+    });
+    prevProg = prog.slice();
+    const r = best.res;
+    champOut.innerHTML = "stack top: <b>" + (r === null ? "— (crashed)" : r) + "</b>"
+      + (r === target ? "  ✓ solved" : "");
+  }
+
+  /* ---------- stats + mesh ---------- */
+  const $ = id => document.getElementById(id);
+  function drawStats() {
+    $("genlabel").textContent = gen;
+    $("s-target").textContent = target;
+    $("s-gen").textContent = gen;
+    const dist = best.res === null ? "∞" : Math.abs(best.res - target);
+    const de = $("s-dist"); de.textContent = dist;
+    de.classList.toggle("solved", dist === 0);
+    $("s-energy").textContent = energy;
+  }
+
+  const nodesEl = document.getElementById("nodes");
+  for (let i = 0; i < 6; i++) { const d = document.createElement("span"); d.className = "node"; nodesEl.appendChild(d); }
+  function setMesh(text, lit) {
+    document.getElementById("meshtext").innerHTML = text;
+    nodesEl.querySelectorAll(".node").forEach((n, i) => {
+      if (lit) setTimeout(() => n.classList.add("lit"), reduceMotion ? 0 : i * 120);
+      else n.classList.remove("lit");
+    });
+  }
+
+  let holdUntil = 0;
+  const CYCLE = [100, 42, 256, 55];   // reliably-reachable base challenges
+  let cycleIdx = 0;
+
+  function onSolved() {
+    solved = true;                     // stop evolving THIS target...
+    const src = best.prog.join(" ");
+    setMesh("solved in <span class='said'>" + gen + " generations</span> — <span class='said'>: SOL-"
+      + target + " " + src + " ;</span> installed, broadcast to peers.", true);
+    holdUntil = perfNow() + 2600;      // ...savour the win, then take the next challenge
+  }
+
+  // The colony never idles: a solved challenge begets the next one (harder ones
+  // keep emerging), exactly as the real immune loop generates fib10 -> fib15 -> …
+  function nextChallenge() {
+    cycleIdx++;
+    const t = (cycleIdx % 3 === 0) ? (24 + ri(220)) : CYCLE[cycleIdx % CYCLE.length];
+    setTarget(t);
+  }
+
+  /* ---------- main loop ---------- */
+  let running = false, acc = 0, last = 0, gensPerSec = 9;
+  const runBtn = $("run");
+  const LABEL_RUN = "Evolve ▸", LABEL_PAUSE = "Pause ❚❚";
+  const perfNow = () => (window.performance && performance.now) ? performance.now() : last;
+
+  function frame(now) {
+    if (!last) last = now;
+    const dt = now - last; last = now;
+    if (running) {
+      if (solved) {
+        if (now >= holdUntil) nextChallenge();          // move on to the next problem
+      } else {
+        acc += dt;
+        const interval = 1000 / gensPerSec;
+        let guard = 0;
+        while (acc >= interval && guard < 8) { nextGen(); acc -= interval; guard++; if (solved) break; }
+        if (!solved && gen >= 450) nextChallenge();      // abandon a stubborn one, stay alive
+        drawChamp(); drawStats(); drawSpark();
+      }
+    }
+    drawPop(now);
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- controls ---------- */
+  function setTarget(t) {
+    target = t;
+    const known = ["42", "55", "100", "256"];
+    document.querySelectorAll("#targets .pill").forEach(p => {
+      const on = p.dataset.t === String(t) || (p.dataset.t === "rand" && !known.includes(String(t)));
+      p.setAttribute("aria-pressed", String(on));
+    });
+    seed(); drawChamp(); drawStats(); drawSpark();
+  }
+  document.getElementById("targets").addEventListener("click", e => {
+    const b = e.target.closest(".pill"); if (!b) return;
+    const raw = b.dataset.t;
+    setTarget(raw === "rand" ? (24 + ri(220)) : Number(raw));
+  });
+  runBtn.addEventListener("click", () => {
+    running = !running;
+    if (running && solved) nextChallenge();
+    runBtn.textContent = running ? LABEL_PAUSE : LABEL_RUN;
+  });
+  $("step").addEventListener("click", () => {
+    running = false; runBtn.textContent = LABEL_RUN;
+    if (solved) nextChallenge();
+    else { nextGen(); drawChamp(); drawStats(); drawSpark(); }
+  });
+  $("reset").addEventListener("click", () => { running = false; runBtn.textContent = LABEL_RUN; seed(); drawChamp(); drawStats(); drawSpark(); });
+  $("speed").addEventListener("input", e => { gensPerSec = Number(e.target.value); });
+
+  /* =====================================================================
+     REPL — the same VM, plus `:` definitions and a couple of REPL words.
+     ===================================================================== */
+  const dict = {};            // user-defined words: name -> token array
+  const routEl = document.getElementById("rout");
+  const persistentStack = makeStack();
+
+  function print(cls, text) {
+    const d = document.createElement("div");
+    d.className = "line " + cls;
+    d.textContent = text;
+    routEl.appendChild(d);
+    routEl.scrollTop = routEl.scrollHeight;
+  }
+  function printEcho(src) {
+    const d = document.createElement("div");
+    d.className = "line in";
+    d.innerHTML = "<span class='caret'>›</span> " + src.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    routEl.appendChild(d);
+  }
+
+  // execute one token stream against the persistent stack, with output capture
+  function replRun(src) {
+    const toks = src.trim().split(/\s+/).filter(Boolean);
+    let out = "";
+    let i = 0;
+    const s = persistentStack;
+    while (i < toks.length) {
+      const t = toks[i];
+      const T = t.toUpperCase();
+      if (t === ":") {
+        // compile a definition
+        const name = toks[i + 1];
+        if (!name) throw "colon: expected a name";
+        let j = i + 2, body = [];
+        while (j < toks.length && toks[j] !== ";") { body.push(toks[j]); j++; }
+        if (j >= toks.length) throw "colon: missing ;";
+        dict[name.toUpperCase()] = body;
+        i = j + 1;
+        out += "defined " + name.toUpperCase() + " ";
+        continue;
+      }
+      if (t === ".") { out += s.pop() + " "; i++; continue; }
+      if (T === ".S") { out += "<" + s.length + "> " + s.arr.join(" ") + " "; i++; continue; }
+      if (T === "CR") { out += "\n"; i++; continue; }
+      const num = Number(t);
+      if (Number.isInteger(num) && /^-?\d+$/.test(t)) { s.push(num); i++; continue; }
+      if (PRIMS[T]) { PRIMS[T](s); i++; continue; }
+      if (dict[T]) { // expand user word (one level; good enough for a demo, supports nesting via recursion)
+        runUser(dict[T], s, out2 => out += out2);
+        i++; continue;
+      }
+      throw "unknown word " + t;
+    }
+    return out;
+  }
+  function runUser(body, s, emit) {
+    for (let i = 0; i < body.length; i++) {
+      const t = body[i], T = t.toUpperCase();
+      if (t === ".") { emit(s.pop() + " "); continue; }
+      if (T === ".S") { emit("<" + s.length + "> " + s.arr.join(" ") + " "); continue; }
+      const num = Number(t);
+      if (Number.isInteger(num) && /^-?\d+$/.test(t)) { s.push(num); continue; }
+      if (PRIMS[T]) { PRIMS[T](s); continue; }
+      if (dict[T]) { runUser(dict[T], s, emit); continue; }
+      throw "unknown word " + t;
+    }
+  }
+
+  function submit(src) {
+    if (!src.trim()) return;
+    printEcho(src);
+    try {
+      const out = replRun(src);
+      if (out.trim()) print("res", out.trim() + "  ok");
+      else print("ok", "ok");
+    } catch (e) {
+      print("err", "✗ " + e);
+    }
+  }
+
+  const rin = document.getElementById("rin");
+  rin.addEventListener("keydown", e => {
+    if (e.key === "Enter") { submit(rin.value); rin.value = ""; }
+  });
+  document.getElementById("chips").addEventListener("click", e => {
+    const b = e.target.closest(".chip"); if (!b) return;
+    rin.value = b.dataset.x; rin.focus();
+  });
+  // seed the REPL with a friendly first line
+  print("ok", "unit repl — a real Forth. try the chips below, or type your own.");
+
+  /* ---------- boot ---------- */
+  window.addEventListener("resize", () => { dpr = Math.min(2, window.devicePixelRatio || 1); sizePop(); drawSpark(); });
+  sizePop();
+  setTarget(100);
+  requestAnimationFrame(frame);
+  // gentle auto-start so the page opens alive (unless the viewer prefers no motion)
+  if (!reduceMotion) { running = true; runBtn.textContent = "Pause ❚❚"; }
+})();
+</script>
+</body>
+</html>
