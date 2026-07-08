@@ -18,6 +18,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   wire-protocol, or word-set change; all 470 tests pass, `cargo clippy` is
   warning-free, and the zero-dependency invariant is unchanged.
 
+### Documentation
+
+- Refreshed stale figures across README and CONTRIBUTING to match the current
+  tree: native binary ~1.2 MB → ~1.5 MB, WASM ~338 KB → ~425 KB, Rust test
+  count 255+ → 470+, and the live dictionary size 315/316 → 339 words. Added
+  `src/words/` to the README architecture map. `docs/words.md` now states the
+  true dictionary size and notes that its categorized tables cover the core
+  set (some prelude colony/persona and ops words remain to be tabulated).
+
 ## [0.33.0] - 2026-06-10
 
 The published 0.32.0 shipped the distributed work-execution *design*; 0.33.0

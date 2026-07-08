@@ -65,7 +65,7 @@ replace, double) to dictionary entries, with benchmarking to keep
 beneficial changes and revert harmful ones. JSON persistence lets a unit
 hibernate and resurrect exactly where it left off.
 
-This is what fits in a 1.2 MB binary with zero dependencies.
+This is what fits in a ~1.5 MB binary with zero dependencies.
 
 ### Layer 2: Emergent Behavior
 
@@ -147,7 +147,7 @@ mating with #cafe (fitness=45)...
   fibonacci: 100% (modifier: 2.0x)
 ```
 
-See [docs/words.md](docs/words.md) for the complete word reference (315 words).
+See [docs/words.md](docs/words.md) for the word reference (339 words in the live dictionary).
 
 ## Interfaces
 
@@ -279,11 +279,11 @@ domain, so no single file carries the whole surface.
 
 The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 
-255+ Rust tests, 22 Python tests, Go tests. Zero dependencies.
+470+ Rust tests, 22 Python tests, Go tests. Zero dependencies.
 
 ## Documentation
 
-- [docs/words.md](docs/words.md) — complete word reference (316 words)
+- [docs/words.md](docs/words.md) — word reference (339 words in the live dictionary)
 - [docs/protocol.md](docs/protocol.md) — S-expression wire format and mesh protocol
 - [docs/operations.md](docs/operations.md) — monitoring, goals, trust, persistence, swarm mode
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — two-tier deployment design rationale and bench results
@@ -294,8 +294,8 @@ The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 
 | Target | Size |
 |--------|------|
-| Native (macOS arm64, release) | ~1.2 MB |
-| WASM (browser) | ~338 KB |
+| Native (macOS arm64, release) | ~1.5 MB |
+| WASM (browser) | ~425 KB |
 
 ## License
 

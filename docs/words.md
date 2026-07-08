@@ -1,6 +1,9 @@
 # unit — Word Reference
 
-315 words. Organized by category.
+339 words in the live dictionary (run `WORDS` to list them). Organized by
+category below. Note: the categorized tables cover the core word set; some
+prelude-defined colony/persona words and a few ops words are in the dictionary
+but not yet tabulated here.
 
 ## Stack
 

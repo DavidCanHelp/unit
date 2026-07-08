@@ -5,7 +5,7 @@ mechanisms, performance work, WASM compatibility fixes, visualization
 improvements, language bindings, docs, bug reports, design discussion. The
 project sits at the intersection of artificial-life research and Rust
 systems work; whether you arrived from the ALIFE paper or from a hacker-news
-thread about a 1.2 MB Forth interpreter, you are equally welcome here.
+thread about a ~1.5 MB Forth interpreter, you are equally welcome here.
 
 If you're not sure where your idea fits, open an issue and ask. Most things
 that sound interesting probably are.
@@ -47,7 +47,7 @@ python3 -m http.server -d web 8000  # serve the demo at http://localhost:8000
 
 Branch from `main`. Keep PRs focused — one concern per PR is easier to
 review than five. Add a test where it makes sense; the existing suite
-(`cargo test`, ~255 Rust tests) is the safety net. Run `just ci` before
+(`cargo test`, ~470 Rust tests) is the safety net. Run `just ci` before
 opening the PR.
 
 A few area-specific notes:
