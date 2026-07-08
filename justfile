@@ -58,8 +58,10 @@ swarm n="3":
     done
     wait
 
-# Full CI check (what GitHub Actions runs)
-ci: fmt-check lint test
+# Core CI gates, mirroring GitHub Actions' Rust job (clippy + tests).
+# rustfmt is intentionally NOT a gate — the tree is hand-formatted and CI
+# does not run fmt-check. Use `just fmt` / `just fmt-check` opt-in if you like.
+ci: lint test
 
 # Publish to crates.io (dry run)
 publish-dry:
