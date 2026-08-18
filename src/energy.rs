@@ -30,6 +30,22 @@ pub const MESH_SEND_COST: i64 = 1;
 /// Energy cost for SAY! — direct signal broadcast (v0.28). Starting
 /// calibration; tunable in the v0.28.x patch series.
 pub const SAY_COST: i64 = 3;
+
+/// GIVE: friction dissipated per gift (beyond the gifted amount itself) —
+/// no free lunch, and gift ping-pong between units decays instead of
+/// cycling forever.
+pub const GIVE_FRICTION: i64 = 1;
+/// GIVE: cap per single gift (parity with FEED's cap).
+pub const GIVE_MAX: i64 = 500;
+/// Bounty a recruiter attaches to a recruit message when it can afford to —
+/// spent at send, earned by the worker on completing the work. The wage
+/// half of the energy economy: energy moves with labor across the mesh.
+pub const RECRUIT_BOUNTY: i64 = 10;
+/// Cap on the bounty a worker will accept from any single message. Recruit
+/// messages are unauthenticated datagrams; the cap bounds how fast a forged
+/// flood can mint energy (same trust posture as SAY! — honesty is selected,
+/// but inflation is rate-limited).
+pub const BOUNTY_ACCEPT_CAP: i64 = 50;
 /// Energy cost for MARK! — environmental signal deposit (v0.28). Costs
 /// more than SAY! because the effect persists across ticks.
 pub const MARK_COST: i64 = 5;

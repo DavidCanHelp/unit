@@ -761,8 +761,12 @@ fn test_recruit_parse_error_is_visible() {
 fn test_recruiter_emits_wellformed() {
     let mut vm = test_vm();
     let msg = vm.send_recruit("peerABC", 4, 1, "(* 6 7)");
-    // node_id_cache unset in test_vm -> :from "local".
-    assert_eq!(msg, "(recruit :id 4 :seq 1 :from \"local\" :instr \"(* 6 7)\")");
+    // node_id_cache unset in test_vm -> :from "local". A funded recruiter
+    // attaches (and pays) the standard wage.
+    assert_eq!(
+        msg,
+        "(recruit :id 4 :seq 1 :from \"local\" :bounty 10 :instr \"(* 6 7)\")"
+    );
     assert!(vm.recruit_ledger.is_pending(4, 1));
 }
 
@@ -2275,4 +2279,62 @@ fn test_sandboxed_execution_is_exempt_from_metering() {
         vm.energy.energy, before,
         "sandboxed evaluation must not drain metabolic energy"
     );
+}
+
+// -----------------------------------------------------------------------
+// The energy economy: recruit bounty — energy moves with labor
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_worker_earns_bounty_on_completed_recruit() {
+    let mut vm = test_vm();
+    let before = vm.energy.energy;
+    let msg = crate::distgoal::sexp_recruit(9, 0, "recruiter-hex", "(+ 2 3)", 10);
+    vm.process_chatter_msg(&msg);
+    assert_eq!(
+        vm.energy.energy,
+        before + 10,
+        "the worker collected the wage for completed work"
+    );
+}
+
+#[test]
+fn test_forged_bounty_is_capped() {
+    let mut vm = test_vm();
+    let before = vm.energy.energy;
+    // A hostile message promising a fortune mints at most the accept cap.
+    let msg = "(recruit :id 9 :seq 0 :from \"evil\" :bounty 999999 :instr \"(+ 1 1)\")";
+    vm.process_chatter_msg(msg);
+    assert_eq!(
+        vm.energy.energy,
+        before + crate::energy::BOUNTY_ACCEPT_CAP,
+        "bounty acceptance is capped against forged inflation"
+    );
+}
+
+#[test]
+fn test_no_bounty_no_wage_but_work_still_served() {
+    let mut vm = test_vm();
+    let before = vm.energy.energy;
+    let msg = crate::distgoal::sexp_recruit(9, 0, "recruiter-hex", "(+ 2 3)", 0);
+    vm.process_chatter_msg(&msg);
+    assert_eq!(vm.energy.energy, before, "no wage attached, none minted");
+}
+
+#[test]
+fn test_recruiter_pays_the_bounty_when_it_can() {
+    let mut vm = test_vm();
+    vm.energy.energy = 1000;
+    let msg = vm.send_recruit("some-peer", 4, 0, "(* 6 7)");
+    assert!(msg.contains(":bounty 10"), "wage attached: {msg}");
+    assert_eq!(vm.energy.energy, 990, "recruiter spent the bounty at send");
+}
+
+#[test]
+fn test_broke_recruiter_recruits_at_bounty_zero() {
+    let mut vm = test_vm();
+    vm.energy.energy = -495; // deep debt: cannot afford a wage
+    let msg = vm.send_recruit("some-peer", 4, 0, "(* 6 7)");
+    assert!(!msg.contains(":bounty"), "no wage promised: {msg}");
+    assert_eq!(vm.energy.energy, -495, "and nothing spent");
 }

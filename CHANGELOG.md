@@ -33,6 +33,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **The energy economy: flows instead of faucets.** Two conserved energy
+  flows join the minted rewards:
+  - **`GIVE ( n -- )` — the gift.** Donate up to 500 energy; the host
+    routes it to the lowest-energy sibling. Exactly conserved with
+    friction: donor spends n+1, recipient earns n, 1 dissipates (so gift
+    ping-pong decays rather than cycling). A lone unit's undeliverable
+    gift returns minus friction. Like SAY!/TRANSPORT it is unit-invoked
+    and GP-mutable — generosity is a life strategy a lineage can evolve
+    into its `LIVE`. Signal routing is now wired into the node tick, which
+    also makes SAY!/MARK! actually flow between siblings in node mode
+    (previously only exercised in tests). 344 words.
+  - **Recruit `:bounty` — the wage.** A recruiter attaches 10 energy to
+    each `(recruit …)` when it can afford it, spending it at send; the
+    worker earns it on completing the work (`RecruitOutcome::Reply` —
+    a unit that merely delegated earns nothing). Acceptance is capped at
+    50 per message: recruit datagrams are unauthenticated, so a forged
+    flood can't hyper-inflate. A broke recruiter recruits at bounty 0 and
+    the work may still be served — the wage is an incentive selection can
+    act on, not a mandate.
+
 - **`LIVE` — the life loop is now genome.** What a unit does with an idle
   tick was host policy (`GP-EVOLVE`, hard-coded in the multi-unit tick);
   it is now a prelude word the host *calls* and the dictionary *defines*:

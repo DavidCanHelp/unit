@@ -27,6 +27,18 @@ impl VM {
         self.check_auto_evolve();
         self.check_incoming_replications();
         self.energy.tick();
+        // A lone unit has no host to route its outbox: drain it here so it
+        // can't grow without bound, refunding undeliverable energy gifts
+        // (GIVE's friction stays lost — thermodynamics; the gift returns).
+        // Plain signals are simply dropped, as they always effectively were.
+        if !self.outbox.is_empty() {
+            let outgoing = std::mem::take(&mut self.outbox);
+            for signal in outgoing {
+                if matches!(signal.kind, crate::signaling::SignalKind::EnergyGift) {
+                    self.energy.earn(signal.value, "gift-returned");
+                }
+            }
+        }
         self.landscape.tick();
         self.tick_monitor();
         self.tick_swarm();

@@ -294,6 +294,7 @@ pub(crate) const P_LISTEN: usize = 505;
 pub(crate) const P_INBOX_QUERY: usize = 506;
 pub(crate) const P_MARK_BANG: usize = 507;
 pub(crate) const P_SENSE: usize = 508;
+pub(crate) const P_GIVE: usize = 509;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -835,6 +836,7 @@ impl VM {
             ("INBOX?", P_INBOX_QUERY, false),
             ("MARK!", P_MARK_BANG, false),
             ("SENSE", P_SENSE, false),
+            ("GIVE", P_GIVE, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1796,6 +1798,7 @@ impl VM {
             P_INBOX_QUERY => self.prim_inbox_query(),
             P_MARK_BANG => self.prim_mark_bang(),
             P_SENSE => self.prim_sense(),
+            P_GIVE => self.prim_give(),
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),
@@ -1885,6 +1888,34 @@ impl VM {
         self.signal_tick = self.signal_tick.wrapping_add(1);
         self.outbox
             .push(crate::signaling::Signal::direct(sender, value, self.signal_tick));
+    }
+
+    /// `GIVE` ( n -- ) — donate n energy to the neediest sibling. Costs the
+    /// gift plus one friction unit; the host routes it to the lowest-energy
+    /// sibling (conserved: donor spends n+1, recipient earns n, friction
+    /// dissipates; an undeliverable gift returns minus friction). Like SAY!
+    /// and TRANSPORT this is unit-invoked and GP-mutable — generosity is a
+    /// life strategy a lineage can evolve, not host policy.
+    pub(crate) fn prim_give(&mut self) {
+        if self.stack.is_empty() {
+            if !self.silent {
+                eprintln!("stack underflow");
+            }
+            return;
+        }
+        let n = self.pop().clamp(0, crate::energy::GIVE_MAX);
+        if n == 0 {
+            return;
+        }
+        let total = n + crate::energy::GIVE_FRICTION;
+        if !self.energy.can_afford(total) {
+            return;
+        }
+        let _ = self.energy.spend(total, "gift");
+        let sender = self.node_id_cache.unwrap_or([0u8; 8]);
+        self.signal_tick = self.signal_tick.wrapping_add(1);
+        self.outbox
+            .push(crate::signaling::Signal::energy_gift(sender, n, self.signal_tick));
     }
 
     /// `LISTEN` ( -- v -1 | 0 ) — pop oldest inbox entry. On hit push

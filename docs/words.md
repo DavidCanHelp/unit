@@ -1,6 +1,6 @@
 # unit — Word Reference
 
-343 words in the live dictionary (run `WORDS` to list them). Organized by
+344 words in the live dictionary (run `WORDS` to list them). Organized by
 category below. Stack effects use standard Forth notation `( before -- after )`;
 words shown without one are `( -- )` (pure side effect / print). Words whose
 name ends in `"` parse a trailing string argument up to a closing `"`.
@@ -221,6 +221,7 @@ See [signaling.md](signaling.md) for the design rationale.
 | `LISTEN` | `( -- v -1 \| 0 )` | 0 | pop oldest inbox entry; push value+flag, or 0 if empty |
 | `INBOX?` | `( -- n )` | 0 | push count of pending inbox entries |
 | `MARK!` | `( v -- )` | 5 | deposit `v` into per-host environmental field, keyed by dominant niche (native only; WASM shim) |
+| `GIVE` | `( n -- )` | n+1 | donate `n` energy (max 500) to the neediest sibling — conserved: donor spends n+1, recipient earns n, 1 friction dissipates; a lone unit's gift returns minus friction |
 | `SENSE` | `( -- v )` | 0 | read current environmental strength for this unit's niche (native only; WASM shim) |
 | `COURT` | `( -- )` | 3 | prelude word: `: COURT FITNESS SAY! ;` — honest mate-finding signal |
 

@@ -442,7 +442,8 @@ impl VM {
             .node_id_cache
             .map(|id| crate::mesh::id_to_hex(&id))
             .unwrap_or_else(|| "local".to_string());
-        let msg = distgoal::sexp_recruit(goal_id, seq, &my_id, instr);
+        let bounty = self.recruit_bounty();
+        let msg = distgoal::sexp_recruit(goal_id, seq, &my_id, instr, bounty);
         // Retain the instruction and the holding peer so supervision can
         // re-recruit this slot if `peer_hex` later dies.
         self.recruit_ledger.open(goal_id, seq, instr, peer_hex);
@@ -555,9 +556,24 @@ impl VM {
             .node_id_cache
             .map(|id| crate::mesh::id_to_hex(&id))
             .unwrap_or_else(|| "local".to_string());
-        let msg = distgoal::sexp_recruit(goal_id, seq, &my_id, instr);
+        let bounty = self.recruit_bounty();
+        let msg = distgoal::sexp_recruit(goal_id, seq, &my_id, instr, bounty);
         self.recruit_ledger.reassign(goal_id, seq, new_peer);
         self.send_to_node(new_peer, &msg);
+    }
+
+    /// The recruiter's side of the wage: spend [`energy::RECRUIT_BOUNTY`]
+    /// now and attach it to the outgoing recruit, if affordable. A recruiter
+    /// that can't pay recruits at bounty 0 — the work may still be served;
+    /// the wage is an incentive that selection can act on, not a mandate.
+    fn recruit_bounty(&mut self) -> i64 {
+        if self.energy.can_afford(energy::RECRUIT_BOUNTY)
+            && self.energy.spend(energy::RECRUIT_BOUNTY, "recruit-bounty")
+        {
+            energy::RECRUIT_BOUNTY
+        } else {
+            0
+        }
     }
 
     /// RECRUIT" <peer> <s-expr>" — manual recruit trigger. Parses a target peer
@@ -863,18 +879,33 @@ impl VM {
                                 .and_then(|s| s.as_str())
                                 .unwrap_or("")
                                 .to_string();
+                            // The wage the recruiter attached (already spent
+                            // on its side). Accept-capped: recruit messages
+                            // are unauthenticated, so a forged flood can
+                            // mint at most BOUNTY_ACCEPT_CAP per message.
+                            let bounty = sexp
+                                .get_key(":bounty")
+                                .and_then(|s| s.as_number())
+                                .unwrap_or(0)
+                                .clamp(0, energy::BOUNTY_ACCEPT_CAP);
                             if !instr.is_empty() {
                                 // Live measure so a recruited (parallel ...)
                                 // re-applies the ceiling decision at this level.
                                 let mut measure = crate::resources::HostResources::measure;
                                 match self.handle_recruit(goal_id, seq, &instr, &from, &mut measure)
                                 {
-                                    // Completed here: reply to the recruiter now.
+                                    // Completed here: reply to the recruiter
+                                    // now — and collect the wage. Work was
+                                    // performed; energy moved with it.
                                     distgoal::RecruitOutcome::Reply(reply) => {
                                         self.send_to_node(&from, &reply);
+                                        if bounty > 0 {
+                                            self.energy.earn(bounty, "recruit-wage");
+                                        }
                                     }
                                     // Recruited overflow: no reply now; this unit
                                     // self-reports up once its child job completes.
+                                    // No wage at this hop — it delegated the work.
                                     distgoal::RecruitOutcome::Deferred { .. } => {}
                                 }
                             }

@@ -82,8 +82,12 @@ Metabolic energy makes it real. Every operation costs something: spawning
 costs 200, each GP generation costs 5, even mesh messages cost 1 — and
 execution itself is metered: every 10,000 VM steps of top-level thought
 costs 1 energy, so a runaway loop starves to death instead of hanging the
-organism. Units that run out are throttled. Children inherit a fraction of
-the parent's energy. Reproduction is a metabolic investment.
+organism. Units that run out are throttled; a unit pinned at the floor too long
+dies, bequeathing its antibodies. And energy *flows*: `GIVE` donates to
+the neediest sibling (conserved, with friction), and recruiters attach a
+`:bounty` their workers earn on completing the work — a gift and a wage.
+Children inherit a fraction of the parent's energy. Reproduction is a
+metabolic investment.
 
 Then three orders of evolution emerged. The GP engine evolves solutions
 (first-order). A MetaEvolver maintains a population of Forth programs
@@ -150,7 +154,7 @@ mating with #cafe (fitness=45)...
   fibonacci: 100% (modifier: 2.0x)
 ```
 
-See [docs/words.md](docs/words.md) for the word reference (343 words in the live dictionary).
+See [docs/words.md](docs/words.md) for the word reference (344 words in the live dictionary).
 
 ## Interfaces
 
@@ -291,7 +295,7 @@ The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 
 ## Documentation
 
-- [docs/words.md](docs/words.md) — word reference (343 words in the live dictionary)
+- [docs/words.md](docs/words.md) — word reference (344 words in the live dictionary)
 - [docs/protocol.md](docs/protocol.md) — S-expression wire format and mesh protocol
 - [docs/operations.md](docs/operations.md) — monitoring, goals, trust, persistence, swarm mode
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — two-tier deployment design rationale and bench results

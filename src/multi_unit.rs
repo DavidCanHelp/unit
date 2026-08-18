@@ -169,6 +169,29 @@ impl MultiUnitHost {
                     // No-op on wasm32 — MARK! shim never produces these
                     // signals, but defend against future code paths.
                 }
+                crate::signaling::SignalKind::EnergyGift => {
+                    // Route the gift to the neediest sibling. The donor
+                    // already spent value + friction at GIVE time, so the
+                    // transfer conserves: donor − (n+1), recipient + n,
+                    // friction dissipated. An undeliverable gift (no
+                    // sibling) returns to the donor — friction still lost.
+                    let poorest = self
+                        .units
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != idx)
+                        .min_by_key(|(_, s)| s.vm.energy.energy)
+                        .map(|(j, _)| j);
+                    match poorest {
+                        Some(j) => {
+                            self.units[j].vm.energy.earn(signal.value, "gift-received");
+                            delivered += 1;
+                        }
+                        None => {
+                            self.units[idx].vm.energy.earn(signal.value, "gift-returned");
+                        }
+                    }
+                }
             }
         }
         delivered
@@ -367,6 +390,8 @@ impl MultiUnitHost {
             slot.vm.eval("LIVE");
         }
         slot.busy = false;
+        // Route anything LIVE emitted (signals, energy gifts).
+        self.route_signals_from(idx);
         Some(idx)
     }
 }
@@ -735,14 +760,18 @@ impl MultiUnitNode {
         //    runaway LIVE starve instead of hanging the host; a unit
         //    without LIVE idles.
         let mut evolved_units = 0;
-        for slot in self.host.units.iter_mut() {
-            if !slot.busy {
-                slot.busy = true;
-                if slot.vm.find_word("LIVE").is_some() {
-                    slot.vm.eval("LIVE");
+        for i in 0..self.host.units.len() {
+            if !self.host.units[i].busy {
+                self.host.units[i].busy = true;
+                if self.host.units[i].vm.find_word("LIVE").is_some() {
+                    self.host.units[i].vm.eval("LIVE");
                 }
-                slot.busy = false;
+                self.host.units[i].busy = false;
                 evolved_units += 1;
+                // Route anything LIVE emitted — SAY!/MARK! signals and GIVE
+                // energy gifts — so evolved social behavior actually flows
+                // between siblings every tick.
+                self.host.route_signals_from(i);
             }
         }
 
@@ -1319,6 +1348,25 @@ mod bridge_tests {
             "GP debt does not accumulate toward death"
         );
     }
+
+    #[test]
+    fn evolved_altruism_flows_through_the_tick() {
+        // A lineage that evolved generosity into LIVE: each tick it gives 10
+        // to the neediest sibling. The tick must route the gift.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(2);
+        a.host.units[0].vm.eval(": LIVE 10 GIVE ;");
+        a.host.units[0].vm.energy.energy = 1000;
+        a.host.units[1].vm.eval(": LIVE ;"); // idle sibling
+        a.host.units[1].vm.energy.energy = 0;
+
+        let _ = a.tick(&under_ceiling_reading(), never_transport);
+
+        // Sibling got the gift (+10) and its passive regen (+1).
+        assert_eq!(a.host.units[1].vm.energy.energy, 11, "gift arrived via the tick");
+        // Donor: -11 for the gift+friction, +1 regen.
+        assert_eq!(a.host.units[0].vm.energy.energy, 1000 - 11 + 1);
+    }
 }
 
 #[cfg(test)]
@@ -1816,5 +1864,64 @@ mod tests {
         assert_eq!(n, 0, "existing antibody not overwritten");
         vm.eval("SOL-MINE");
         assert_eq!(vm.stack.last().copied(), Some(1), "original definition kept");
+    }
+
+    // -------------------------------------------------------------------
+    // The energy economy: GIVE — flows, not faucets
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn give_flows_to_the_poorest_sibling_and_conserves() {
+        let mut h = MultiUnitHost::new(4);
+        h.spawn();
+        h.spawn();
+        h.spawn();
+        h.units[0].vm.energy.energy = 1000; // donor
+        h.units[1].vm.energy.energy = 400;
+        h.units[2].vm.energy.energy = 100; // poorest
+        let total_before: i64 = h.units.iter().map(|u| u.vm.energy.energy).sum();
+
+        h.units[0].vm.eval("50 GIVE");
+        h.route_signals_from(0);
+
+        assert_eq!(h.units[0].vm.energy.energy, 1000 - 51, "donor paid gift + friction");
+        assert_eq!(h.units[1].vm.energy.energy, 400, "middle sibling untouched");
+        assert_eq!(h.units[2].vm.energy.energy, 150, "poorest received the gift");
+        let total_after: i64 = h.units.iter().map(|u| u.vm.energy.energy).sum();
+        assert_eq!(total_after, total_before - 1, "exactly the friction dissipated");
+    }
+
+    #[test]
+    fn give_with_no_sibling_returns_minus_friction() {
+        let mut h = MultiUnitHost::new(4);
+        h.spawn();
+        h.units[0].vm.energy.energy = 1000;
+        h.units[0].vm.eval("50 GIVE");
+        h.route_signals_from(0);
+        assert_eq!(
+            h.units[0].vm.energy.energy,
+            999,
+            "undeliverable gift returned; friction lost"
+        );
+    }
+
+    #[test]
+    fn give_is_clamped_and_refused_when_unaffordable() {
+        let mut h = MultiUnitHost::new(4);
+        h.spawn();
+        h.spawn();
+        // Clamp: a 9999 gift becomes GIVE_MAX.
+        h.units[0].vm.energy.energy = 2000;
+        h.units[1].vm.energy.energy = 0;
+        h.units[0].vm.eval("9999 GIVE");
+        h.route_signals_from(0);
+        assert_eq!(h.units[1].vm.energy.energy, crate::energy::GIVE_MAX);
+        // Refusal: a unit near the floor cannot give at all.
+        h.units[0].vm.energy.energy = -490;
+        let before = h.units[1].vm.energy.energy;
+        h.units[0].vm.eval("50 GIVE");
+        h.route_signals_from(0);
+        assert_eq!(h.units[1].vm.energy.energy, before, "no gift from the destitute");
+        assert_eq!(h.units[0].vm.energy.energy, -490, "and nothing spent");
     }
 }

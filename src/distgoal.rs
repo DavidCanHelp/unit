@@ -321,13 +321,23 @@ pub fn sexp_dist_complete(goal_id: GoalId, results: &str, peers: usize) -> Strin
 /// instruction to a peer. The routing fields (`:id`, `:seq`, `:from`) let the
 /// recruiter match the eventual `(recruit-result ...)` back to this slot;
 /// `:instr` carries the s-expression instruction text the worker evaluates
-/// through the eval_sexp seam.
-pub fn sexp_recruit(goal_id: GoalId, seq: usize, from: &str, instr: &str) -> String {
+/// through the eval_sexp seam. `:bounty` is the wage the recruiter attached
+/// (already spent on its side); the worker earns it — capped by
+/// [`crate::energy::BOUNTY_ACCEPT_CAP`] — when it completes the work. A
+/// bounty of 0 (recruiter couldn't afford one) is omitted; older peers that
+/// don't know the field simply ignore it.
+pub fn sexp_recruit(goal_id: GoalId, seq: usize, from: &str, instr: &str, bounty: i64) -> String {
+    let bounty_field = if bounty > 0 {
+        format!(" :bounty {}", bounty)
+    } else {
+        String::new()
+    };
     format!(
-        "(recruit :id {} :seq {} :from \"{}\" :instr \"{}\")",
+        "(recruit :id {} :seq {} :from \"{}\"{} :instr \"{}\")",
         goal_id,
         seq,
         from,
+        bounty_field,
         instr.replace('"', "\\\"")
     )
 }
@@ -1006,8 +1016,20 @@ mod tests {
 
     #[test]
     fn test_sexp_recruit_shape() {
-        let s = sexp_recruit(7, 2, "abc", "(+ 2 3)");
+        let s = sexp_recruit(7, 2, "abc", "(+ 2 3)", 0);
         assert_eq!(s, "(recruit :id 7 :seq 2 :from \"abc\" :instr \"(+ 2 3)\")");
+    }
+
+    #[test]
+    fn test_sexp_recruit_carries_bounty_when_paid() {
+        let s = sexp_recruit(7, 2, "abc", "(+ 2 3)", 10);
+        assert_eq!(
+            s,
+            "(recruit :id 7 :seq 2 :from \"abc\" :bounty 10 :instr \"(+ 2 3)\")"
+        );
+        // And it parses with the bounty readable.
+        let parsed = crate::sexp::parse(&s).unwrap();
+        assert_eq!(parsed.get_key(":bounty").unwrap().as_number(), Some(10));
     }
 
     #[test]

@@ -26,6 +26,11 @@ pub const INBOX_CAP: usize = 64;
 pub enum SignalKind {
     Direct,
     Environmental { niche: NicheCategory },
+    /// An energy gift (`GIVE`): `value` units of energy, already spent by
+    /// the donor, to be routed by the host to the neediest sibling. The
+    /// first flow of the colony's energy economy — energy moves between
+    /// units instead of being minted and destroyed per-unit.
+    EnergyGift,
 }
 
 /// One signal in flight. Single-cell payload, sender id, kind, sent-at
@@ -58,6 +63,15 @@ impl Signal {
             sender,
             value,
             kind: SignalKind::Environmental { niche },
+            sent_at_tick,
+        }
+    }
+
+    pub fn energy_gift(sender: NodeId, amount: i64, sent_at_tick: u64) -> Self {
+        Signal {
+            sender,
+            value: amount,
+            kind: SignalKind::EnergyGift,
             sent_at_tick,
         }
     }
