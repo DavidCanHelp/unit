@@ -360,6 +360,20 @@ pub struct VM {
     pub deadline: Option<Instant>,
     /// Set when execution exceeds the deadline.
     pub timed_out: bool,
+    /// Cumulative metabolic step meter: every `STEPS_PER_ENERGY` instructions
+    /// executed at the top level costs 1 energy. Thinking is not free.
+    step_meter: u64,
+    /// Set when execution halts mid-line (starvation, or call depth exceeded).
+    /// Cleared at the start of the next top-level line — a starved unit can
+    /// still limp along on short thoughts, it just can't run marathons.
+    pub halted: bool,
+    /// Nested `execute_body` depth. Bounds Rust-stack recursion (RECURSE,
+    /// EVAL", deeply nested calls) so a recursion bomb is a clean error
+    /// instead of an uncatchable stack-overflow abort.
+    body_depth: usize,
+    /// `interpret_line` re-entrancy count: `halted` clears only at the true
+    /// top level, so EVAL"-style nested lines can't wipe an active halt.
+    interp_nesting: u32,
     /// Structured runtime fault from the current execution (`pop`/`rpop`
     /// underflow). Reset at the start of each sandboxed run.
     pub fault: Option<Fault>,
@@ -480,6 +494,10 @@ impl VM {
             needs_prompt_redraw: false,
             deadline: None,
             timed_out: false,
+            step_meter: 0,
+            halted: false,
+            body_depth: 0,
+            interp_nesting: 0,
             fault: None,
             execution_timeout: 10,
             auto_claim: false,
@@ -885,12 +903,20 @@ impl VM {
     // -----------------------------------------------------------------------
 
     pub fn interpret_line(&mut self, line: &str) {
+        // A halt (starvation, call-depth) ends the *line* it happened on;
+        // the next top-level line gets a fresh chance. Nested lines (EVAL",
+        // genome restore, I/O words) must not clear an active halt.
+        if self.interp_nesting == 0 {
+            self.halted = false;
+        }
+        self.interp_nesting += 1;
+
         self.input_buffer = line.to_string();
         self.input_pos = 0;
 
         while let Some(word) = self.next_word() {
-            if !self.running {
-                return;
+            if !self.running || self.halted {
+                break;
             }
             let upper = word.to_uppercase();
 
@@ -900,6 +926,8 @@ impl VM {
                 self.interpret_word(&upper);
             }
         }
+
+        self.interp_nesting -= 1;
     }
 
     pub(crate) fn interpret_word(&mut self, word: &str) {
@@ -940,22 +968,67 @@ impl VM {
     // Execution engine
     // -----------------------------------------------------------------------
 
+    /// Metabolism: executing this many instructions at the top level costs
+    /// 1 energy. Sandboxed evaluation (GP candidates, remote goals) is exempt
+    /// — it is bounded by its own deadline and priced per-generation instead.
+    /// At ~10⁷–10⁸ steps/sec, a runaway loop starves in well under a second;
+    /// ordinary REPL lines and the boot prelude cost effectively nothing.
+    pub(crate) const STEPS_PER_ENERGY: u64 = 10_000;
+
+    /// Bound on nested body execution. Nested calls recurse on the Rust
+    /// stack, so without a cap a recursion bomb (`: R RECURSE ; R`) is an
+    /// uncatchable stack-overflow abort; with it, a clean Forth error.
+    pub(crate) const MAX_BODY_DEPTH: usize = 2_000;
+
     pub(crate) fn execute_word(&mut self, dict_idx: usize) {
         let body = self.dictionary[dict_idx].body.clone();
         self.execute_body(&body);
     }
 
     pub(crate) fn execute_body(&mut self, body: &[Instruction]) {
+        if self.halted {
+            return;
+        }
+        self.body_depth += 1;
+        if self.body_depth > Self::MAX_BODY_DEPTH {
+            self.body_depth -= 1;
+            self.halted = true;
+            self.emit_str("error: call depth exceeded — execution halted\n");
+            return;
+        }
+        self.execute_body_run(body);
+        self.body_depth -= 1;
+    }
+
+    fn execute_body_run(&mut self, body: &[Instruction]) {
         let mut ip: usize = 0;
         while ip < body.len() {
-            // Check for timeout (sandbox execution).
-            if self.timed_out {
+            // Check for timeout (sandbox execution) or a halt raised deeper in
+            // the call tree (starvation, call-depth).
+            if self.timed_out || self.halted {
                 return;
             }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(deadline) = self.deadline {
                 if Instant::now() > deadline {
                     self.timed_out = true;
+                    return;
+                }
+            }
+
+            // Metabolism: thinking costs. Every STEPS_PER_ENERGY instructions
+            // at the top level (not sandboxed, no deadline) spends 1 energy;
+            // when the unit can no longer pay, execution halts — a runaway
+            // loop starves to death instead of hanging the organism.
+            self.step_meter += 1;
+            if self.step_meter >= Self::STEPS_PER_ENERGY {
+                self.step_meter = 0;
+                if self.deadline.is_none()
+                    && !self.sandbox_active
+                    && !self.energy.spend(1, "metabolism")
+                {
+                    self.halted = true;
+                    self.emit_str("starved: out of energy — execution halted\n");
                     return;
                 }
             }
@@ -981,20 +1054,40 @@ impl VM {
                     self.stack.push(*val);
                 }
                 Instruction::Call(idx) => {
-                    let callee = self.dictionary[*idx].body.clone();
-                    self.execute_body(&callee);
+                    // checked: RECURSE in an anonymous body compiles a
+                    // self-reference to a dictionary slot that is never
+                    // pushed (anonymous bodies run immediately, undefined),
+                    // and mutation can corrupt call indices — a dangling
+                    // reference halts cleanly instead of panicking.
+                    if let Some(entry) = self.dictionary.get(*idx) {
+                        let callee = entry.body.clone();
+                        self.execute_body(&callee);
+                    } else {
+                        self.halted = true;
+                        self.emit_str("error: dangling word reference — execution halted\n");
+                        return;
+                    }
                 }
                 Instruction::StringLit(s) => {
                     self.emit_str(s);
                 }
                 Instruction::Branch(offset) => {
-                    ip = (ip as i64 + offset) as usize;
+                    // checked: a malformed offset (unbalanced control flow can
+                    // compile garbage from a polluted rstack) must not
+                    // overflow the ip arithmetic — treat it as "exit body".
+                    match (ip as i64).checked_add(*offset) {
+                        Some(t) if t >= 0 => ip = t as usize,
+                        _ => return,
+                    }
                     continue;
                 }
                 Instruction::BranchIfZero(offset) => {
                     let flag = self.pop();
                     if flag == 0 {
-                        ip = (ip as i64 + offset) as usize;
+                        match (ip as i64).checked_add(*offset) {
+                            Some(t) if t >= 0 => ip = t as usize,
+                            _ => return,
+                        }
                         continue;
                     }
                 }

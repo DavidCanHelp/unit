@@ -75,12 +75,14 @@ fn rand_str(rng: &mut Rng, max: usize) -> String {
     s
 }
 
-/// Forth tokens that never introduce an unbounded loop or a recursive word
-/// definition (those would stack-overflow — an uncatchable abort — which is a
-/// property of the un-sandboxed REPL, not a bug the fuzzer should trip on).
-/// Deliberately excludes `:` `;` `DO` `LOOP` `BEGIN` `AGAIN` `UNTIL` and the
-/// like; it keeps `IF`/`ELSE`/`THEN` (branch, no iteration) and everything
+/// Forth tokens for the loop-free fuzz target: excludes `:` `;` `DO` `LOOP`
+/// `BEGIN` `UNTIL` and friends so programs terminate quickly regardless of
+/// energy; keeps `IF`/`ELSE`/`THEN` (branch, no iteration) and everything
 /// that stresses parsing, dispatch, the stacks, and data-space bounds.
+/// Loops, definitions, and recursion get their own target below
+/// (`fuzz_forth_full_vocabulary_starves_not_hangs`): since metabolic step
+/// metering landed, runaway execution starves and deep recursion hits the
+/// body-depth wall — both clean halts, so the full vocabulary is fuzzable.
 const FORTH_TOKENS: &[&str] = &[
     "DUP", "DROP", "SWAP", "OVER", "ROT", "NIP", "TUCK", "2DUP", "2DROP", "DEPTH", "?DUP",
     "+", "-", "*", "/", "MOD", "=", "<", ">", "AND", "OR", "NOT", "INVERT",
@@ -227,6 +229,37 @@ fn fuzz_forth_vm_never_panics() {
         let _ = vm.eval(&src);
     });
     assert!(r.is_ok(), "Forth VM panicked; reproduce with seed {:#x}", r.unwrap_err());
+}
+
+/// The previously-unfuzzable vocabulary: definitions, loops, recursion.
+const FORTH_LOOP_TOKENS: &[&str] = &[
+    ":", ";", "RECURSE", "BEGIN", "UNTIL", "WHILE", "REPEAT", "DO", "LOOP", "I", "J",
+    "IF", "ELSE", "THEN", "DUP", "DROP", "SWAP", "OVER", "+", "-", "*", "@", "!",
+    "0", "1", "-1", "2", "10", "1000", "100000", "0=", "EXIT", "ABC",
+];
+
+#[test]
+fn fuzz_forth_full_vocabulary_starves_not_hangs() {
+    // Random programs WITH loops/definitions/recursion, run on a VM whose
+    // energy sits just above the hard floor: any runaway loop must starve
+    // (clean halt) and any recursion bomb must hit the depth wall (clean
+    // error) — never a hang, never a panic, never a process abort.
+    let r = hammer(ITERS / 10, 0xB10C, |rng| {
+        let n = rng.below(30) + 1;
+        let mut src = String::new();
+        for _ in 0..n {
+            src.push_str(FORTH_LOOP_TOKENS[rng.below(FORTH_LOOP_TOKENS.len())]);
+            src.push(if rng.chance(10) { '\n' } else { ' ' });
+        }
+        let mut vm = VM::new();
+        vm.energy.energy = -498; // 2 spendable energy -> starves within ~30k steps
+        let _ = vm.eval(&src);
+    });
+    assert!(
+        r.is_ok(),
+        "full-vocabulary fuzz panicked; reproduce with seed {:#x}",
+        r.unwrap_err()
+    );
 }
 
 #[test]

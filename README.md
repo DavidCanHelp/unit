@@ -79,9 +79,11 @@ to fib(15) leads to fib(20), with parsimony pressure rewarding shorter
 programs.
 
 Metabolic energy makes it real. Every operation costs something: spawning
-costs 200, each GP generation costs 5, even mesh messages cost 1. Units
-that run out are throttled. Children inherit a fraction of the parent's
-energy. Reproduction is a metabolic investment.
+costs 200, each GP generation costs 5, even mesh messages cost 1 — and
+execution itself is metered: every 10,000 VM steps of top-level thought
+costs 1 energy, so a runaway loop starves to death instead of hanging the
+organism. Units that run out are throttled. Children inherit a fraction of
+the parent's energy. Reproduction is a metabolic investment.
 
 Then three orders of evolution emerged. The GP engine evolves solutions
 (first-order). A MetaEvolver maintains a population of Forth programs

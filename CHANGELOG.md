@@ -33,6 +33,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Metabolism now prices thinking itself: execution costs energy.** The
+  inner interpreter charges 1 energy per 10,000 VM steps of top-level
+  execution, so a runaway loop (`BEGIN 0 UNTIL`) starves to death — a clean
+  `starved: out of energy — execution halted` — instead of hanging the
+  organism forever. Starving units still limp: short lines never reach a
+  metering checkpoint, the halt clears on the next top-level line, and
+  energy regeneration restores full function. Sandboxed evaluation (GP
+  candidates, remote goals) is exempt — it is deadline-bounded and priced
+  per-generation, so colony economics are unchanged. Alongside the meter,
+  nested execution now has a depth wall (2,000 bodies), turning a recursion
+  bomb (`: R RECURSE ; R`) from an uncatchable Rust stack-overflow abort
+  into a clean Forth error.
+
+  Metering made the previously-unfuzzable vocabulary fuzzable (loops,
+  definitions, recursion now provably terminate), and the new
+  full-vocabulary fuzz target immediately caught three latent VM panics,
+  all fixed: unbalanced control flow (`ELSE`/`THEN`/`REPEAT` popping a
+  fixup index off an rstack that runtime `DO` also writes) indexed the
+  definition body out of bounds; branch-offset arithmetic could overflow on
+  garbage offsets; and `RECURSE` inside an anonymous `DO` body compiled a
+  dangling self-call to a dictionary slot that is never defined. 495 tests.
+
 - **Genome snapshots are now S-expressions (the mesh's own notation), not
   JSON.** `HIBERNATE` / `JSON-SNAPSHOT` / auto-snapshot write
   `~/.unit/snapshots/<id>.sexp` in a `(unit-snapshot :version 2 …)` format

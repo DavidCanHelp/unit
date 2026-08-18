@@ -113,6 +113,17 @@ impl super::VM {
 
     pub(crate) fn prim_else(&mut self) {
         let if_fixup = self.rstack.pop().unwrap_or(0) as usize;
+        // The fixup index comes off the rstack, which runtime words (DO's
+        // limit/index) also use — unbalanced or interleaved control flow can
+        // leave garbage here. Guard the index or malformed input panics.
+        let valid = self
+            .current_def
+            .as_ref()
+            .is_some_and(|d| if_fixup < d.body.len());
+        if !valid {
+            self.emit_str("error: unbalanced ELSE\n");
+            return;
+        }
         if let Some(ref mut def) = self.current_def {
             let here = def.body.len();
             let offset = (here as i64 + 1) - if_fixup as i64;
@@ -124,6 +135,16 @@ impl super::VM {
 
     pub(crate) fn prim_then(&mut self) {
         let fixup = self.rstack.pop().unwrap_or(0) as usize;
+        // Same rstack-pollution guard as ELSE: never index with an
+        // unvalidated fixup.
+        let valid = self
+            .current_def
+            .as_ref()
+            .is_some_and(|d| fixup < d.body.len());
+        if self.current_def.is_some() && !valid {
+            self.emit_str("error: unbalanced THEN\n");
+            return;
+        }
         if let Some(ref mut def) = self.current_def {
             let here = def.body.len();
             let offset = here as i64 - fixup as i64;
@@ -217,6 +238,15 @@ impl super::VM {
     pub(crate) fn prim_repeat(&mut self) {
         let while_fixup = self.rstack.pop().unwrap_or(0) as usize;
         let begin_addr = self.rstack.pop().unwrap_or(0);
+        // Guard the WHILE fixup index (same rstack-pollution class as ELSE).
+        let valid = self
+            .current_def
+            .as_ref()
+            .is_some_and(|d| while_fixup < d.body.len());
+        if self.current_def.is_some() && !valid {
+            self.emit_str("error: unbalanced REPEAT\n");
+            return;
+        }
         if let Some(ref mut def) = self.current_def {
             let here = def.body.len();
             let offset = begin_addr - here as i64;

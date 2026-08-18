@@ -2189,3 +2189,90 @@ fn test_kill_child_happy_path_signals_own_child() {
     let status = child.wait().expect("reap child");
     assert_eq!(status.signal(), Some(15), "child should die by SIGTERM");
 }
+
+// -----------------------------------------------------------------------
+// Metabolic execution: thinking costs energy; runaway code starves or
+// hits the call-depth wall instead of hanging/aborting the process.
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_runaway_loop_starves_not_hangs() {
+    let mut vm = test_vm();
+    // Nearly at the hard floor: a few energy left -> starves within ~50k steps.
+    vm.energy.energy = -495;
+    let out = eval(&mut vm, ": SPIN BEGIN 0 UNTIL ; SPIN");
+    assert!(out.contains("starved"), "expected starvation halt, got: {out}");
+    assert!(vm.halted, "halted flag should be set");
+}
+
+#[test]
+fn test_starved_unit_recovers_after_feeding() {
+    let mut vm = test_vm();
+    vm.energy.energy = -495;
+    let out = eval(&mut vm, ": SPIN BEGIN 0 UNTIL ; SPIN");
+    assert!(out.contains("starved"));
+    // Feed it; the next top-level line clears the halt and runs normally.
+    vm.energy.earn(2000, "test-feed");
+    let out = eval(&mut vm, "2 3 + .");
+    assert!(out.contains('5'), "recovered unit should compute: {out}");
+    assert!(!vm.halted);
+}
+
+#[test]
+fn test_recursion_bomb_is_clean_error_not_abort() {
+    let mut vm = test_vm();
+    let out = eval(&mut vm, ": R RECURSE ; R");
+    assert!(
+        out.contains("call depth exceeded"),
+        "expected depth error, got: {out}"
+    );
+    // And the VM is fine afterwards.
+    let out = eval(&mut vm, "6 7 * .");
+    assert!(out.contains("42"));
+}
+
+#[test]
+fn test_legitimate_recursion_within_depth_works() {
+    let mut vm = test_vm();
+    // Recursive countdown to depth 100 — far under MAX_BODY_DEPTH.
+    let out = eval(&mut vm, ": CD DUP 0 > IF 1- RECURSE THEN ; 100 CD .");
+    assert!(out.contains('0'), "countdown should reach 0: {out}");
+    assert!(!vm.halted);
+}
+
+#[test]
+fn test_normal_execution_unmetered_cost() {
+    let mut vm = test_vm();
+    let before = vm.energy.energy;
+    // A short line: well under STEPS_PER_ENERGY, costs nothing.
+    eval(&mut vm, "1 2 3 + + .");
+    assert_eq!(vm.energy.energy, before, "short thoughts are free");
+}
+
+#[test]
+fn test_long_computation_visibly_spends_energy() {
+    let mut vm = test_vm();
+    let before = vm.energy.energy;
+    // ~60k+ steps of honest work -> a few energy of metabolic cost.
+    eval(&mut vm, ": WORK 20000 0 DO I DROP LOOP ; WORK");
+    assert!(
+        vm.energy.energy < before,
+        "sustained thought should cost energy ({} -> {})",
+        before,
+        vm.energy.energy
+    );
+    assert!(!vm.halted, "affordable work must complete");
+}
+
+#[test]
+fn test_sandboxed_execution_is_exempt_from_metering() {
+    let mut vm = test_vm();
+    let before = vm.energy.energy;
+    // The sandbox is deadline-bounded and priced separately (GP per-gen cost).
+    let result = vm.execute_sandbox(": W 20000 0 DO I DROP LOOP ; W");
+    assert!(result.success, "sandboxed work should succeed");
+    assert_eq!(
+        vm.energy.energy, before,
+        "sandboxed evaluation must not drain metabolic energy"
+    );
+}
