@@ -120,6 +120,16 @@ impl EnergyState {
         self.energy - amount >= HARD_FLOOR
     }
 
+    /// True when energy is pinned at the absolute hard floor — the signature
+    /// of an unsustainable lifestyle (e.g. a runaway `LIVE` loop that the
+    /// metabolic meter halts every tick burns straight back to the floor).
+    /// GP's own energy gate pauses spending well above this line, so
+    /// ordinary debt — a throttled-but-evolving unit — never reads as
+    /// at-floor. Mortality keys off this, not off mere debt.
+    pub fn at_hard_floor(&self) -> bool {
+        self.energy <= HARD_FLOOR + 2
+    }
+
     /// Returns true if the unit is currently energy-throttled.
     pub fn is_throttled(&self) -> bool {
         self.throttled

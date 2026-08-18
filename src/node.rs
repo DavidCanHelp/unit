@@ -143,6 +143,7 @@ pub(crate) fn land_transported_unit(node: &mut crate::multi_unit::MultiUnitNode,
         busy: false,
         tasks_completed: 0,
         user_words: Vec::new(),
+        starved_ticks: 0,
     });
 }
 
@@ -360,6 +361,30 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                 ev.from_host_hex,
                 ev.unit_index,
                 ev.output.trim().replace('\n', " ")
+            );
+        }
+
+        // Obituaries. A death is a real colony event and always logs: the
+        // failed life strategy died, the immune memory was bequeathed.
+        for d in &report.deaths {
+            println!(
+                "[{}] DIED gen={} fitness={} — starved (at floor {} ticks); bequeathed {} antibod{} to {} heir{} — now hosting {} units",
+                log_ts(),
+                d.generation,
+                d.fitness,
+                crate::multi_unit::STARVED_TICKS_TO_DIE,
+                d.antibodies,
+                if d.antibodies == 1 { "y" } else { "ies" },
+                d.heirs,
+                if d.heirs == 1 { "" } else { "s" },
+                node.host.len()
+            );
+        }
+        if report.scavenged_words > 0 {
+            println!(
+                "[{}] SCAVENGED {} antibody word(s) from a peer's death-cry",
+                log_ts(),
+                report.scavenged_words
             );
         }
 

@@ -153,8 +153,15 @@ evolutionarily stable strategy is an empirical question the system is built to
 - **Minimum-sufficient is emergent.** Local rule (demand ∧ headroom) plus energy
   metabolism, with no coordinator, quorum, or population target.
 - **80% is a refusal wall, not a target.** The colony never grows toward it.
-- **A unit with no work evolves.** Idleness routes to `GP-EVOLVE`, not to sitting
-  still or to being culled.
+- **A unit with no work runs its `LIVE` word.** Idleness routes to the
+  dictionary-resident life loop (prelude default: `GP-EVOLVE`), not to sitting
+  still or to being culled. The host provides the tick; the genome decides
+  what living is — so life strategies are heritable, shareable, and mutable.
+- **An unsustainable life is mortal.** A unit pinned at the energy hard floor
+  (a runaway `LIVE`, not ordinary GP debt) for 30 consecutive ticks dies. Its
+  final act is a death-cry: its `SOL-*` antibodies go to local siblings and to
+  the mesh, trust-gated on receipt (immune-memory words only, never
+  overwriting) so a forged cry can't install behavior.
 - **The complete self transports — antibodies included.** Evolved `SOL-*` words
   ride along; the binary and prelude don't, because every coordinate has them.
 - **Confirm before release.** No unit is ever lost in transit.

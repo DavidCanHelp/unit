@@ -31,6 +31,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the normal `cargo test` (30k iterations/target) as a permanent regression
   guard. These tests are what surfaced the three fixes above.
 
+### Added
+
+- **`LIVE` — the life loop is now genome.** What a unit does with an idle
+  tick was host policy (`GP-EVOLVE`, hard-coded in the multi-unit tick);
+  it is now a prelude word the host *calls* and the dictionary *defines*:
+  `: LIVE GP-EVOLVE ;`. Redefine it and the unit's habits change — and
+  because it is an ordinary word, a life strategy is heritable (SPAWN),
+  shareable (SHARE-ALL), and mutable (SMART-MUTATE). The metabolic meter
+  is the safety rail that makes this evolvable: a `LIVE` that loops
+  forever starves within the tick instead of hanging the host; a `LIVE`
+  that does nothing stops improving. Selection handles both. Default
+  behavior is unchanged (`LIVE` = `GP-EVOLVE`). 343 words.
+
+- **Mortality: sustained starvation is death, and death bequeaths.** A
+  unit pinned at the energy hard floor for 30 consecutive ticks — the
+  signature of an unsustainable life strategy, distinct from ordinary GP
+  debt, which hovers above the floor and never kills — dies and is removed
+  from its host. Its final act is a **death-cry**: its `SOL-*` antibodies
+  (immune memory) go to local siblings directly and to the mesh as a
+  `(death-cry …)` message. Receipt is trust-gated twice (parse layer and
+  absorb layer): `SOL-*` names only, never overwriting an existing word,
+  bounded name/source sizes — so a forged death-cry cannot install or
+  redefine behavior (`LIVE` included). The failed strategy dies with the
+  unit; the solved-challenge knowledge survives it. Node logs show
+  obituaries (`DIED gen=… bequeathed …`) and scavenges (`SCAVENGED …`).
+
 ### Changed
 
 - **The genome snapshot words got format-neutral canonical names:**

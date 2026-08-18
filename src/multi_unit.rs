@@ -32,7 +32,18 @@ pub struct UnitSlot {
     pub busy: bool,
     pub tasks_completed: u64,
     pub user_words: Vec<String>,
+    /// Consecutive ticks this unit has spent pinned at the energy hard
+    /// floor (see [`EnergyState::at_hard_floor`](crate::energy::EnergyState::at_hard_floor)).
+    /// Reaching [`STARVED_TICKS_TO_DIE`] is death. Ordinary GP debt never
+    /// pins the floor (GP's gate pauses above it), so only unsustainable
+    /// lifestyles — e.g. a runaway `LIVE` — accumulate here.
+    pub starved_ticks: u32,
 }
+
+/// Consecutive at-hard-floor ticks before a unit dies. At the node's 1s
+/// tick cadence this is a ~30s grace window in which task rewards, mesh
+/// work, or a keeper's FEED can still rescue the unit.
+pub const STARVED_TICKS_TO_DIE: u32 = 30;
 
 /// Result of dispatching one goal.
 pub struct GoalResult {
@@ -114,6 +125,7 @@ impl MultiUnitHost {
             busy: false,
             tasks_completed: 0,
             user_words: Vec::new(),
+            starved_ticks: 0,
         });
         Some(idx)
     }
@@ -334,20 +346,26 @@ impl MultiUnitHost {
         spawn_state.can_spawn_within(res)
     }
 
-    /// The no-work fall-through: a unit with no assigned goal speculatively
-    /// evolves against open challenges rather than sitting idle. Routes through
-    /// the existing `GP-EVOLVE` VM word — which is energy-gated there, so a
-    /// unit that can't pay starves — rather than duplicating the evolution
-    /// loop. Returns the index of the unit set to work, or `None` if every
-    /// unit is already busy (nothing idle to put to work).
+    /// The no-work fall-through: a unit with no assigned goal runs its
+    /// `LIVE` word — the dictionary-resident life loop (prelude default:
+    /// `GP-EVOLVE`, i.e. speculative evolution against open challenges).
+    /// The host decides *when* an idle tick happens; the genome decides
+    /// *what living is* — so a unit's habits are heritable, shareable, and
+    /// mutable like any other word. Execution is metered, so a `LIVE` that
+    /// loops forever starves rather than hanging the host; a unit whose
+    /// dictionary has lost `LIVE` entirely simply idles (and, unable to
+    /// earn, eventually dies). Returns the index of the unit set to work,
+    /// or `None` if every unit is already busy.
     ///
-    /// Surplus self-resolves through that energy metabolism; this adds no
+    /// Surplus self-resolves through the energy metabolism; this adds no
     /// reclaim or cull logic.
     pub fn evolve_one_unworked(&mut self) -> Option<usize> {
         let idx = self.units.iter().position(|u| !u.busy)?;
         let slot = &mut self.units[idx];
         slot.busy = true;
-        slot.vm.eval("GP-EVOLVE");
+        if slot.vm.find_word("LIVE").is_some() {
+            slot.vm.eval("LIVE");
+        }
         slot.busy = false;
         Some(idx)
     }
@@ -399,12 +417,28 @@ pub struct DispatchedRemoteMsg {
 /// What one [`MultiUnitNode::tick`] did. Returned so the run loop can log each
 /// meaningful event and so tests can assert the tick's behavior without
 /// sockets or real time.
+/// One unit's death, reported so the run loop can log the obituary and
+/// tests can assert mortality without sockets.
+pub struct UnitDeath {
+    pub fitness: i64,
+    pub generation: u32,
+    /// Antibodies (SOL-* words) the unit bequeathed.
+    pub antibodies: usize,
+    /// Local siblings that absorbed at least one of them.
+    pub heirs: usize,
+}
+
 #[derive(Default)]
 pub struct TickReport {
     /// Goals received from the mesh and dispatched to local units this tick.
     pub dispatched: Vec<DispatchedRemoteMsg>,
-    /// Number of unworked units that ran a bounded GP-EVOLVE step this tick.
+    /// Number of unworked units that ran their `LIVE` word this tick.
     pub evolved_units: usize,
+    /// Units that died of sustained starvation this tick (their antibodies
+    /// were bequeathed to siblings and broadcast as a death-cry).
+    pub deaths: Vec<UnitDeath>,
+    /// Antibody words absorbed this tick from *remote* death-cries.
+    pub scavenged_words: usize,
     /// Best fitness across local units after this tick (for the evolve log).
     pub best_fitness: i64,
     /// True if the host was over the ceiling (mislocated) this tick.
@@ -434,6 +468,24 @@ pub struct MultiUnitNode {
     /// identity so different nodes shedding into the same gossiped view pick
     /// different tied-maximum peers (decorrelating concurrent senders).
     rng: crate::features::mutation::SimpleRng,
+    /// Antibody words absorbed from remote death-cries during the most
+    /// recent `drain_and_dispatch` (read by `tick` into its report).
+    pub scavenged_last_drain: usize,
+}
+
+/// Harvest a unit's immune memory: its `SOL-*` antibody words (name +
+/// re-evaluable decompiled source), the inheritance a dying unit leaves
+/// behind. Bounded by [`crate::sexp::DEATH_CRY_MAX_ANTIBODIES`].
+pub fn harvest_antibodies(vm: &VM) -> Vec<(String, String)> {
+    vm.dictionary[vm.kernel_word_count..]
+        .iter()
+        .filter(|e| !e.hidden && e.name.starts_with("SOL-"))
+        .take(crate::sexp::DEATH_CRY_MAX_ANTIBODIES)
+        .map(|e| {
+            let source = crate::snapshot::decompile_word(e, &vm.dictionary, &vm.primitive_names);
+            (e.name.clone(), source)
+        })
+        .collect()
 }
 
 impl MultiUnitNode {
@@ -465,6 +517,7 @@ impl MultiUnitNode {
             host: MultiUnitHost::new(cap),
             mesh,
             rng: crate::features::mutation::SimpleRng::new(rng_seed),
+            scavenged_last_drain: 0,
         })
     }
 
@@ -658,22 +711,74 @@ impl MultiUnitNode {
         )
             -> Result<crate::transport::ConfirmOutcome, crate::transport::TransportError>,
     {
-        // a. inbound mesh work.
+        // a. inbound mesh work (also absorbs antibodies from remote
+        //    death-cries; see `scavenged_last_drain`).
         let dispatched = self.drain_and_dispatch();
+        let scavenged_words = self.scavenged_last_drain;
 
-        // b. metabolism: passive regen + starvation accounting for every unit.
+        // b. metabolism: passive regen + starvation accounting for every
+        //    unit. A unit pinned at the hard floor is living beyond its
+        //    means; consecutive pinned ticks are counted toward death.
+        //    Ordinary GP debt hovers above the floor and resets nothing.
         for slot in self.host.units.iter_mut() {
             slot.vm.energy.tick();
+            if slot.vm.energy.at_hard_floor() {
+                slot.starved_ticks += 1;
+            } else {
+                slot.starved_ticks = 0;
+            }
         }
 
-        // c. unworked units evolve speculatively rather than sitting idle.
+        // c. unworked units run their LIVE word — the dictionary-resident
+        //    life loop (prelude default: GP-EVOLVE). The host provides the
+        //    tick; the genome decides what living is. Metering makes a
+        //    runaway LIVE starve instead of hanging the host; a unit
+        //    without LIVE idles.
         let mut evolved_units = 0;
         for slot in self.host.units.iter_mut() {
             if !slot.busy {
                 slot.busy = true;
-                slot.vm.eval("GP-EVOLVE");
+                if slot.vm.find_word("LIVE").is_some() {
+                    slot.vm.eval("LIVE");
+                }
                 slot.busy = false;
                 evolved_units += 1;
+            }
+        }
+
+        // c2. mortality: a unit at the hard floor for STARVED_TICKS_TO_DIE
+        //     consecutive ticks dies. Its final act bequeaths its immune
+        //     memory — SOL-* antibodies go to local siblings directly and
+        //     to the mesh as a death-cry. The failed life strategy dies
+        //     with the unit; the solved-challenge knowledge survives it.
+        let mut deaths = Vec::new();
+        let mut i = 0;
+        while i < self.host.units.len() {
+            if self.host.units[i].starved_ticks >= STARVED_TICKS_TO_DIE {
+                let slot = self.host.units.remove(i);
+                let antibodies = harvest_antibodies(&slot.vm);
+                let fitness = slot.vm.fitness.score;
+                let generation = slot.vm.spawn_state.generation;
+                let mut heirs = 0;
+                for s in self.host.units.iter_mut() {
+                    if s.vm.absorb_antibodies(&antibodies) > 0 {
+                        heirs += 1;
+                    }
+                }
+                if let Some(ref m) = self.mesh {
+                    let from = mesh::id_to_hex(m.id());
+                    let cry =
+                        crate::sexp::msg_death_cry(&from, fitness, generation, &antibodies);
+                    m.send_sexp(&cry.to_string());
+                }
+                deaths.push(UnitDeath {
+                    fitness,
+                    generation,
+                    antibodies: antibodies.len(),
+                    heirs,
+                });
+            } else {
+                i += 1;
             }
         }
         // Read the GP engine's own best (evolution.best.fitness), not the
@@ -718,6 +823,8 @@ impl MultiUnitNode {
         TickReport {
             dispatched,
             evolved_units,
+            deaths,
+            scavenged_words,
             best_fitness,
             mislocated,
             transport: transport_outcome,
@@ -731,6 +838,7 @@ impl MultiUnitNode {
     /// callers that need them.
     pub fn drain_and_dispatch(&mut self) -> Vec<DispatchedRemoteMsg> {
         let mut events = Vec::new();
+        self.scavenged_last_drain = 0;
         let (raw_msgs, my_hex) = match self.mesh.as_ref() {
             Some(m) => (m.recv_sexp_messages(), mesh::id_to_hex(m.id())),
             None => return events,
@@ -740,6 +848,15 @@ impl MultiUnitNode {
                 Some(s) => s,
                 None => continue,
             };
+            // A peer's dying unit bequeathed its immune memory: absorb the
+            // (trust-gated: SOL-* only, bounded) antibodies into every
+            // local unit that lacks them. The colony eats its dead.
+            if let Some(antibodies) = crate::sexp::read_death_cry(&parsed) {
+                for slot in self.host.units.iter_mut() {
+                    self.scavenged_last_drain += slot.vm.absorb_antibodies(&antibodies);
+                }
+                continue;
+            }
             if crate::sexp::msg_type(&parsed) != Some("host-msg") {
                 continue;
             }
@@ -1155,6 +1272,53 @@ mod bridge_tests {
         assert!(matches!(report.transport, Some(TickTransport::NoDestination)));
         assert_eq!(a.host.len(), 1, "no sufficient peer → unit stays");
     }
+
+    // --- mortality (needs the tick harness helpers above) ---
+
+    #[test]
+    fn sustained_floor_starvation_is_death_and_bequeaths_antibodies() {
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(2);
+        // Unit 0: has immune memory, and a lifestyle it cannot afford.
+        // Energy is the post-burn pinned state (-500): the tick's regen
+        // lifts it to -499, still inside the at-floor zone — exactly the
+        // steady state a runaway LIVE produces every tick.
+        a.host.units[0].vm.eval(": SOL-TESTFACT 99 ;");
+        a.host.units[0].vm.eval(": LIVE BEGIN 0 UNTIL ;");
+        a.host.units[0].vm.energy.energy = -500;
+        a.host.units[0].starved_ticks = STARVED_TICKS_TO_DIE - 1;
+
+        let report = a.tick(&under_ceiling_reading(), never_transport);
+
+        assert_eq!(report.deaths.len(), 1, "the starved unit died");
+        assert_eq!(a.host.len(), 1, "the dead unit was removed");
+        assert_eq!(report.deaths[0].antibodies, 1, "bequeathed SOL-TESTFACT");
+        assert_eq!(report.deaths[0].heirs, 1, "the sibling inherited");
+        // The survivor can actually run the inherited word.
+        let out_top = {
+            let vm = &mut a.host.units[0].vm;
+            vm.eval("SOL-TESTFACT");
+            vm.stack.last().copied()
+        };
+        assert_eq!(out_top, Some(99), "inherited antibody executes");
+    }
+
+    #[test]
+    fn ordinary_gp_debt_is_not_death() {
+        // GP's own energy gate hovers debt above the hard floor; that must
+        // never read as at-floor, so default colonies do not self-extinguish.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(1);
+        a.host.units[0].vm.energy.energy = -495; // the GP hover zone
+        let _ = a.tick(&under_ceiling_reading(), never_transport);
+        assert_eq!(a.host.len(), 1, "unit alive");
+        // Note: at -495 the unit is NOT at_hard_floor (floor zone is <= -498),
+        // so starved_ticks must not have advanced from the accounting pass.
+        assert_eq!(
+            a.host.units[0].starved_ticks, 0,
+            "GP debt does not accumulate toward death"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1548,5 +1712,109 @@ mod tests {
         h.units[1].busy = true;
         // Nothing idle to put to work.
         assert_eq!(h.evolve_one_unworked(), None);
+    }
+
+    // -------------------------------------------------------------------
+    // LIVE (the dictionary-resident life loop) and mortality
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn redefined_live_word_drives_the_idle_tick() {
+        // The host calls LIVE; the genome defines it. Redefining LIVE
+        // changes what an idle tick does — no host change required.
+        let mut h = MultiUnitHost::new(4);
+        h.spawn();
+        h.units[0].vm.eval(": LIVE 7 ;");
+        h.evolve_one_unworked();
+        assert_eq!(
+            h.units[0].vm.stack.last().copied(),
+            Some(7),
+            "idle tick ran the redefined LIVE, not the default"
+        );
+        assert!(
+            h.units[0].vm.evolution.is_none(),
+            "redefined LIVE no longer runs GP-EVOLVE"
+        );
+    }
+
+    #[test]
+    fn suicidal_live_starves_within_the_tick_not_hangs() {
+        // A unit that evolves LIVE into an infinite loop must cost itself,
+        // not the host: the metabolic meter halts it inside the tick.
+        let mut h = MultiUnitHost::new(4);
+        h.spawn();
+        h.units[0].vm.eval(": LIVE BEGIN 0 UNTIL ;");
+        h.units[0].vm.energy.energy = -400; // little left to burn
+        h.evolve_one_unworked(); // must return promptly
+        let vm = &h.units[0].vm;
+        assert!(vm.halted, "runaway LIVE was halted by starvation");
+        assert!(vm.energy.at_hard_floor(), "burned to the hard floor");
+    }
+
+
+
+    #[test]
+    fn death_cry_roundtrip_applies_the_trust_gate() {
+        let antibodies = vec![
+            ("SOL-FIB10".to_string(), ": SOL-FIB10 55 ;".to_string()),
+            ("LIVE".to_string(), ": LIVE 0 ;".to_string()), // hostile
+            ("SOL-EVIL".to_string(), "x".repeat(3000)),     // oversized
+            ("SOL-QUOTE".to_string(), ": SOL-QUOTE .\" hi\\\"there\" ;".to_string()),
+        ];
+        let cry = crate::sexp::msg_death_cry("cafe", 42, 3, &antibodies);
+        let parsed = crate::sexp::parse(&cry.to_string()).expect("cry parses");
+        let read = crate::sexp::read_death_cry(&parsed).expect("is a death-cry");
+        let names: Vec<&str> = read.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"SOL-FIB10"));
+        assert!(names.contains(&"SOL-QUOTE"), "escaped content survives");
+        assert!(!names.contains(&"LIVE"), "behavioral words are gated out");
+        assert!(!names.contains(&"SOL-EVIL"), "oversized sources are gated out");
+    }
+
+    #[test]
+    fn forged_death_cry_cannot_redefine_behavior() {
+        // Feed a hostile cry through the single-VM chatter path: it must
+        // install missing SOL-* words and nothing else.
+        let mut vm = VM::new();
+        vm.silent = true;
+        vm.load_prelude();
+        vm.silent = false;
+        let live_defs_before = vm
+            .dictionary
+            .iter()
+            .filter(|e| e.name == "LIVE")
+            .count();
+        let cry = crate::sexp::msg_death_cry(
+            "attacker",
+            0,
+            0,
+            &[
+                ("LIVE".to_string(), ": LIVE 666 ;".to_string()),
+                ("SOL-GIFT".to_string(), ": SOL-GIFT 7 ;".to_string()),
+            ],
+        );
+        vm.process_chatter_msg(&cry.to_string());
+        let live_defs_after = vm
+            .dictionary
+            .iter()
+            .filter(|e| e.name == "LIVE")
+            .count();
+        assert_eq!(live_defs_before, live_defs_after, "LIVE untouched");
+        assert!(vm.find_word("SOL-GIFT").is_some(), "gift absorbed");
+        vm.eval("SOL-GIFT");
+        assert_eq!(vm.stack.last().copied(), Some(7));
+    }
+
+    #[test]
+    fn absorb_never_overwrites_an_existing_antibody() {
+        let mut vm = VM::new();
+        vm.silent = true;
+        vm.load_prelude();
+        vm.silent = false;
+        vm.eval(": SOL-MINE 1 ;");
+        let n = vm.absorb_antibodies(&[("SOL-MINE".to_string(), ": SOL-MINE 2 ;".to_string())]);
+        assert_eq!(n, 0, "existing antibody not overwritten");
+        vm.eval("SOL-MINE");
+        assert_eq!(vm.stack.last().copied(), Some(1), "original definition kept");
     }
 }

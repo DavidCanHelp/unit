@@ -170,6 +170,40 @@ impl VM {
         self.emit_str(&format!("[immune] learned word: {}\n", word_name));
     }
 
+    /// Absorb a dead unit's bequeathed antibodies: install each `SOL-*`
+    /// word this unit lacks by evaluating its source. The trust gate —
+    /// `SOL-*` names only, never overwriting an existing word, bounded
+    /// name/source sizes — is enforced here as well as at the death-cry
+    /// parse layer, so every caller is safe against forged messages.
+    /// Returns how many words were installed.
+    pub(crate) fn absorb_antibodies(&mut self, antibodies: &[(String, String)]) -> usize {
+        let mut installed = 0;
+        for (name, source) in antibodies
+            .iter()
+            .take(crate::sexp::DEATH_CRY_MAX_ANTIBODIES)
+        {
+            if !name.starts_with("SOL-")
+                || name.len() > 64
+                || source.len() > crate::sexp::DEATH_CRY_MAX_SOURCE_LEN
+                || self.find_word(name).is_some()
+            {
+                continue;
+            }
+            let saved_buf = self.input_buffer.clone();
+            let saved_pos = self.input_pos;
+            let saved_silent = self.silent;
+            self.silent = true;
+            self.interpret_line(source);
+            self.silent = saved_silent;
+            self.input_buffer = saved_buf;
+            self.input_pos = saved_pos;
+            if self.find_word(name).is_some() {
+                installed += 1;
+            }
+        }
+        installed
+    }
+
     /// Called during REPL tick to check for incoming sub-goal results and timeouts.
     pub(crate) fn tick_dist_goals(&mut self) {
         let _t_tick = metrics::Timer::new("mesh.tick");
@@ -733,6 +767,23 @@ impl VM {
         let _t_msg = metrics::Timer::new("chatter.process");
         if let Some(sexp) = crate::sexp::try_parse_mesh_msg(msg) {
             match crate::sexp::msg_type(&sexp) {
+                        Some("death-cry") => {
+                            // A peer died; inherit its immune memory. The
+                            // reader trust-gates to SOL-* words and
+                            // absorb_antibodies re-gates (never overwrite,
+                            // bounded), so a forged cry can't install or
+                            // redefine behavior.
+                            if let Some(antibodies) = crate::sexp::read_death_cry(&sexp) {
+                                let n = self.absorb_antibodies(&antibodies);
+                                if n > 0 {
+                                    self.emit_str(&format!(
+                                        "[immune] inherited {} antibod{} from a dead peer\n",
+                                        n,
+                                        if n == 1 { "y" } else { "ies" }
+                                    ));
+                                }
+                            }
+                        }
                         Some("sub-goal") => {
                             // A peer asked us to compute something.
                             let goal_id =

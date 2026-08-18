@@ -338,6 +338,15 @@ VARIABLE OBS-COUNT
 : MORNING ( -- ) WAKE HELLO CHECKUP ;
 : EVENING ( -- ) REST ;
 
+\ --- The life loop -----------------------------------------------------
+\ LIVE is what a unit does with an idle tick. The host calls it; the
+\ dictionary defines it — a unit's habits are genome: heritable via SPAWN,
+\ shareable via SHARE-ALL, changeable by redefinition or mutation.
+\ Redefine it to change what living means:   : LIVE PATROL GROW ;
+\ A LIVE that loops forever starves (execution is metered); a LIVE that
+\ does nothing stops improving. Selection handles both.
+: LIVE ( -- ) GP-EVOLVE ;
+
 \ --- Help for colony + self-programming ---
 : HELP-COLONY
   CR ." === Colony, Lifecycle & Self-Programming ===" CR CR

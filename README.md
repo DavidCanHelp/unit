@@ -150,7 +150,7 @@ mating with #cafe (fitness=45)...
   fibonacci: 100% (modifier: 2.0x)
 ```
 
-See [docs/words.md](docs/words.md) for the word reference (342 words in the live dictionary).
+See [docs/words.md](docs/words.md) for the word reference (343 words in the live dictionary).
 
 ## Interfaces
 
@@ -211,8 +211,13 @@ fork-level isolation.
 one-shot demo. After a brief startup discovery window it enters a steady tick
 loop and runs until killed (SIGINT/SIGTERM → clean shutdown). Each tick it:
 dispatches inbound mesh work; advances every unit's metabolism; runs any
-unworked unit through `GP-EVOLVE` (a unit with no work evolves rather than
-sitting idle); periodically measures host resources and re-advertises its real
+unworked unit's `LIVE` word — the dictionary-resident life loop (prelude
+default: `GP-EVOLVE`), so a unit's habits are genome: heritable, shareable,
+and mutable like any other word; reaps the dead — a unit pinned at the
+energy hard floor for 30 consecutive ticks dies, bequeathing its `SOL-*`
+antibodies to its siblings and broadcasting them to the mesh as a
+**death-cry** (the failed life strategy dies with the unit; the immune
+memory survives it); periodically measures host resources and re-advertises its real
 headroom on the heartbeat; and runs the local placement rule — if the host is
 over the 80% ceiling it senses itself **mislocated**, picks a
 sufficient-headroom peer from its gossiped view, and transports a unit there
@@ -286,7 +291,7 @@ The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 
 ## Documentation
 
-- [docs/words.md](docs/words.md) — word reference (342 words in the live dictionary)
+- [docs/words.md](docs/words.md) — word reference (343 words in the live dictionary)
 - [docs/protocol.md](docs/protocol.md) — S-expression wire format and mesh protocol
 - [docs/operations.md](docs/operations.md) — monitoring, goals, trust, persistence, swarm mode
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — two-tier deployment design rationale and bench results

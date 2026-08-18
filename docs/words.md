@@ -1,6 +1,6 @@
 # unit — Word Reference
 
-342 words in the live dictionary (run `WORDS` to list them). Organized by
+343 words in the live dictionary (run `WORDS` to list them). Organized by
 category below. Stack effects use standard Forth notation `( before -- after )`;
 words shown without one are `( -- )` (pure side effect / print). Words whose
 name ends in `"` parse a trailing string argument up to a closing `"`.
@@ -291,6 +291,7 @@ All `( -- )` unless noted. See `HELP-COLONY`.
 | `REPRODUCE` | announce package size and `SPAWN` a child |
 | `REST` `WAKE` | save state / load state (with a message) |
 | `MORNING` `EVENING` | start a shift (`WAKE HELLO CHECKUP`) / end one (`REST`) |
+| `LIVE` | the life loop — what a unit does with an idle tick (default: `GP-EVOLVE`); redefine it to change what living means. Heritable, shareable, mutable |
 | `SWARM` | swarm overview: `SWARM-STATUS MESH-STATUS LEADERBOARD` |
 | `SECURE-SWARM` | `SWARM-ON` with mesh-only trust |
 | `LOCKDOWN` | `TRUST-NONE` and `QUARANTINE` — block replication |

@@ -493,6 +493,81 @@ pub fn msg_resurrect(id: &NodeId, fitness: i64, gen: u32, saved_at: u64) -> Sexp
     ])
 }
 
+/// Antibody-count and per-source caps for death-cry messages. These bound
+/// both what a dying unit broadcasts and what a listener will absorb from
+/// an untrusted death-cry (a UDP datagram anyone can forge).
+pub const DEATH_CRY_MAX_ANTIBODIES: usize = 64;
+pub const DEATH_CRY_MAX_SOURCE_LEN: usize = 2048;
+
+/// Constructs a `death-cry` mesh message — a dying unit's final act. It
+/// bequeaths its immune memory: the `SOL-*` antibody words (name + source),
+/// with fitness/generation as the obituary line. The failed life strategy
+/// dies with the unit; only the solved-challenge knowledge is inherited.
+pub fn msg_death_cry(
+    from_hex: &str,
+    fitness: i64,
+    gen: u32,
+    antibodies: &[(String, String)],
+) -> Sexp {
+    let mut items = vec![
+        Sexp::Atom("death-cry".into()),
+        Sexp::Atom(":from".into()),
+        Sexp::Str(from_hex.to_string()),
+        Sexp::Atom(":fitness".into()),
+        Sexp::Number(fitness),
+        Sexp::Atom(":gen".into()),
+        Sexp::Number(gen as i64),
+        Sexp::Atom(":antibodies".into()),
+    ];
+    let body: Vec<Sexp> = antibodies
+        .iter()
+        .take(DEATH_CRY_MAX_ANTIBODIES)
+        .map(|(name, source)| {
+            Sexp::List(vec![
+                Sexp::Str(name.clone()),
+                Sexp::Str(source.clone()),
+            ])
+        })
+        .collect();
+    items.push(Sexp::List(body));
+    Sexp::List(items)
+}
+
+/// Reads the antibodies out of a parsed `death-cry`, applying the trust
+/// gate for untrusted mesh input: only `SOL-`-prefixed names (the immune
+/// memory class — never behavioral words like `LIVE`), bounded count and
+/// source length. Returns `None` if the message is not a death-cry.
+pub fn read_death_cry(sexp: &Sexp) -> Option<Vec<(String, String)>> {
+    if msg_type(sexp) != Some("death-cry") {
+        return None;
+    }
+    let list = sexp.get_key(":antibodies")?.as_list()?;
+    let mut out = Vec::new();
+    for entry in list.iter().take(DEATH_CRY_MAX_ANTIBODIES) {
+        let pair = match entry.as_list() {
+            Some(p) => p,
+            None => continue,
+        };
+        let (name, source) = match (
+            pair.first().and_then(Sexp::as_str),
+            pair.get(1).and_then(Sexp::as_str),
+        ) {
+            (Some(n), Some(s)) => (n, s),
+            _ => continue,
+        };
+        // The trust gate: immune-memory words only, sanely sized. A forged
+        // death-cry must not be able to install or redefine behavior.
+        if !name.starts_with("SOL-")
+            || name.len() > 64
+            || source.len() > DEATH_CRY_MAX_SOURCE_LEN
+        {
+            continue;
+        }
+        out.push((name.to_string(), source.to_string()));
+    }
+    Some(out)
+}
+
 /// Try to determine the message type from a parsed S-expression.
 pub fn msg_type(sexp: &Sexp) -> Option<&str> {
     let items = sexp.as_list()?;
