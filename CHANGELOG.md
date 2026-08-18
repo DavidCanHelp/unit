@@ -33,6 +33,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Genome snapshots are now S-expressions (the mesh's own notation), not
+  JSON.** `HIBERNATE` / `JSON-SNAPSHOT` / auto-snapshot write
+  `~/.unit/snapshots/<id>.sexp` in a `(unit-snapshot :version 2 …)` format
+  that parses with the same `sexp::parse` the mesh uses — a genome on disk is
+  a valid mesh expression, so hibernation and transport share one notation,
+  and any species (the Go and Python organisms already carry sexp parsers)
+  can read another's genome. Legacy JSON snapshots still resurrect: the
+  loader sniffs the first byte (`(` vs `{`) and falls back to `<id>.json`;
+  old state converts to sexp on its next save. The word names (`JSON-*`) are
+  unchanged for compatibility. Also fixed a latent wire-format bug found
+  while building this: the sexp parser rebuilt string payloads byte-by-byte,
+  mangling multi-byte UTF-8 (`"héllo"` → `"hÃ©llo"`); it now iterates chars,
+  so genomes and mesh strings round-trip byte-exact. Verified end-to-end:
+  hibernate → resurrect in the new format, planted legacy-JSON migration, and
+  two new fuzz targets (`genome from_str`, mutated-word round-trip) alongside
+  9 new unit tests; 487 tests total, zero dependencies.
+
 - **Split the monolithic `impl VM` into a `words` module tree.** Every
   primitive word (`prim_*`, `do_*`, `rt_*`, and their helpers) previously
   lived in one ~4,600-line `impl VM` block in `main.rs`. They are now grouped

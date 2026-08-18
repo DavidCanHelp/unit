@@ -177,33 +177,36 @@ fn parse_list(input: &str, pos: &mut usize, depth: usize) -> Result<Sexp, ParseE
 
 fn parse_string(input: &str, pos: &mut usize) -> Result<Sexp, ParseError> {
     *pos += 1; // skip opening '"'
-    let bytes = input.as_bytes();
     let mut s = String::new();
-    while *pos < bytes.len() {
-        match bytes[*pos] {
-            b'"' => {
-                *pos += 1;
+    // Iterate chars (not bytes): string payloads may contain multi-byte UTF-8
+    // (word sources, mesh messages), which byte-wise `as char` would mangle.
+    let start = *pos;
+    let mut iter = input[start..].char_indices();
+    while let Some((i, c)) = iter.next() {
+        match c {
+            '"' => {
+                *pos = start + i + 1;
                 return Ok(Sexp::Str(s));
             }
-            b'\\' => {
-                *pos += 1;
-                if *pos >= bytes.len() {
+            '\\' => match iter.next() {
+                Some((_, esc)) => match esc {
+                    'n' => s.push('\n'),
+                    '"' => s.push('"'),
+                    '\\' => s.push('\\'),
+                    other => {
+                        s.push('\\');
+                        s.push(other);
+                    }
+                },
+                None => {
+                    *pos = input.len();
                     return Err(ParseError("unterminated escape".into()));
                 }
-                match bytes[*pos] {
-                    b'n' => s.push('\n'),
-                    b'"' => s.push('"'),
-                    b'\\' => s.push('\\'),
-                    c => {
-                        s.push('\\');
-                        s.push(c as char);
-                    }
-                }
-            }
-            c => s.push(c as char),
+            },
+            c => s.push(c),
         }
-        *pos += 1;
     }
+    *pos = input.len();
     Err(ParseError("unterminated string".into()))
 }
 
@@ -884,5 +887,30 @@ mod tests {
                 output: String::new()
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod string_roundtrip_tests {
+    use super::*;
+
+    #[test]
+    fn test_utf8_string_roundtrip() {
+        // Multi-byte payloads must survive serialize -> parse unchanged
+        // (regression: the parser used to rebuild strings byte-by-byte).
+        for payload in ["héllo→世界", "π ≈ 3", "emoji 🧬 genome", "plain ascii"] {
+            let ser = format!("{}", Sexp::Str(payload.to_string()));
+            let back = parse(&ser).unwrap();
+            assert_eq!(back.as_str(), Some(payload));
+        }
+    }
+
+    #[test]
+    fn test_escaped_string_roundtrip() {
+        for payload in ["quote \" inside", "back\\slash", "new\nline", "mix \"\\\n\" end"] {
+            let ser = format!("{}", Sexp::Str(payload.to_string()));
+            let back = parse(&ser).unwrap();
+            assert_eq!(back.as_str(), Some(payload));
+        }
     }
 }

@@ -7,10 +7,10 @@ use super::prelude::*;
 
 impl VM {
     // -----------------------------------------------------------------------
-    // JSON snapshot primitives
+    // Genome snapshot primitives (S-expression format; legacy JSON read-only)
     // -----------------------------------------------------------------------
 
-    pub(crate) fn make_json_snapshot(&self) -> snapshot::UnitSnapshot {
+    pub(crate) fn make_unit_snapshot(&self) -> snapshot::UnitSnapshot {
         let node_id = self
             .node_id_cache
             .map(|id| crate::mesh::id_to_hex(&id))
@@ -60,7 +60,7 @@ impl VM {
         }
     }
 
-    pub(crate) fn restore_json_snapshot(&mut self, snap: &snapshot::UnitSnapshot) {
+    pub(crate) fn restore_unit_snapshot(&mut self, snap: &snapshot::UnitSnapshot) {
         // Restore simple fields.
         self.stack = snap.stack.clone();
         self.fitness.score = snap.fitness;
@@ -106,10 +106,10 @@ impl VM {
     }
 
     pub(crate) fn prim_json_snapshot(&mut self) {
-        let snap = self.make_json_snapshot();
-        let json = snapshot::to_json(&snap);
+        let snap = self.make_unit_snapshot();
+        let text = snapshot::to_sexp(&snap);
         let id = self.node_id_cache.unwrap_or([0u8; 8]);
-        match snapshot::save_json_snapshot(&id, &json) {
+        match snapshot::save_snapshot_file(&id, &text) {
             Ok(path) => {
                 self.emit_str(&format!("snapshot saved to {}\n", path));
                 if let Some(ref m) = self.mesh {
@@ -123,9 +123,9 @@ impl VM {
 
     pub(crate) fn prim_json_restore(&mut self) {
         let id = self.node_id_cache.unwrap_or([0u8; 8]);
-        if let Some(json) = snapshot::load_json_snapshot(&id) {
-            if let Some(snap) = snapshot::from_json(&json) {
-                self.restore_json_snapshot(&snap);
+        if let Some(text) = snapshot::load_snapshot_file(&id) {
+            if let Some(snap) = snapshot::from_str(&text) {
+                self.restore_unit_snapshot(&snap);
                 self.emit_str(&format!(
                     "restored from snapshot (saved {}, fitness={}, gen={})\n",
                     snap.timestamp, snap.fitness, snap.generation
@@ -153,7 +153,7 @@ impl VM {
     }
 
     pub(crate) fn prim_json_snapshots(&mut self) {
-        let snapshots = snapshot::list_json_snapshots();
+        let snapshots = snapshot::list_snapshot_files();
         if snapshots.is_empty() {
             self.emit_str("no snapshots\n");
         } else {
@@ -180,10 +180,10 @@ impl VM {
     }
 
     pub(crate) fn prim_hibernate(&mut self) {
-        let snap = self.make_json_snapshot();
-        let json = snapshot::to_json(&snap);
+        let snap = self.make_unit_snapshot();
+        let text = snapshot::to_sexp(&snap);
         if let Some(id) = self.node_id_cache {
-            match snapshot::save_json_snapshot(&id, &json) {
+            match snapshot::save_snapshot_file(&id, &text) {
                 Ok(path) => {
                     self.emit_str(&format!("hibernating... saved to {}\n", path));
                     if let Some(ref m) = self.mesh {
@@ -195,7 +195,7 @@ impl VM {
             }
         } else {
             // No node ID — save to in-memory anyway.
-            let _ = snapshot::save_json_snapshot(&[0u8; 8], &json);
+            let _ = snapshot::save_snapshot_file(&[0u8; 8], &text);
             self.emit_str("hibernated (in-memory)\n");
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -255,10 +255,10 @@ impl VM {
         if let Some(last) = self.auto_snapshot_last {
             if last.elapsed() >= Duration::from_secs(self.auto_snapshot_secs) {
                 self.auto_snapshot_last = Some(Instant::now());
-                let snap = self.make_json_snapshot();
-                let json = snapshot::to_json(&snap);
+                let snap = self.make_unit_snapshot();
+                let text = snapshot::to_sexp(&snap);
                 if let Some(id) = self.node_id_cache {
-                    let _ = snapshot::save_json_snapshot(&id, &json);
+                    let _ = snapshot::save_snapshot_file(&id, &text);
                 }
             }
         }
@@ -269,12 +269,13 @@ impl VM {
         // No timer on WASM — auto-snapshot is a no-op in the browser.
     }
 
-    /// Try to resurrect from a JSON snapshot. Returns true if restored.
+    /// Try to resurrect from a genome snapshot (canonical sexp, or a legacy
+    /// JSON file left by a pre-v0.34 unit). Returns true if restored.
     pub fn try_resurrect(&mut self) -> bool {
         if let Some(id) = self.node_id_cache {
-            if let Some(json) = snapshot::load_json_snapshot(&id) {
-                if let Some(snap) = snapshot::from_json(&json) {
-                    self.restore_json_snapshot(&snap);
+            if let Some(text) = snapshot::load_snapshot_file(&id) {
+                if let Some(snap) = snapshot::from_str(&text) {
+                    self.restore_unit_snapshot(&snap);
                     return true;
                 }
             }

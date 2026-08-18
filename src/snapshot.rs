@@ -1,8 +1,13 @@
-//! JSON-based state persistence for unit.
+//! Genome snapshot persistence for unit.
 //!
-//! Saves and loads a unit's state as human-readable JSON so hackers can
-//! inspect and hand-edit a unit's brain. Zero dependencies -- hand-written
-//! JSON serializer/parser.
+//! Saves and loads a unit's state as a human-readable **S-expression** — the
+//! same notation the mesh speaks — so hackers can inspect and hand-edit a
+//! unit's brain, and so any species (Rust, Go, Python) can parse another's
+//! genome with the sexp parser it already carries. Zero dependencies.
+//!
+//! Legacy JSON snapshots (the pre-v0.34 format) are still *read* for
+//! migration: the loader sniffs the first byte (`(` → sexp, `{` → JSON) and
+//! old state converts to sexp on its next save.
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mesh::NodeId;
@@ -46,7 +51,156 @@ pub struct MutStats {
 }
 
 // ---------------------------------------------------------------------------
-// JSON serializer (no serde)
+// S-expression serializer / parser — the canonical genome format
+// ---------------------------------------------------------------------------
+
+/// Current genome format version. Version 1 was the JSON format (read-only
+/// legacy); version 2 is the S-expression format below.
+pub const SNAPSHOT_VERSION: i64 = 2;
+
+fn sexp_str(s: &str) -> String {
+    // Route through the wire serializer so escaping is identical everywhere.
+    crate::sexp::Sexp::Str(s.to_string()).to_string()
+}
+
+/// Serializes a `UnitSnapshot` to a human-readable S-expression string.
+/// The output parses with `sexp::parse` — a snapshot is a valid mesh
+/// expression, so hibernation and transport share one notation.
+pub fn to_sexp(snap: &UnitSnapshot) -> String {
+    let mut s = String::with_capacity(4096);
+    s.push_str(&format!("(unit-snapshot :version {}\n", SNAPSHOT_VERSION));
+    s.push_str(&format!("  :id {}\n", sexp_str(&snap.node_id)));
+    s.push_str(&format!("  :timestamp {}\n", snap.timestamp));
+    s.push_str(&format!("  :fitness {}\n", snap.fitness));
+    s.push_str(&format!("  :tasks-completed {}\n", snap.tasks_completed));
+    s.push_str(&format!("  :generation {}\n", snap.generation));
+    s.push_str(&format!("  :energy {}\n", snap.energy));
+    s.push_str(&format!("  :energy-max {}\n", snap.energy_max));
+    s.push_str(&format!("  :energy-earned {}\n", snap.energy_earned));
+    s.push_str(&format!("  :energy-spent {}\n", snap.energy_spent));
+    s.push_str(&format!("  :landscape-depth {}\n", snap.landscape_depth));
+    s.push_str(&format!(
+        "  :landscape-generated {}\n",
+        snap.landscape_generated
+    ));
+
+    s.push_str("  :stack (");
+    for (i, v) in snap.stack.iter().enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        s.push_str(&v.to_string());
+    }
+    s.push_str(")\n");
+
+    let m = &snap.mutation_stats;
+    s.push_str(&format!(
+        "  :mutation-stats (:total {} :neutral {} :beneficial {} :harmful {} :lethal {})\n",
+        m.total, m.neutral, m.beneficial, m.harmful, m.lethal
+    ));
+
+    s.push_str(&format!("  :memory-here {}\n", snap.memory_here));
+    s.push_str("  :memory (");
+    for (i, v) in snap.memory.iter().enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        s.push_str(&v.to_string());
+    }
+    s.push_str(")\n");
+
+    s.push_str("  :words (");
+    for (name, source) in &snap.words {
+        s.push_str(&format!("\n    ({} {})", sexp_str(name), sexp_str(source)));
+    }
+    s.push_str("))\n");
+    s
+}
+
+/// Parses an S-expression genome string into a `UnitSnapshot`.
+/// Missing keys fall back to the same defaults as the legacy JSON parser;
+/// a wrong head atom or unparseable input returns `None`.
+pub fn from_sexp(input: &str) -> Option<UnitSnapshot> {
+    use crate::sexp::Sexp;
+    let sx = crate::sexp::parse(input).ok()?;
+    let items = sx.as_list()?;
+    if items.first()?.as_atom()? != "unit-snapshot" {
+        return None;
+    }
+
+    let num = |key: &str| sx.get_key(key).and_then(Sexp::as_number);
+    let nums = |key: &str| -> Vec<Cell> {
+        sx.get_key(key)
+            .and_then(Sexp::as_list)
+            .map(|l| l.iter().filter_map(Sexp::as_number).collect())
+            .unwrap_or_default()
+    };
+
+    let mut snap = UnitSnapshot {
+        node_id: sx
+            .get_key(":id")
+            .and_then(Sexp::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        timestamp: num(":timestamp").unwrap_or(0).max(0) as u64,
+        stack: nums(":stack"),
+        fitness: num(":fitness").unwrap_or(0),
+        tasks_completed: num(":tasks-completed").unwrap_or(0).max(0) as u32,
+        generation: num(":generation").unwrap_or(0).max(0) as u32,
+        mutation_stats: MutStats::default(),
+        words: Vec::new(),
+        memory_here: num(":memory-here").unwrap_or(0).max(0) as usize,
+        memory: nums(":memory"),
+        energy: num(":energy").unwrap_or(crate::energy::INITIAL_ENERGY),
+        energy_max: num(":energy-max").unwrap_or(crate::energy::MAX_ENERGY),
+        energy_earned: num(":energy-earned").unwrap_or(0).max(0) as u64,
+        energy_spent: num(":energy-spent").unwrap_or(0).max(0) as u64,
+        landscape_depth: num(":landscape-depth").unwrap_or(0).max(0) as u32,
+        landscape_generated: num(":landscape-generated").unwrap_or(0).max(0) as u64,
+    };
+
+    if let Some(ms) = sx.get_key(":mutation-stats") {
+        let g = |k: &str| ms.get_key(k).and_then(Sexp::as_number).unwrap_or(0).max(0) as u32;
+        snap.mutation_stats = MutStats {
+            total: g(":total"),
+            neutral: g(":neutral"),
+            beneficial: g(":beneficial"),
+            harmful: g(":harmful"),
+            lethal: g(":lethal"),
+        };
+    }
+
+    if let Some(words) = sx.get_key(":words").and_then(Sexp::as_list) {
+        for w in words {
+            if let Some(pair) = w.as_list() {
+                if let (Some(name), Some(source)) = (
+                    pair.first().and_then(Sexp::as_str),
+                    pair.get(1).and_then(Sexp::as_str),
+                ) {
+                    snap.words.push((name.to_string(), source.to_string()));
+                }
+            }
+        }
+    }
+
+    Some(snap)
+}
+
+/// Parses a snapshot in whichever format it is stored: sniffs the first
+/// non-whitespace byte — `(` is the canonical sexp genome, `{` a legacy
+/// JSON snapshot (still readable so old units resurrect across the format
+/// change; they convert to sexp on their next save).
+pub fn from_str(input: &str) -> Option<UnitSnapshot> {
+    match input.trim_start().as_bytes().first()? {
+        b'(' => from_sexp(input),
+        b'{' => from_json(input),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON serializer (no serde) — LEGACY format, retained for migration reads
+// and migration tests only; the write path is S-expressions.
 // ---------------------------------------------------------------------------
 
 pub(crate) fn escape_json_string(s: &str) -> String {
@@ -395,45 +549,60 @@ pub fn snapshot_dir(_node_id: &NodeId) -> String {
     format!("{}/.unit/snapshots", home)
 }
 
-/// Returns the full file path for a node's snapshot JSON file.
+/// Returns the full file path for a node's genome snapshot (canonical sexp).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn snapshot_path(node_id: &NodeId) -> String {
+    let id_hex: String = node_id.iter().map(|b| format!("{:02x}", b)).collect();
+    format!("{}/{}.sexp", snapshot_dir(node_id), id_hex)
+}
+
+/// Path of the legacy JSON snapshot for this node (read-only migration).
+#[cfg(not(target_arch = "wasm32"))]
+fn legacy_snapshot_path(node_id: &NodeId) -> String {
     let id_hex: String = node_id.iter().map(|b| format!("{:02x}", b)).collect();
     format!("{}/{}.json", snapshot_dir(node_id), id_hex)
 }
 
-/// Writes a JSON snapshot to disk, creating directories as needed.
+/// Writes a genome snapshot to disk (canonical sexp path), creating
+/// directories as needed.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn save_json_snapshot(node_id: &NodeId, json: &str) -> Result<String, String> {
+pub fn save_snapshot_file(node_id: &NodeId, text: &str) -> Result<String, String> {
     let dir = snapshot_dir(node_id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {}", e))?;
     let path = snapshot_path(node_id);
-    std::fs::write(&path, json).map_err(|e| format!("write: {}", e))?;
+    std::fs::write(&path, text).map_err(|e| format!("write: {}", e))?;
     Ok(path)
 }
 
-/// Loads a JSON snapshot from disk, returning `None` if missing.
+/// Loads this node's snapshot text: the canonical `.sexp` first, falling
+/// back to a legacy `.json` left by a pre-v0.34 unit. `from_str` sniffs the
+/// format either way, so old state resurrects and converts on next save.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_json_snapshot(node_id: &NodeId) -> Option<String> {
-    let path = snapshot_path(node_id);
-    std::fs::read_to_string(&path).ok()
+pub fn load_snapshot_file(node_id: &NodeId) -> Option<String> {
+    std::fs::read_to_string(snapshot_path(node_id))
+        .or_else(|_| std::fs::read_to_string(legacy_snapshot_path(node_id)))
+        .ok()
 }
 
-/// Lists all snapshot node IDs found in the snapshot directory.
+/// Lists all snapshot node IDs found in the snapshot directory (both the
+/// canonical `.sexp` and any legacy `.json` files, deduplicated).
 #[cfg(not(target_arch = "wasm32"))]
-pub fn list_json_snapshots() -> Vec<String> {
+pub fn list_snapshot_files() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let dir = format!("{}/.unit/snapshots", home);
     let mut names = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.ends_with(".json") {
-                names.push(name.trim_end_matches(".json").to_string());
+            for ext in [".sexp", ".json"] {
+                if let Some(stem) = name.strip_suffix(ext) {
+                    names.push(stem.to_string());
+                }
             }
         }
     }
     names.sort();
+    names.dedup();
     names
 }
 
@@ -449,8 +618,8 @@ mod wasm_store {
         static SNAPSHOT: RefCell<Option<String>> = RefCell::new(None);
     }
 
-    pub fn save(json: &str) {
-        SNAPSHOT.with(|s| *s.borrow_mut() = Some(json.to_string()));
+    pub fn save(text: &str) {
+        SNAPSHOT.with(|s| *s.borrow_mut() = Some(text.to_string()));
     }
 
     pub fn load() -> Option<String> {
@@ -468,18 +637,18 @@ pub fn snapshot_path(_node_id: &[u8; 8]) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn save_json_snapshot(_node_id: &[u8; 8], json: &str) -> Result<String, String> {
-    wasm_store::save(json);
+pub fn save_snapshot_file(_node_id: &[u8; 8], text: &str) -> Result<String, String> {
+    wasm_store::save(text);
     Ok("(in-memory)".to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn load_json_snapshot(_node_id: &[u8; 8]) -> Option<String> {
+pub fn load_snapshot_file(_node_id: &[u8; 8]) -> Option<String> {
     wasm_store::load()
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn list_json_snapshots() -> Vec<String> {
+pub fn list_snapshot_files() -> Vec<String> {
     if wasm_store::has_snapshot() {
         vec!["(in-memory)".to_string()]
     } else {
@@ -525,8 +694,107 @@ mod tests {
         }
     }
 
+    fn assert_snapshots_equal(snap: &UnitSnapshot, restored: &UnitSnapshot) {
+        assert_eq!(snap.node_id, restored.node_id);
+        assert_eq!(snap.timestamp, restored.timestamp);
+        assert_eq!(snap.stack, restored.stack);
+        assert_eq!(snap.fitness, restored.fitness);
+        assert_eq!(snap.tasks_completed, restored.tasks_completed);
+        assert_eq!(snap.generation, restored.generation);
+        assert_eq!(snap.mutation_stats.total, restored.mutation_stats.total);
+        assert_eq!(snap.mutation_stats.neutral, restored.mutation_stats.neutral);
+        assert_eq!(
+            snap.mutation_stats.beneficial,
+            restored.mutation_stats.beneficial
+        );
+        assert_eq!(snap.mutation_stats.harmful, restored.mutation_stats.harmful);
+        assert_eq!(snap.mutation_stats.lethal, restored.mutation_stats.lethal);
+        assert_eq!(snap.words, restored.words);
+        assert_eq!(snap.memory_here, restored.memory_here);
+        assert_eq!(snap.memory, restored.memory);
+        assert_eq!(snap.energy, restored.energy);
+        assert_eq!(snap.energy_max, restored.energy_max);
+        assert_eq!(snap.energy_earned, restored.energy_earned);
+        assert_eq!(snap.energy_spent, restored.energy_spent);
+        assert_eq!(snap.landscape_depth, restored.landscape_depth);
+        assert_eq!(snap.landscape_generated, restored.landscape_generated);
+    }
+
     #[test]
-    fn test_roundtrip() {
+    fn test_sexp_roundtrip() {
+        let snap = make_test_snapshot();
+        let text = to_sexp(&snap);
+        let restored = from_sexp(&text).unwrap();
+        assert_snapshots_equal(&snap, &restored);
+    }
+
+    #[test]
+    fn test_sexp_is_a_valid_mesh_expression() {
+        // The whole point: a genome snapshot parses with the same parser the
+        // mesh uses — hibernation and transport share one notation.
+        let text = to_sexp(&make_test_snapshot());
+        let sx = crate::sexp::parse(&text).unwrap();
+        assert_eq!(
+            sx.as_list().unwrap()[0].as_atom(),
+            Some("unit-snapshot")
+        );
+        assert_eq!(sx.get_key(":fitness").unwrap().as_number(), Some(55));
+    }
+
+    #[test]
+    fn test_sexp_hostile_word_content_roundtrips() {
+        // Word names/sources with quotes, backslashes, newlines, parens, and
+        // UTF-8 must survive — GP mutation can put nearly anything in a body.
+        let mut snap = make_test_snapshot();
+        snap.words = vec![
+            ("W\"Q".to_string(), ": W\"Q .\" say \\\"hi\\\" \" ;".to_string()),
+            ("PAREN(".to_string(), ": PAREN( 1 2 ( comment ) + ;".to_string()),
+            ("MULTI".to_string(), "line one\nline two\\tail".to_string()),
+            ("UTF8→".to_string(), ": UTF8→ .\" héllo 世界 🧬\" ;".to_string()),
+        ];
+        let restored = from_sexp(&to_sexp(&snap)).unwrap();
+        assert_eq!(snap.words, restored.words);
+    }
+
+    #[test]
+    fn test_from_str_sniffs_both_formats() {
+        let snap = make_test_snapshot();
+        // canonical sexp
+        let via_sexp = from_str(&to_sexp(&snap)).unwrap();
+        assert_snapshots_equal(&snap, &via_sexp);
+        // legacy JSON migrates through the same entry point
+        let via_json = from_str(&to_json(&snap)).unwrap();
+        assert_eq!(via_json.node_id, snap.node_id);
+        assert_eq!(via_json.words, snap.words);
+        assert_eq!(via_json.fitness, snap.fitness);
+        // garbage is rejected, not guessed at
+        assert!(from_str("neither format").is_none());
+        assert!(from_str("").is_none());
+    }
+
+    #[test]
+    fn test_corrupt_sexp() {
+        assert!(from_sexp("not a sexp").is_none());
+        assert!(from_sexp("(wrong-head :fitness 1)").is_none());
+        assert!(from_sexp("(unit-snapshot :fitness").is_none()); // unterminated
+        // minimal valid: right head, defaults for everything else
+        let minimal = from_sexp("(unit-snapshot :version 2)").unwrap();
+        assert_eq!(minimal.fitness, 0);
+        assert_eq!(minimal.words.len(), 0);
+    }
+
+    #[test]
+    fn test_sexp_is_human_readable() {
+        let text = to_sexp(&make_test_snapshot());
+        assert!(text.contains(":id"));
+        assert!(text.contains("SQUARE"));
+        assert!(text.contains(":fitness 55"));
+        // one field per line — hand-editable, diff-able
+        assert!(text.lines().count() > 10);
+    }
+
+    #[test]
+    fn test_legacy_json_roundtrip() {
         let snap = make_test_snapshot();
         let json = to_json(&snap);
         let restored = from_json(&json).unwrap();

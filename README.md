@@ -46,7 +46,7 @@ Everything else grew from there.
 | **Communicate** | S-expression mesh protocol over UDP gossip |
 | **Replicate** | Reads own binary, packages state, spawns child processes |
 | **Mutate** | Genetic programming — 50 candidates, tournament selection, 5 mutation operators |
-| **Persist** | JSON snapshots — hibernate, resurrect, automatic restoration on startup |
+| **Persist** | S-expression snapshots — hibernate, resurrect, automatic restoration on startup |
 
 These five concerns are the kernel. Everything below emerged from them.
 
@@ -62,8 +62,9 @@ unit's own binary, serializes its state into a UREP package, and spawns
 a child process that boots with the parent's entire dictionary. The
 mutation engine applies token-level operations (swap, insert, delete,
 replace, double) to dictionary entries, with benchmarking to keep
-beneficial changes and revert harmful ones. JSON persistence lets a unit
-hibernate and resurrect exactly where it left off.
+beneficial changes and revert harmful ones. S-expression persistence lets a
+unit hibernate and resurrect exactly where it left off — its genome on disk
+is the same notation it speaks on the mesh.
 
 This is what fits in a ~1.5 MB binary with zero dependencies.
 
@@ -264,7 +265,7 @@ src/
 ├── reproduction.rs   # Sexual reproduction, dictionary crossover
 ├── niche.rs          # Niche construction, ecological specialization
 ├── spawn.rs          # Self-replication, UREP package format
-├── snapshot.rs       # JSON persistence and resurrection
+├── snapshot.rs       # S-expression genome persistence and resurrection
 ├── http.rs           # HTTP bridge (opt-in via --features http)
 ├── prelude.fs        # Forth prelude (~600 lines)
 └── main.rs           # REPL, CLI, feature wiring

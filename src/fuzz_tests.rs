@@ -265,3 +265,74 @@ fn fuzz_deserialize_snapshot_never_panics() {
     });
     assert!(r.is_ok(), "deserialize_snapshot panicked; reproduce with seed {:#x}", r.unwrap_err());
 }
+
+#[test]
+fn fuzz_genome_from_str_never_panics() {
+    // The genome loader takes whatever is on disk: random text, random
+    // sexps, and structurally-valid-but-lying snapshots (huge/negative
+    // numbers, wrong value types in known keys).
+    let r = hammer(ITERS, 0x6E03, |rng| {
+        let input = match rng.below(3) {
+            0 => rand_str(rng, 96),
+            1 => {
+                let mut s = String::new();
+                rand_sexp(rng, 6, &mut s);
+                s
+            }
+            _ => {
+                // a plausible snapshot with adversarial values
+                format!(
+                    "(unit-snapshot :version {} :id {} :fitness {} :memory-here {} \
+                     :stack ({}) :words ((\"A\" {}) ({} \"B\") (\"C\")) \
+                     :mutation-stats (:total {}))",
+                    (rng.next() as i64),
+                    if rng.chance(2) { "\"x\"" } else { "42" },
+                    (rng.next() as i64),
+                    (rng.next() as i64),
+                    (rng.next() as i64),
+                    (rng.next() as i64),
+                    (rng.next() as i64),
+                    (rng.next() as i64),
+                )
+            }
+        };
+        let _ = crate::snapshot::from_str(&input);
+    });
+    assert!(r.is_ok(), "genome from_str panicked; reproduce with seed {:#x}", r.unwrap_err());
+}
+
+#[test]
+fn fuzz_genome_roundtrip_with_mutated_words() {
+    // Property: any snapshot whose words hold arbitrary (GP-mutated) content
+    // must serialize -> parse back to exactly the same words.
+    let r = hammer(ITERS / 10, 0x6E04, |rng| {
+        let n = rng.below(6);
+        let words: Vec<(String, String)> = (0..n)
+            .map(|_| (rand_str(rng, 12), rand_str(rng, 40)))
+            .collect();
+        let snap = crate::snapshot::UnitSnapshot {
+            node_id: rand_str(rng, 16),
+            timestamp: rng.next(),
+            stack: (0..rng.below(8)).map(|_| rng.next() as i64).collect(),
+            fitness: rng.next() as i64,
+            tasks_completed: rng.next() as u32,
+            generation: rng.next() as u32,
+            mutation_stats: Default::default(),
+            words: words.clone(),
+            memory_here: rng.below(64),
+            memory: (0..rng.below(16)).map(|_| rng.next() as i64).collect(),
+            energy: rng.next() as i64,
+            energy_max: rng.next() as i64,
+            energy_earned: rng.next(),
+            energy_spent: rng.next(),
+            landscape_depth: rng.next() as u32,
+            landscape_generated: rng.next(),
+        };
+        let text = crate::snapshot::to_sexp(&snap);
+        let back = crate::snapshot::from_sexp(&text)
+            .expect("serialized snapshot must parse back");
+        assert_eq!(back.words, words, "words round-trip");
+        assert_eq!(back.stack, snap.stack, "stack round-trip");
+    });
+    assert!(r.is_ok(), "genome roundtrip failed; reproduce with seed {:#x}", r.unwrap_err());
+}

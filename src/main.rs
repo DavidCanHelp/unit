@@ -385,15 +385,15 @@ fn main() {
     vm.kernel_word_count = vm.dictionary.len();
     vm.silent = false;
 
-    // Try JSON resurrection (only if not already restored from binary state).
+    // Try genome resurrection (only if not already restored from binary state).
     if !restored && vm.try_resurrect() {
         if !cli.quiet {
             eprintln!("resurrected from snapshot");
         }
         // Broadcast resurrection to mesh.
         if let Some(id) = vm.node_id_cache {
-            if let Some(json) = snapshot::load_json_snapshot(&id) {
-                if let Some(snap) = snapshot::from_json(&json) {
+            if let Some(text) = snapshot::load_snapshot_file(&id) {
+                if let Some(snap) = snapshot::from_str(&text) {
                     if let Some(ref m) = vm.mesh {
                         let sexp =
                             sexp::msg_resurrect(&id, snap.fitness, snap.generation, snap.timestamp);

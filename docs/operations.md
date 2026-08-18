@@ -65,7 +65,9 @@ Use `TRUST-LEVEL` to check, `REQUESTS` to see pending, `ACCEPT`/`DENY` to respon
 
 ## Persistence & Resurrection
 
-A unit saves its entire state as human-readable JSON. It can die and
+A unit saves its entire state as a human-readable S-expression — the same
+notation the mesh speaks, so any species (Rust, Go, Python) can parse
+another's genome with the sexp parser it already carries. It can die and
 come back exactly where it left off.
 
 ```
@@ -73,7 +75,7 @@ come back exactly where it left off.
 > : CUBE DUP SQUARE * ;
 > 42
 > HIBERNATE
-hibernating... saved to ~/.unit/snapshots/d1b74e159948b52b.json
+hibernating... saved to ~/.unit/snapshots/d1b74e159948b52b.sexp
 ```
 
 Later, same port:
@@ -86,19 +88,21 @@ resurrected from snapshot
 343  ok
 ```
 
-The JSON is hand-editable:
+The genome is hand-editable, and it parses as a mesh expression:
 
-```json
-{
-  "node_id": "d1b74e159948b52b",
-  "fitness": 0,
-  "stack": [42],
-  "words": {
-    "SQUARE": ": SQUARE DUP * ;",
-    "CUBE": ": CUBE DUP SQUARE * ;"
-  }
-}
+```lisp
+(unit-snapshot :version 2
+  :id "d1b74e159948b52b"
+  :fitness 0
+  :stack (42)
+  :words (
+    ("SQUARE" ": SQUARE DUP * ;")
+    ("CUBE" ": CUBE DUP SQUARE * ;")))
 ```
+
+Snapshots written by pre-v0.34 units (JSON, `<id>.json`) still resurrect —
+the loader sniffs the format — and convert to the sexp genome on their next
+save.
 
 ## Swarm Mode
 

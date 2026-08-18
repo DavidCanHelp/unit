@@ -237,10 +237,10 @@ See [signaling.md](signaling.md) for the design rationale.
 
 | Word | Description |
 |------|-------------|
-| `JSON-SNAPSHOT` `JSON-RESTORE` | save/load JSON snapshots |
+| `JSON-SNAPSHOT` `JSON-RESTORE` | save/load the genome snapshot (S-expression since v0.34; names kept for compatibility — legacy JSON files still load) |
 | `HIBERNATE` | snapshot and exit |
 | `AUTO-SNAPSHOT` | periodic auto-save |
-| `SNAPSHOT-PATH` `JSON-SNAPSHOTS` | inspect storage |
+| `SNAPSHOT-PATH` `JSON-SNAPSHOTS` | inspect storage (lists both `.sexp` and legacy `.json`) |
 | `EXPORT-GENOME` `IMPORT-GENOME"` | genome transfer |
 | `SAVE` `LOAD-STATE` `RESET` | binary state management |
 | `SNAPSHOT` `SNAPSHOTS` `RESTORE` | binary versioned backups |
