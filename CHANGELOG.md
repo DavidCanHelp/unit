@@ -3,7 +3,7 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.34.0] - 2026-08-18
 
 ### Fixed
 
@@ -30,8 +30,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `catch_unwind`; deterministic seeds make any failure reproducible. Runs in
   the normal `cargo test` (30k iterations/target) as a permanent regression
   guard. These tests are what surfaced the three fixes above.
-
-### Added
 
 - **The energy economy: flows instead of faucets.** Two conserved energy
   flows join the minted rewards:

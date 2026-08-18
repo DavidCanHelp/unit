@@ -4,7 +4,7 @@
 // CLI argument parsing
 // ===========================================================================
 
-pub(crate) const VERSION: &str = "unit v0.33.0";
+pub(crate) const VERSION: &str = "unit v0.34.0";
 
 pub(crate) fn print_help() {
     println!("{}", VERSION);
