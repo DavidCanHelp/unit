@@ -590,10 +590,10 @@ VARIABLE OBS-COUNT
 
 : HELP-PERSIST
   CR ." === Persistence & Resurrection ===" CR CR
-  ."   JSON-SNAPSHOT                Save state to JSON snapshot" CR
-  ."   JSON-RESTORE                 Restore from JSON snapshot" CR
+  ."   GENOME-SAVE                  Save the genome snapshot (sexp)" CR
+  ."   GENOME-LOAD                  Restore from the genome snapshot" CR
   ."   SNAPSHOT-PATH                Show snapshot file path" CR
-  ."   JSON-SNAPSHOTS               List available snapshots" CR
+  ."   GENOMES                      List saved genome snapshots" CR
   ."   60 AUTO-SNAPSHOT             Auto-save every 60 seconds" CR
   ."   0 AUTO-SNAPSHOT              Disable auto-save" CR
   ."   HIBERNATE                    Snapshot and exit cleanly" CR CR

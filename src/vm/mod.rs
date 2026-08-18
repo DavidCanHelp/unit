@@ -765,7 +765,12 @@ impl VM {
             ("ALLOC-MB", P_ALLOC_MB, false),
             ("RECLAIM-MB", P_RECLAIM_MB, false),
             ("ALLOC-ENABLE", P_ALLOC_ENABLE, false),
-            // JSON snapshot persistence
+            // Genome snapshot persistence (S-expression format).
+            // GENOME-SAVE/LOAD/GENOMES are canonical; the JSON-* names are
+            // retained as aliases from the era when the format was JSON.
+            ("GENOME-SAVE", P_JSON_SNAPSHOT, false),
+            ("GENOME-LOAD", P_JSON_RESTORE, false),
+            ("GENOMES", P_JSON_SNAPSHOTS, false),
             ("JSON-SNAPSHOT", P_JSON_SNAPSHOT, false),
             ("JSON-RESTORE", P_JSON_RESTORE, false),
             ("SNAPSHOT-PATH", P_SNAPSHOT_PATH, false),

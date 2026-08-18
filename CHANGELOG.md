@@ -33,6 +33,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **The genome snapshot words got format-neutral canonical names:**
+  `GENOME-SAVE`, `GENOME-LOAD`, and `GENOMES`. The `JSON-SNAPSHOT` /
+  `JSON-RESTORE` / `JSON-SNAPSHOTS` names — from the era when the snapshot
+  format was JSON — remain registered as working aliases, so nothing
+  breaks. `HELP-PERSIST` teaches the new names. Live dictionary: 342 words.
+
 - **Metabolism now prices thinking itself: execution costs energy.** The
   inner interpreter charges 1 energy per 10,000 VM steps of top-level
   execution, so a runaway loop (`BEGIN 0 UNTIL`) starves to death — a clean

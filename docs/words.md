@@ -1,6 +1,6 @@
 # unit — Word Reference
 
-339 words in the live dictionary (run `WORDS` to list them). Organized by
+342 words in the live dictionary (run `WORDS` to list them). Organized by
 category below. Stack effects use standard Forth notation `( before -- after )`;
 words shown without one are `( -- )` (pure side effect / print). Words whose
 name ends in `"` parse a trailing string argument up to a closing `"`.
@@ -237,10 +237,11 @@ See [signaling.md](signaling.md) for the design rationale.
 
 | Word | Description |
 |------|-------------|
-| `JSON-SNAPSHOT` `JSON-RESTORE` | save/load the genome snapshot (S-expression since v0.34; names kept for compatibility — legacy JSON files still load) |
+| `GENOME-SAVE` `GENOME-LOAD` | save/load the genome snapshot (S-expression since v0.34; legacy JSON files still load) |
+| `JSON-SNAPSHOT` `JSON-RESTORE` | aliases for `GENOME-SAVE`/`GENOME-LOAD` from the JSON-format era |
 | `HIBERNATE` | snapshot and exit |
 | `AUTO-SNAPSHOT` | periodic auto-save |
-| `SNAPSHOT-PATH` `JSON-SNAPSHOTS` | inspect storage (lists both `.sexp` and legacy `.json`) |
+| `SNAPSHOT-PATH` `GENOMES` | inspect storage (lists both `.sexp` and legacy `.json`; `JSON-SNAPSHOTS` is the legacy alias of `GENOMES`) |
 | `EXPORT-GENOME` `IMPORT-GENOME"` | genome transfer |
 | `SAVE` `LOAD-STATE` `RESET` | binary state management |
 | `SNAPSHOT` `SNAPSHOTS` `RESTORE` | binary versioned backups |
