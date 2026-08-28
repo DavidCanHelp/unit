@@ -308,7 +308,13 @@ impl super::VM {
     // -----------------------------------------------------------------------
 
     pub fn load_prelude(&mut self) {
-        let prelude = include_str!("../prelude.fs");
+        // {{VERSION}} in the prelude derives from Cargo.toml at compile time,
+        // so the Forth-side banner can never drift from the released version
+        // again (v0.34.0 shipped announcing itself as v0.33.0 — the release
+        // sweep bumped every .rs/.toml/.html string but the banner lives in
+        // .fs, in the organism's own language).
+        let prelude =
+            include_str!("../prelude.fs").replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
         let saved_silent = self.silent;
         self.silent = true;
         for line in prelude.lines() {

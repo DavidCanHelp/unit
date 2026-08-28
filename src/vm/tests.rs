@@ -1216,12 +1216,18 @@ fn test_recursive_fanout_halts_when_no_peer_has_headroom() {
     let parts = parse_parts("(parallel (+ 1 1) (+ 2 2) (+ 3 3))");
     let mut measure = over_ceiling; // no headroom
     let goal_id = vm.run_parallel(&parts, &mut measure, 0);
-    // Terminated (we're here, not looping). No recruit emitted.
-    assert_eq!(
-        vm.recruit_ledger.len(),
-        0,
-        "a peerless/saturated mesh must emit no recruits"
-    );
+    // Terminated (we're here, not looping). No recruit EMITTED: declined
+    // parts are recorded as UNPLACED ledger slots (empty holder) so the
+    // supervision placement pass can bound their wait, but nothing was
+    // placed on any peer — the brake held.
+    assert_eq!(vm.recruit_ledger.len(), 3, "declined parts are ledger-visible");
+    for seq in 0..3 {
+        assert_eq!(
+            vm.recruit_ledger.holder(goal_id, seq),
+            Some(""),
+            "a peerless/saturated mesh must place no recruit (seq {seq})"
+        );
+    }
     // Parts declined: all slots pending -> overall :ok 0.
     let (ok, _) = read_parallel(&vm.parallel_result(goal_id).unwrap());
     assert_eq!(ok, 0);
@@ -1453,7 +1459,7 @@ fn test_resupervise_re_recruits_on_peer_death() {
     assert_eq!(parent.recruit_ledger.holder(5, 0), Some("deadpeer"));
 
     // "deadpeer" leaves the gossip view; an abundant peer "Q" is live.
-    parent.supervise_recruits(&[("Q".to_string(), 90, addr("127.0.0.1:9001"))]);
+    parent.supervise_recruits(&[("Q".to_string(), 90, addr("127.0.0.1:9001"))], crate::distgoal::RECRUIT_TIMEOUT);
 
     // Re-recruited to Q: holder reassigned, instruction retained, still pending.
     assert_eq!(parent.recruit_ledger.holder(5, 0), Some("Q"));
@@ -1499,7 +1505,7 @@ fn test_resupervise_fail_closed_when_no_headroom_peer() {
     let mut parent = test_vm();
     parent.send_recruit("deadpeer", 7, 0, "(+ 1 1)");
     // deadpeer dies; the only live peer "Z" has NO headroom (5% < sufficiency).
-    parent.supervise_recruits(&[("Z".to_string(), 5, addr("127.0.0.1:9002"))]);
+    parent.supervise_recruits(&[("Z".to_string(), 5, addr("127.0.0.1:9002"))], crate::distgoal::RECRUIT_TIMEOUT);
     // Fail-closed: no re-recruit, slot stays held by deadpeer and pending.
     assert!(parent.recruit_ledger.is_pending(7, 0));
     assert_eq!(parent.recruit_ledger.holder(7, 0), Some("deadpeer"));
@@ -1515,7 +1521,7 @@ fn test_recursive_supervision_re_recruits_whole_subtree() {
     root.send_recruit("middle", 2, 0, "(parallel (+ 1 1) (+ 2 2))");
 
     // "middle" dies; a fresh peer "M2" with headroom exists.
-    root.supervise_recruits(&[("M2".to_string(), 90, addr("127.0.0.1:9003"))]);
+    root.supervise_recruits(&[("M2".to_string(), 90, addr("127.0.0.1:9003"))], crate::distgoal::RECRUIT_TIMEOUT);
     // The WHOLE subtree instruction was re-recruited to M2 (not just a leaf).
     assert_eq!(root.recruit_ledger.holder(2, 0), Some("M2"));
     assert_eq!(
@@ -1735,7 +1741,7 @@ fn test_supervision_leaves_healthy_slots_alone() {
         .insert(8, crate::distgoal::ParallelJob::new(8, 1));
     parent.send_recruit("P", 8, 0, "(+ 3 4)");
     // P is ALIVE in the view -> supervision must not touch the slot.
-    parent.supervise_recruits(&[("P".to_string(), 90, addr("127.0.0.1:9004"))]);
+    parent.supervise_recruits(&[("P".to_string(), 90, addr("127.0.0.1:9004"))], crate::distgoal::RECRUIT_TIMEOUT);
     assert_eq!(parent.recruit_ledger.holder(8, 0), Some("P")); // unchanged
     assert_eq!(parent.recruit_ledger.pending_instr(8, 0), Some("(+ 3 4)"));
 
@@ -2337,4 +2343,214 @@ fn test_broke_recruiter_recruits_at_bounty_zero() {
     let msg = vm.send_recruit("some-peer", 4, 0, "(* 6 7)");
     assert!(!msg.contains(":bounty"), "no wage promised: {msg}");
     assert_eq!(vm.energy.energy, -495, "and nothing spent");
+}
+
+// --- Phase 3: deep-tree deadline coverage — every wait is bounded ----------
+//
+// The gap these close: a Deferred sub-recruit wait had no deadline of its
+// own; it was bounded only transitively by the supervision passes, which
+// (a) could reset deadlines forever when no candidate had headroom, (b) were
+// skipped entirely on an empty live view, and (c) had no way to complete a
+// job WITH FAILURE, so abandonment could never unwind the tree upstream.
+
+/// Build a mid-tree unit that has deferred one recruited sub-part
+/// (`(+ 2 2)` at seq 1) to a worker that will never reply. Returns
+/// `(vm, child_goal_id, holder_name)`.
+fn deferred_middle(recruiter_gid: u64) -> (VM, u64, String) {
+    let mut middle = test_vm();
+    let parts = parse_parts("(parallel (parallel (+ 1 1) (+ 2 2)))");
+    let mut call = 0;
+    let mut m = || {
+        call += 1;
+        if call == 1 {
+            under_ceiling()
+        } else {
+            over_ceiling()
+        }
+    };
+    let child = match middle.handle_recruit(recruiter_gid, 0, &parts[0].to_string(), "root", &mut m)
+    {
+        crate::distgoal::RecruitOutcome::Deferred { child_goal_id } => child_goal_id,
+        other => panic!("expected Deferred, got {:?}", other),
+    };
+    assert!(middle.report_targets.contains_key(&child));
+    // Meshless, the overflow part is DECLINED -> recorded as an UNPLACED
+    // ledger slot (empty holder) awaiting the supervision placement pass.
+    let holder = middle
+        .recruit_ledger
+        .holder(child, 1)
+        .expect("declined slot must be ledger-visible (the G4 fix)")
+        .to_string();
+    assert_eq!(holder, "", "declined part starts unplaced");
+    (middle, child, holder)
+}
+
+/// Extract the `:result` envelope from a self-report message string.
+fn report_envelope(msg: &str) -> crate::sexp::Sexp {
+    let parsed = crate::sexp::parse(msg).unwrap();
+    parsed.get_key(":result").unwrap().clone()
+}
+
+#[test]
+fn test_deferred_wait_terminally_bounded_without_capacity() {
+    // Holder alive-but-wedged forever, no other peer has headroom. The
+    // deferred wait must end in bounded sweeps: touch, touch, ... cap,
+    // ABANDON — and the failure must self-report UP to the recruiter.
+    let (mut middle, child, _holder) = deferred_middle(77);    let view = vec![("wedgy".to_string(), 0u8, addr("127.0.0.1:9101"))];
+
+    let mut report = None;
+    let mut sweeps = 0;
+    for _ in 0..crate::distgoal::MAX_SLOT_ATTEMPTS + 3 {
+        sweeps += 1;
+        let r = middle.supervise(&view, std::time::Duration::ZERO);
+        if !r.is_empty() {
+            report = Some(r.into_iter().next().unwrap());
+            break;
+        }
+    }
+    let (target, msg) = report.expect("abandonment must produce an upstream self-report");
+    assert!(
+        sweeps as u32 <= crate::distgoal::MAX_SLOT_ATTEMPTS + 1,
+        "wait must be bounded by the attempt cap; took {} sweeps",
+        sweeps
+    );
+    assert_eq!(target, "root", "report targets the stored back-reference");
+    // The report is a complete parallel-result with ok 0 — a real failure,
+    // not a fabricated success and not silence.
+    let env = report_envelope(&msg);
+    assert_eq!(env.get_key(":ok").and_then(|s| s.as_number()), Some(0));
+    assert!(msg.contains("abandoned"), "failure kind visible: {msg}");
+    // Everything accounted for: ledger settled, obligations drained.
+    assert!(!middle.recruit_ledger.is_pending(child, 1));
+    assert!(middle.report_targets.is_empty(), "no leaked obligation");
+    assert!(middle.parallel_jobs.is_empty(), "no leaked job");
+}
+
+#[test]
+fn test_empty_live_view_no_longer_skips_supervision() {
+    // The only worker was evicted from the peer view (e.g. SIGSTOP past the
+    // peer timeout): the view is EMPTY. Supervision used to be skipped
+    // entirely in that state; it must now classify the holder dead, pace
+    // fail-closed resets, hit the cap, and abandon — still bounded.
+    let (mut middle, child, _holder) = deferred_middle(78);
+
+    let mut report = None;
+    for _ in 0..crate::distgoal::MAX_SLOT_ATTEMPTS + 3 {
+        let r = middle.supervise(&[], std::time::Duration::ZERO);
+        if !r.is_empty() {
+            report = Some(r.into_iter().next().unwrap());
+            break;
+        }
+    }
+    let (target, msg) = report.expect("empty-view wait must still be bounded");
+    assert_eq!(target, "root");
+    assert_eq!(
+        report_envelope(&msg).get_key(":ok").and_then(|s| s.as_number()),
+        Some(0)
+    );
+    assert!(!middle.recruit_ledger.is_pending(child, 1));
+    assert!(middle.report_targets.is_empty());
+}
+
+#[test]
+fn test_wedge_at_deepest_leaf_unwinds_three_levels() {
+    // Full tree: root defers a (parallel ...) part to middle; middle defers
+    // a sub-part to a grandchild that wedges forever. The abandonment at
+    // middle must flow up through root's REAL collection path and complete
+    // root's job with a visible failure — the whole tree recovers.
+    let mut root = test_vm();
+    let parts = parse_parts("(parallel (parallel (+ 1 1) (+ 2 2)))");
+    let mut root_m = over_ceiling;
+    let root_g = root.run_parallel(&parts, &mut root_m, 0);
+    assert_eq!(read_parallel(&root.parallel_result(root_g).unwrap()).0, 0); // pending
+
+    let (mut middle, _child, _holder) = deferred_middle(root_g);
+    let view = vec![("wedgy".to_string(), 0u8, addr("127.0.0.1:9102"))];
+
+    // Middle's supervision bounds the leaf wedge and produces the report.
+    let mut report = None;
+    for _ in 0..crate::distgoal::MAX_SLOT_ATTEMPTS + 3 {
+        let r = middle.supervise(&view, std::time::Duration::ZERO);
+        if !r.is_empty() {
+            report = Some(r.into_iter().next().unwrap());
+            break;
+        }
+    }
+    let (target, msg) = report.expect("middle must report the bounded failure");
+    assert_eq!(target, "root");
+
+    // Root collects it: job completes (root surfaces locally -> None).
+    assert!(root
+        .collect_recruit_result(&crate::sexp::parse(&msg).unwrap())
+        .is_none());
+    let result = root.parallel_result(root_g).expect("root job must be whole");
+    assert_eq!(
+        result.get_key(":ok").and_then(|s| s.as_number()),
+        Some(0),
+        "root result must be complete-with-failure, never a fabricated success"
+    );
+    // Root's own ledger slot toward middle settled too (nested settle).
+    assert!(!root.recruit_ledger.is_pending(root_g, 0));
+}
+
+#[test]
+fn test_late_reply_after_abandonment_is_harmless_duplicate() {
+    // No-KILL-CHILD accounting: the wedged worker is never torn down, so its
+    // late real reply can still arrive AFTER abandonment. It must be a
+    // dropped duplicate — no double report, no state change.
+    let (mut middle, child, _holder) = deferred_middle(79);    let view = vec![("wedgy".to_string(), 0u8, addr("127.0.0.1:9103"))];
+    let mut got_report = false;
+    for _ in 0..crate::distgoal::MAX_SLOT_ATTEMPTS + 3 {
+        if !middle.supervise(&view, std::time::Duration::ZERO).is_empty() {
+            got_report = true;
+            break;
+        }
+    }
+    assert!(got_report);
+
+    // The un-killed worker finally answers, correctly.
+    let mut worker = test_vm();
+    let mut m = under_ceiling;
+    let late = reply_of(worker.handle_recruit(child, 1, "(+ 2 2)", "middle", &mut m));
+    assert!(
+        middle
+            .collect_recruit_result(&crate::sexp::parse(&late).unwrap())
+            .is_none(),
+        "late reply after abandonment must not produce a second report"
+    );
+    assert!(middle.report_targets.is_empty());
+}
+
+#[test]
+fn test_capacity_arriving_mid_wait_still_recovers_normally() {
+    // The cap must not break recovery: after two fail-closed resets, a
+    // fresh peer with headroom joins. Supervision re-recruits there, the
+    // new worker answers, and the tree completes with REAL results.
+    let (mut middle, child, _holder) = deferred_middle(80);    let wedged_only = vec![("wedgy".to_string(), 0u8, addr("127.0.0.1:9104"))];
+    for _ in 0..2 {
+        assert!(middle
+            .supervise(&wedged_only, std::time::Duration::ZERO)
+            .is_empty());
+    }
+    // A healthy peer appears; the expired slot is re-recruited to it.
+    let roomy = vec![
+        ("wedgy".to_string(), 0u8, addr("127.0.0.1:9104")),
+        ("fresh".to_string(), 90u8, addr("127.0.0.1:9105")),
+    ];
+    assert!(middle.supervise(&roomy, std::time::Duration::ZERO).is_empty());
+    assert_eq!(middle.recruit_ledger.holder(child, 1), Some("fresh"));
+
+    // The new worker computes; the REAL result flows up.
+    let mut worker = test_vm();
+    let mut m = under_ceiling;
+    let reply = reply_of(worker.handle_recruit(child, 1, "(+ 2 2)", "middle", &mut m));
+    let (target, msg) = middle
+        .collect_recruit_result(&crate::sexp::parse(&reply).unwrap())
+        .expect("completion must self-report");
+    assert_eq!(target, "root");
+    assert_eq!(
+        report_envelope(&msg).get_key(":ok").and_then(|s| s.as_number()),
+        Some(1),
+        "recovered tree completes with success, not abandonment"
+    );
 }

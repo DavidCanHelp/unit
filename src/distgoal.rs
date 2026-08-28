@@ -411,6 +411,32 @@ pub fn read_recruit_result(sexp: &crate::sexp::Sexp) -> Option<RecruitResult> {
 /// edge rather than restarting from the root.
 pub const RECRUIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Terminal bound on a recruit slot's lifetime, counted in deadline
+/// expiries: every expiry either reassigns the slot (re-recruit) or resets
+/// its deadline fail-closed (`touch`), and when the combined count reaches
+/// this cap the slot is ABANDONED — settled with an `abandoned` error
+/// result, never a fabricated success. Abandonment fills the local job
+/// slot through the same completion path an arriving error reply would
+/// take, so the failure self-reports up a recruit tree level by level and
+/// every Deferred wait is bounded: worst-case slot wall-clock is
+/// `RECRUIT_TIMEOUT × (MAX_SLOT_ATTEMPTS + 1)`, at any tree depth. A late
+/// reply from an abandoned slot's worker remains a harmless first-write-
+/// wins duplicate — no worker is ever killed (the v0.32.0 lesson).
+pub const MAX_SLOT_ATTEMPTS: u32 = 5;
+
+/// The effective recruit job-timeout: `RECRUIT_TIMEOUT` unless overridden
+/// via `UNIT_RECRUIT_TIMEOUT_SECS` — the override exists for wedge drills
+/// and the deep-tree shell test, which exercise real SIGSTOP wedges without
+/// waiting out 60s windows. Production and hardware validation run the
+/// default.
+pub fn recruit_timeout() -> std::time::Duration {
+    std::env::var("UNIT_RECRUIT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(RECRUIT_TIMEOUT)
+}
+
 /// Wall-clock for slot age. `None` on wasm32: `Instant::now()` traps there,
 /// and there is no mesh on wasm so supervision never runs — a slot that
 /// can't age simply never times out.
@@ -572,6 +598,53 @@ impl RecruitLedger {
         }
     }
 
+    /// A slot's total deadline expiries so far: successful reassignments
+    /// plus fail-closed deadline resets. The number `MAX_SLOT_ATTEMPTS`
+    /// bounds.
+    pub fn attempts(&self, goal_id: GoalId, seq: usize) -> u32 {
+        self.entries
+            .get(&(goal_id, seq))
+            .map(|s| s.deadline_resets + s.reassignments)
+            .unwrap_or(0)
+    }
+
+    /// True if an OPEN slot's current attempt is older than `age` (the
+    /// pacing check for fail-closed retries on dead-held slots, which have
+    /// no natural deadline gate of their own).
+    pub fn age_expired(&self, goal_id: GoalId, seq: usize, age: std::time::Duration) -> bool {
+        self.entries
+            .get(&(goal_id, seq))
+            .and_then(|s| s.assigned_at)
+            .is_some_and(|t| t.elapsed() >= age)
+    }
+
+    /// Abandon an OPEN slot fail-closed: settle it with an `abandoned`
+    /// error result — never a fabricated success — releasing the retained
+    /// instruction. First-write-wins like `collect`, so a worker's late
+    /// real reply beats abandonment if it arrives first, and a late reply
+    /// AFTER abandonment is a dropped duplicate. Returns whether this call
+    /// settled the slot.
+    pub fn abandon(&mut self, goal_id: GoalId, seq: usize, why: &str) -> bool {
+        if let Some(slot) = self.entries.get_mut(&(goal_id, seq)) {
+            if slot.result.is_some() {
+                return false; // already settled
+            }
+            slot.result = Some(RecruitResult {
+                goal_id,
+                seq,
+                from: slot.peer.clone(),
+                result: crate::sexp::ResultView::Err {
+                    kind: "abandoned".to_string(),
+                    msg: why.to_string(),
+                },
+            });
+            slot.instr.clear();
+            true
+        } else {
+            false
+        }
+    }
+
     /// The collected result for a slot, if its reply has arrived.
     pub fn get(&self, goal_id: GoalId, seq: usize) -> Option<&RecruitResult> {
         self.entries.get(&(goal_id, seq)).and_then(|s| s.result.as_ref())
@@ -596,6 +669,19 @@ impl RecruitLedger {
         } else {
             None
         }
+    }
+
+    /// Open slots that were never placed on any peer (declined parts: no
+    /// candidate had headroom at emission time — empty holder). The
+    /// supervision placement pass re-attempts these when capacity appears
+    /// and terminally abandons them at the attempt cap. Returns
+    /// `(goal_id, seq, instruction)`.
+    pub fn open_slots_unplaced(&self) -> Vec<(GoalId, usize, String)> {
+        self.entries
+            .iter()
+            .filter(|(_, s)| s.result.is_none() && s.peer.is_empty() && !s.instr.is_empty())
+            .map(|((g, seq), s)| (*g, *seq, s.instr.clone()))
+            .collect()
     }
 
     /// Open slots whose holding peer has left the live set — the gossip-death

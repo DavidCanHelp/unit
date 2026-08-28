@@ -3,6 +3,56 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Deep-tree deadline coverage: every wait in a recruit tree is now
+  terminally bounded.** `execution_timeout` bounds local evaluation, and the
+  supervision passes bounded each re-recruit *attempt* — but three waits had
+  no total bound and one had no bound at all:
+  1. Both fail-closed paths (no candidate with headroom) reset deadlines
+     forever — bounded per-attempt, unbounded in total.
+  2. Supervision was skipped entirely on an empty live-peer view — exactly
+     the state after the only holding peer is SIGSTOPped past the 15s peer
+     timeout and evicted, leaving its slots supervised by nothing.
+  3. A job could never complete *with failure*, so abandonment had no way to
+     flow upstream: a `Deferred` sub-recruit obligation (`report_targets`)
+     could outlive every deadline, holding parent trees open forever.
+  4. A part *declined* at emission (no capacity anywhere) left a pending job
+     slot with **no ledger entry at all** — invisible to every pass, the one
+     wait with no deadline whatsoever.
+
+  The fix extends the validated deadline-reset + re-recruit mechanism rather
+  than adding a new timeout system: a slot's total deadline expiries
+  (reassignments + fail-closed resets) are capped by `MAX_SLOT_ATTEMPTS`
+  (5); at the cap the slot is **abandoned fail-closed** — settled with an
+  `abandoned` error, never a fabricated success — and the error envelope
+  fills the local job slot through the same last-slot-fill completion path a
+  real reply takes, so the failure self-reports up the tree level by level.
+  Declined parts are now recorded as *unplaced* ledger slots supervised by a
+  placement pass (re-recruited the moment capacity appears, abandoned at the
+  same cap); supervision runs unconditionally, including on an empty view.
+  Worst-case per-slot wall clock: `RECRUIT_TIMEOUT × (MAX_SLOT_ATTEMPTS+1)`,
+  at every depth. No worker is ever killed (the v0.32.0 lesson): a late
+  reply from an abandoned slot's worker remains a first-write-wins dropped
+  duplicate, proven by test.
+
+  Validated three ways: five in-process deep-tree tests (wedged leaf three
+  levels down, Deferred stall, empty-view eviction, late-reply accounting,
+  capacity-arrives-mid-wait recovery); `tests/deep_tree_test.sh` driving
+  real processes with real SIGSTOP wedges end-to-end (8 checks, including
+  parent responsiveness after abandonment and worker survival after
+  SIGCONT); and the full suite. `UNIT_RECRUIT_TIMEOUT_SECS` overrides the
+  60s timeout for wedge drills; production defaults unchanged.
+
+- **The version banner can no longer drift from the released version.**
+  v0.34.0 shipped announcing itself as `unit v0.33.0`: the release sweep
+  bumped every `.rs`/`.toml`/`.html` version string, but the REPL banner
+  lives in `prelude.fs` — in the organism's own language — and was missed.
+  Both banners (prelude and CLI) now derive from `CARGO_PKG_VERSION` at
+  compile time (`{{VERSION}}` substitution in `load_prelude`).
+
 ## [0.34.0] - 2026-08-18
 
 ### Fixed

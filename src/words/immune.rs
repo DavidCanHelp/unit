@@ -217,9 +217,14 @@ impl VM {
             }
         }
 
-        // Supervision (gossip-death): re-recruit any open recruit slot whose
-        // holding peer has left the pruned peer view. The peer_resource_view is
-        // already maintained by the PEER_TIMEOUT prune, so absence == death.
+        // Supervision: the gossip-death pass, then the job-timeout pass —
+        // UNCONDITIONALLY, even (especially) on an empty live view: after the
+        // only holding peer is evicted from the view (e.g. SIGSTOPped past
+        // the peer timeout), its slots classify as dead-held with no
+        // candidates and the attempt cap terminally bounds the wait. The old
+        // `if !live_peers.is_empty()` skip left exactly that state
+        // supervised by nothing. Abandonment self-reports flow up the tree
+        // through the same result path a real reply takes.
         let live_peers: Vec<(String, u8, std::net::SocketAddr)> = match self.mesh {
             Some(ref m) => m
                 .peer_resource_view()
@@ -228,12 +233,10 @@ impl VM {
                 .collect(),
             None => Vec::new(),
         };
-        if !live_peers.is_empty() {
-            self.supervise_recruits(&live_peers);
-            // Then the job-timeout pass: holders still live but silent past
-            // the deadline. Order matters — dead holders were just handled
-            // above, so this pass only ever sees wedged-but-alive ones.
-            self.supervise_recruit_timeouts(&live_peers, distgoal::RECRUIT_TIMEOUT);
+        if self.mesh.is_some() {
+            for (node, msg) in self.supervise(&live_peers, distgoal::recruit_timeout()) {
+                self.send_to_node(&node, &msg);
+            }
         }
 
         // Check for timed-out sub-goals and fall back to local.
@@ -372,10 +375,26 @@ impl VM {
             let ok = env.get_key(":ok").and_then(|s| s.as_number()) == Some(1);
             self.recruit_ledger.settle_nested(gid, seq, &from, ok);
         }
-        // Fill the parallel-job slot and check completion (borrow scoped).
-        // A duplicate reply for an already-filled slot (possible after a
-        // timeout re-recruit — first write won) is a silent no-op: don't
-        // re-assemble or re-announce a completion that already happened.
+        self.fill_job_slot(gid, seq, env)
+    }
+
+    /// Fill one parallel-job slot with a result envelope and run the
+    /// last-slot-fill completion check: if the job is now whole, assemble it
+    /// and either return the `(node, message)` self-report for the stored
+    /// recruiter back-reference, or surface locally at the root. Shared by
+    /// inbound collection (`collect_recruit_result`) and fail-closed
+    /// abandonment (`abandon_slot`) — abandonment unwinds a tree through
+    /// exactly the same path a real reply would take.
+    ///
+    /// A duplicate fill for an already-filled slot (possible after a timeout
+    /// re-recruit — first write won) is a silent no-op: don't re-assemble or
+    /// re-announce a completion that already happened.
+    fn fill_job_slot(
+        &mut self,
+        gid: u64,
+        seq: usize,
+        env: crate::sexp::Sexp,
+    ) -> Option<(String, String)> {
         let full = {
             let job = self.parallel_jobs.get_mut(&gid)?;
             if !job.set(seq, env) {
@@ -406,6 +425,27 @@ impl VM {
                 None
             }
         }
+    }
+
+    /// Abandon one recruit slot fail-closed (attempt cap reached): settle
+    /// the ledger slot with an `abandoned` error, fill the local job slot
+    /// with the same error envelope, and — via the shared completion check —
+    /// return the upstream self-report if that made the job whole. This is
+    /// the terminal bound on every wait in a recruit tree: no fabricated
+    /// success, no worker killed; a late real reply is a dropped duplicate.
+    fn abandon_slot(&mut self, gid: u64, seq: usize, why: &str) -> Option<(String, String)> {
+        if !self.recruit_ledger.abandon(gid, seq, why) {
+            return None; // already settled (real reply won the race)
+        }
+        self.emit_str(&format!(
+            "recruit #{} seq {}: ABANDONED — {}\n",
+            gid, seq, why
+        ));
+        let env = crate::sexp::msg_result(crate::sexp::EvalOutcome::Err {
+            kind: "abandoned",
+            msg: why,
+        });
+        self.fill_job_slot(gid, seq, env)
     }
 
     /// Send an s-expression message to a specific peer by hex node id, resolving
@@ -464,12 +504,17 @@ impl VM {
     /// `supervise_recruit_timeouts`. Supervision nests for free: a re-recruited
     /// slot may itself hold a `(parallel ...)` subtree, which the new peer
     /// re-runs normally.
-    pub(crate) fn supervise_recruits(&mut self, live_peers: &[(String, u8, std::net::SocketAddr)]) {
+    pub(crate) fn supervise_recruits(
+        &mut self,
+        live_peers: &[(String, u8, std::net::SocketAddr)],
+        timeout: std::time::Duration,
+    ) -> Vec<(String, String)> {
+        let mut reports = Vec::new();
         let live: std::collections::HashSet<&str> =
             live_peers.iter().map(|(hex, _, _)| hex.as_str()).collect();
         let dead = self.recruit_ledger.open_slots_with_dead_holder(&live);
         if dead.is_empty() {
-            return;
+            return reports;
         }
         let candidates: Vec<crate::transport::Candidate> = live_peers
             .iter()
@@ -479,18 +524,45 @@ impl VM {
             })
             .collect();
         for (gid, seq, instr) in dead {
+            // Terminal bound first: a slot that has burned its attempt cap
+            // is abandoned fail-closed, and the failure flows upstream.
+            if self.recruit_ledger.attempts(gid, seq) >= distgoal::MAX_SLOT_ATTEMPTS {
+                reports.extend(self.abandon_slot(
+                    gid,
+                    seq,
+                    &format!(
+                        "holder dead, no capacity after {} attempts",
+                        distgoal::MAX_SLOT_ATTEMPTS
+                    ),
+                ));
+                continue;
+            }
             // Choose a new headroom peer (same placement rule). The dead peer is
             // absent from `candidates`, so it cannot be re-chosen.
             let chosen_addr =
                 match crate::transport::choose_destination(&candidates, &mut self.rng) {
                     Some(c) => c.addr,
-                    None => continue, // fail-closed: no capacity -> slot stays open
+                    None => {
+                        // Fail-closed: no capacity. Unlike the timeout pass,
+                        // dead-holder classification fires every tick, so pace
+                        // the counted reset by the slot's own deadline — one
+                        // attempt per timeout window, not one per tick.
+                        if self.recruit_ledger.age_expired(gid, seq, timeout) {
+                            let resets = self.recruit_ledger.touch(gid, seq);
+                            self.emit_str(&format!(
+                                "recruit #{} seq {}: holder dead, no candidate with headroom — deadline reset ({}x)\n",
+                                gid, seq, resets
+                            ));
+                        }
+                        continue;
+                    }
                 };
             if let Some((hex, _, _)) = live_peers.iter().find(|(_, _, a)| *a == chosen_addr) {
                 let new_peer = hex.clone();
                 self.re_recruit(gid, seq, &new_peer, &instr);
             }
         }
+        reports
     }
 
     /// SUPERVISION (job-timeout, alive-but-wedged). Re-recruit every OPEN slot
@@ -511,11 +583,27 @@ impl VM {
         &mut self,
         live_peers: &[(String, u8, std::net::SocketAddr)],
         timeout: std::time::Duration,
-    ) {
+    ) -> Vec<(String, String)> {
+        let mut reports = Vec::new();
         let live: std::collections::HashSet<&str> =
             live_peers.iter().map(|(hex, _, _)| hex.as_str()).collect();
         let expired = self.recruit_ledger.open_slots_past_deadline(timeout, &live);
         for (gid, seq, instr, wedged) in expired {
+            // Terminal bound first: attempts (reassignments + fail-closed
+            // resets) are capped; at the cap the slot is abandoned and the
+            // failure self-reports upstream instead of waiting forever.
+            if self.recruit_ledger.attempts(gid, seq) >= distgoal::MAX_SLOT_ATTEMPTS {
+                reports.extend(self.abandon_slot(
+                    gid,
+                    seq,
+                    &format!(
+                        "held by {} past deadline, attempt cap ({}) reached",
+                        wedged,
+                        distgoal::MAX_SLOT_ATTEMPTS
+                    ),
+                ));
+                continue;
+            }
             // Same placement rule as gossip-death, minus the wedged holder.
             let candidates: Vec<crate::transport::Candidate> = live_peers
                 .iter()
@@ -546,6 +634,84 @@ impl VM {
                 self.re_recruit(gid, seq, &new_peer, &instr);
             }
         }
+        reports
+    }
+
+    /// One full supervision sweep: the gossip-death pass, then the
+    /// job-timeout pass — run UNCONDITIONALLY, including on an empty live
+    /// view (where every open holder classifies as dead, no candidates
+    /// exist, and the attempt cap terminally bounds the wait; the old
+    /// behavior of skipping supervision on an empty view left exactly the
+    /// only-peer-wedged-then-evicted slot supervised by nothing). Returns
+    /// the upstream self-reports produced by any abandonments, for the
+    /// caller to send.
+    pub(crate) fn supervise(
+        &mut self,
+        live_peers: &[(String, u8, std::net::SocketAddr)],
+        timeout: std::time::Duration,
+    ) -> Vec<(String, String)> {
+        let mut reports = self.supervise_unplaced(live_peers, timeout);
+        reports.extend(self.supervise_recruits(live_peers, timeout));
+        reports.extend(self.supervise_recruit_timeouts(live_peers, timeout));
+        reports
+    }
+
+    /// SUPERVISION (placement, declined parts). A part declined at emission
+    /// time — no candidate had headroom — sits as an UNPLACED slot (empty
+    /// holder). Each sweep re-attempts placement with the current view:
+    /// capacity appeared → recruit it now (counts as an attempt via the
+    /// reassignment); still none → a deadline-paced fail-closed reset; cap
+    /// reached → abandoned, and the failure flows upstream. Before this
+    /// pass, declined parts were invisible to supervision — the one wait in
+    /// a recruit tree with no deadline at all.
+    fn supervise_unplaced(
+        &mut self,
+        live_peers: &[(String, u8, std::net::SocketAddr)],
+        timeout: std::time::Duration,
+    ) -> Vec<(String, String)> {
+        let mut reports = Vec::new();
+        for (gid, seq, instr) in self.recruit_ledger.open_slots_unplaced() {
+            if self.recruit_ledger.attempts(gid, seq) >= distgoal::MAX_SLOT_ATTEMPTS {
+                reports.extend(self.abandon_slot(
+                    gid,
+                    seq,
+                    &format!(
+                        "never placed — no capacity after {} attempts",
+                        distgoal::MAX_SLOT_ATTEMPTS
+                    ),
+                ));
+                continue;
+            }
+            let candidates: Vec<crate::transport::Candidate> = live_peers
+                .iter()
+                .map(|(_, headroom, addr)| crate::transport::Candidate {
+                    headroom_pct: *headroom,
+                    addr: *addr,
+                })
+                .collect();
+            match crate::transport::choose_destination(&candidates, &mut self.rng) {
+                Some(c) => {
+                    let chosen_addr = c.addr;
+                    if let Some((hex, _, _)) =
+                        live_peers.iter().find(|(_, _, a)| *a == chosen_addr)
+                    {
+                        let new_peer = hex.clone();
+                        self.re_recruit(gid, seq, &new_peer, &instr);
+                    }
+                }
+                None => {
+                    // Paced fail-closed reset, same rhythm as the other passes.
+                    if self.recruit_ledger.age_expired(gid, seq, timeout) {
+                        let resets = self.recruit_ledger.touch(gid, seq);
+                        self.emit_str(&format!(
+                            "recruit #{} seq {}: unplaced, no candidate with headroom — deadline reset ({}x)\n",
+                            gid, seq, resets
+                        ));
+                    }
+                }
+            }
+        }
+        reports
     }
 
     /// Re-send an existing open slot's retained instruction to `new_peer` and
@@ -725,13 +891,22 @@ impl VM {
                 // No headroom AND a peer WITH headroom exists: recruit this part.
                 // The slot stays pending until its (recruit-result ...) lands.
                 self.send_recruit(&peer, goal_id, seq, &part_str);
+            } else {
+                // No headroom and no peer with headroom — the part is DECLINED:
+                // no recruit is emitted. THIS is the emergent brake: on a
+                // saturated mesh fan-out stops, and the ceiling bounds the tree
+                // at every level (the same check runs on every recursively-
+                // recruited peer); no recursion-depth cap is needed, by design.
+                //
+                // But the WAIT the declined part creates must still be bounded:
+                // record it as an UNPLACED ledger slot (empty holder, retained
+                // instruction). The supervision placement pass re-attempts it
+                // when capacity appears and terminally abandons it at the
+                // attempt cap — previously a declined part was invisible to
+                // supervision and could hold its job (and any Deferred
+                // obligation above it) open forever.
+                self.recruit_ledger.open(goal_id, seq, &part_str, "");
             }
-            // else: no headroom and no peer with headroom — the part is declined
-            // and its slot stays pending. THIS is the emergent brake: a recruit
-            // is emitted ONLY when placement finds a peer with capacity, so on a
-            // saturated mesh fan-out stops. The ceiling bounds the tree at every
-            // level (this same check runs on every recursively-recruited peer);
-            // no recursion-depth cap is needed, by design.
         }
         self.parallel_jobs.insert(goal_id, job);
         goal_id

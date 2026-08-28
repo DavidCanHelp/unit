@@ -4,7 +4,10 @@
 // CLI argument parsing
 // ===========================================================================
 
-pub(crate) const VERSION: &str = "unit v0.34.0";
+// Derived from Cargo.toml so the CLI banner can never drift from the
+// released version (the prelude banner derives the same way — see
+// load_prelude's {{VERSION}} substitution).
+pub(crate) const VERSION: &str = concat!("unit v", env!("CARGO_PKG_VERSION"));
 
 pub(crate) fn print_help() {
     println!("{}", VERSION);
