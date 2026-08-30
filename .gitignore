@@ -3,3 +3,4 @@ polyglot/go/unit-go
 web/unit.wasm
 .claude/
 .DS_Store
+docker/drill-logs*

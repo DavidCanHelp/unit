@@ -55,6 +55,24 @@ jobs:
           name: web
           path: web/
 
+  wedge-drill:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        netem: ["0", "1"]
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -f docker/Dockerfile -t unit-drill:latest .
+      - name: multihost wedge drill (netem=${{ matrix.netem }})
+        run: UNIT_RECRUIT_TIMEOUT_SECS=2 DRILL_NETEM=${{ matrix.netem }} bash docker/drill.sh
+      - if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: drill-logs-netem-${{ matrix.netem }}
+          path: docker/drill-logs-S*
+          if-no-files-found: ignore
+
   go-build:
     runs-on: ubuntu-latest
     steps:

@@ -70,3 +70,11 @@ publish-dry:
 # Clean build artifacts
 clean:
     cargo clean
+
+# Dockerized multihost wedge drill — validates the Phase 3 deep-tree
+# deadline guarantees (v0.35.0) across real containers: docker pause as
+# the wedge, peer eviction, fail-closed abandonment, unplaced placement.
+# netem=1 adds tc-netem WAN realism (40ms±10ms, 1% loss, slight reorder).
+drill netem="0":
+    docker build -f docker/Dockerfile -t unit-drill:latest .
+    UNIT_RECRUIT_TIMEOUT_SECS=2 DRILL_NETEM={{netem}} bash docker/drill.sh

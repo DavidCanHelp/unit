@@ -1,0 +1,63 @@
+# compose.drill.yml — multihost wedge-drill topology for unit.
+#
+# Four services on one bridge network, stable names so peer config is
+# deterministic (unit resolves hostnames via to_socket_addrs):
+#
+#   root  — the recruiter under test (top of the tree)
+#   mid   — the wedge target (docker pause = cgroup freezer, the
+#           whole-container SIGSTOP; also the over-ceiling node for the
+#           deferred/unplaced scenarios via ALLOC-MB)
+#   leaf1 — worker; stopped/started by the drill to add/remove capacity
+#   leaf2 — spare worker for the recovery paths
+#
+# Each node's stdout is teed to ./drill-logs/<name>.log (bind mount) so
+# drill.sh can grep the exact lines the code emits. NET_ADMIN is granted
+# for the optional tc-netem realism layer (DRILL_NETEM=1).
+#
+# UNIT_RECRUIT_TIMEOUT_SECS compresses the 60s recruit window for the
+# drill; the peer-eviction window (15s) is fixed in the mesh.
+
+x-node: &node
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  image: unit-drill:latest
+  cap_add: [NET_ADMIN]
+  volumes:
+    - ./drill-logs:/logs
+  environment: &node-env
+    UNIT_PORT: "4200"
+    UNIT_RECRUIT_TIMEOUT_SECS: ${UNIT_RECRUIT_TIMEOUT_SECS:-2}
+    DRILL_NETEM: ${DRILL_NETEM:-0}
+  init: true
+
+services:
+  root:
+    <<: *node
+    hostname: root
+    environment:
+      <<: *node-env
+      DRILL_NAME: root
+  mid:
+    <<: *node
+    hostname: mid
+    environment:
+      <<: *node-env
+      DRILL_NAME: mid
+      UNIT_PEERS: root:4200
+  leaf1:
+    <<: *node
+    hostname: leaf1
+    profiles: [leaves]
+    environment:
+      <<: *node-env
+      DRILL_NAME: leaf1
+      UNIT_PEERS: root:4200,mid:4200
+  leaf2:
+    <<: *node
+    hostname: leaf2
+    profiles: [leaves]
+    environment:
+      <<: *node-env
+      DRILL_NAME: leaf2
+      UNIT_PEERS: root:4200,mid:4200
