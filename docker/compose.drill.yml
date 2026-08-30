@@ -94,4 +94,6 @@ services:
     environment:
       <<: *node-env
       DRILL_NAME: croomy
-      UNIT_PEERS: cboss:4200
+      # cboss for S5; ctight for S4 (cboss may be down then — the
+      # unresolvable seed is skipped with a logged error).
+      UNIT_PEERS: cboss:4200,ctight:4200

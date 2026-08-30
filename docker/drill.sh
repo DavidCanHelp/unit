@@ -59,7 +59,7 @@ up() { # up <svc...> — fresh stack with current TO. The logs dir is
 
 down() {
     $COMPOSE unpause mid >/dev/null 2>&1 || true
-    $COMPOSE --profile leaves down -t 2 >/dev/null 2>&1
+    $COMPOSE --profile leaves --profile cgroup down -t 2 >/dev/null 2>&1
 }
 
 snap_logs() { # snap_logs <scenario> — keep logs for post-mortem/CI artifacts
@@ -130,54 +130,52 @@ snap_logs S2
 down
 
 echo "=== S3: over-ceiling mid defers, caps out -> failure self-reports upstream ==="
-up root mid
-MID_ID=$(wait_discovery root mid); check "S3 discovery: root sees mid" $?
-# Push mid over the 80% ceiling with its own load generator (host-wide
-# /proc in containers, so sized from live MemAvailable, freed afterwards).
-ALLOC_MB=$($COMPOSE exec -T mid sh -c \
-  "awk '/MemTotal/{mt=\$2}/MemAvailable/{ma=\$2}/SwapTotal/{st=\$2}/SwapFree/{sf=\$2}END{used=(mt-ma)+(st-sf); tgt=0.88*(mt+st); m=int((tgt-used)/1024); cap=int(ma/1024)-512; if(m>cap)m=cap; if(m<128)m=0; print m}' /proc/meminfo")
-[ "${ALLOC_MB:-0}" -gt 0 ]; check "S3 over-ceiling alloc sized (${ALLOC_MB:-0} MiB)" $?
-inject mid 'ALLOC-ENABLE'
-inject mid "$ALLOC_MB ALLOC-MB ."
-poll 60 "$LOGS/mid.log" "$ALLOC_MB +ok"
-check "S3 ballast resident on mid" $?
-inject root "RECRUIT\" $MID_ID (parallel (+ 1 1) (+ 2 2))\""
-poll "$BOUND" "$LOGS/mid.log" 'unplaced, no candidate with headroom'
+# Cgroup-limited pair: both boss and tight carry a fixed 340 MiB ballast in
+# a 400 MiB budget (~89% util, ~11% headroom — insufficient), so tight's
+# ONLY candidate is honestly unplaceable and the abandonment path is
+# deterministic on any host. (An earlier host-wide-ballast version flaked
+# on CI runners whose size left peers borderline-sufficient — exactly the
+# shared-measurement problem container awareness removes.)
+up cboss ctight
+TIGHT_ID=$(wait_discovery cboss ctight); check "S3 discovery: boss sees tight" $?
+inject ctight 'ALLOC-ENABLE'; inject ctight '340 ALLOC-MB .'
+inject cboss  'ALLOC-ENABLE'; inject cboss  '340 ALLOC-MB .'
+poll 30 "$LOGS/ctight.log" '340 +ok'; check "S3 ballast resident on tight" $?
+poll 30 "$LOGS/cboss.log" '340 +ok'; check "S3 ballast resident on boss" $?
+sleep 12   # let re-advertisement carry the ballasted (insufficient) readings
+inject cboss "RECRUIT\" $TIGHT_ID (parallel (+ 1 1) (+ 2 2))\""
+poll "$BOUND" "$LOGS/ctight.log" 'unplaced, no candidate with headroom'
 check "S3 declined parts land as UNPLACED slots (supervised)" $?
-poll "$BOUND" "$LOGS/mid.log" 'ABANDONED'
-check "S3 mid abandons at the attempt cap" $?
-poll "$BOUND" "$LOGS/root.log" 'ERR \[nested\]' root
-check "S3 failure self-reported up: root settled, not pending" $?
-SNAP3=$(grep -E "recruit #1 seq 0 (->|from)" "$LOGS/root.log" | tail -1)
-! echo "$SNAP3" | grep -q 'pending'; check "S3 root slot settled by the self-report" $?
-inject mid 'RECLAIM-MB .'
+poll "$BOUND" "$LOGS/ctight.log" 'ABANDONED'
+check "S3 tight abandons at the attempt cap" $?
+poll "$BOUND" "$LOGS/cboss.log" 'ERR \[nested\]' cboss
+check "S3 failure self-reported up: boss settled with the nested error" $?
+SNAP3=$(grep -E "recruit #1 seq 0 (->|from)" "$LOGS/cboss.log" | tail -1)
+! echo "$SNAP3" | grep -q 'pending'; check "S3 boss slot settled by the self-report" $?
 snap_logs S3
 down
 
 echo "=== S4: UNPLACED part -> capacity appears -> recruited and collected ==="
 TO_SAVE="$TO"; TO=4; BOUND=$(( 15 + TO * 6 + 30 ))
-up root mid
-wait_discovery mid root >/dev/null; check "S4 discovery: mid sees root" $?
-ALLOC_MB=$($COMPOSE exec -T mid sh -c \
-  "awk '/MemTotal/{mt=\$2}/MemAvailable/{ma=\$2}/SwapTotal/{st=\$2}/SwapFree/{sf=\$2}END{used=(mt-ma)+(st-sf); tgt=0.88*(mt+st); m=int((tgt-used)/1024); cap=int(ma/1024)-512; if(m>cap)m=cap; if(m<128)m=0; print m}' /proc/meminfo")
-[ "${ALLOC_MB:-0}" -gt 0 ]; check "S4 over-ceiling alloc sized (${ALLOC_MB:-0} MiB)" $?
-inject mid 'ALLOC-ENABLE'
-inject mid "$ALLOC_MB ALLOC-MB ."
-poll 60 "$LOGS/mid.log" "$ALLOC_MB +ok"
-check "S4 ballast resident on mid" $?
-inject mid 'PARALLEL" (parallel (+ 1 1) (+ 2 2))"'
-poll "$BOUND" "$LOGS/mid.log" 'unplaced, no candidate with headroom'
+# Tight alone, over its own cgroup ceiling, no peers at all: parts decline
+# to UNPLACED slots. Capacity then appears as a fresh 2 GiB container —
+# the placement pass must recruit the waiting slots to it. Tight keeps its
+# ballast throughout: per-container budgets mean the new worker is roomy
+# no matter what tight (or the host) looks like.
+up ctight
+inject ctight 'ALLOC-ENABLE'; inject ctight '340 ALLOC-MB .'
+poll 30 "$LOGS/ctight.log" '340 +ok'; check "S4 ballast resident on tight" $?
+inject ctight 'PARALLEL" (parallel (+ 1 1) (+ 2 2))"'
+poll "$BOUND" "$LOGS/ctight.log" 'unplaced, no candidate with headroom'
 check "S4 part declined at emission -> UNPLACED slot" $?
-# Capacity appears: free the pressure AND start a worker.
-inject mid 'RECLAIM-MB .'
-UNIT_RECRUIT_TIMEOUT_SECS="$TO" DRILL_NETEM="$NETEM" $COMPOSE up -d leaf1 >/dev/null 2>&1
-poll "$BOUND" "$LOGS/mid.log" 'parallel #1 complete'
+UNIT_RECRUIT_TIMEOUT_SECS="$TO" DRILL_NETEM="$NETEM" $COMPOSE up -d croomy >/dev/null 2>&1
+poll "$BOUND" "$LOGS/ctight.log" 'parallel #1 complete'
 check "S4 unplaced slot recruited to new capacity, job completes" $?
-inject mid 'RECRUITS'
-poll 10 "$LOGS/mid.log" 're-recruited [0-9]+x'
+inject ctight 'RECRUITS'
+poll 10 "$LOGS/ctight.log" 're-recruited [0-9]+x'
 check "S4 placement pass reassigned the unplaced slots (re-recruited Nx)" $?
 snap_logs S4
-TO="$TO_SAVE"
+TO="$TO_SAVE"; BOUND=$(( 15 + TO * 6 + 30 ))
 down
 
 echo "=== S5: cgroup honesty — limited containers advertise their own truth ==="
