@@ -59,6 +59,7 @@ up() { # up <svc...> — fresh stack with current TO. The logs dir is
 
 down() {
     $COMPOSE unpause mid >/dev/null 2>&1 || true
+    $COMPOSE unpause tnode >/dev/null 2>&1 || true
     $COMPOSE --profile leaves --profile cgroup --profile transport down -t 2 >/dev/null 2>&1
 }
 
@@ -248,19 +249,24 @@ poll 120 "$LOGS/tnode.log" 'TRANSPORT accepted, origin released'
 check "S6 confirm-before-release transport completed" $?
 poll 30 "$LOGS/rnode.log" 'TRANSPORT inbound: landed a unit'
 check "S6 receiver landed the unit" $?
-# Event-ordered invariants only: the system sheds continuously, so gauge
-# snapshots (units= lines) race the event stream. The no-loss proof is
-# accepted <= landed — an origin releases ONLY after its copy was received
-# — which converges as in-flight landings drain (landed may EXCEED accepted
-# under netem: a landing whose confirm was lost keeps BOTH copies — the
-# design fails toward duplication, never loss).
+# Event-ordered invariants, asserted at QUIESCENCE: a continuously-shedding
+# sender always has ~one transport in flight, so accepted can lead landed
+# in any live sample (observed on the faster CI runner). Freeze the sender
+# — no new transports, its accept log final — then let the receiver drain
+# in-flight landings and compare frozen counts. The no-loss proof is
+# accepted <= landed: an origin releases ONLY after its copy was received
+# (landed may EXCEED accepted under netem: a landing whose confirm was
+# lost keeps BOTH copies — the design fails toward duplication, never
+# loss).
+$COMPOSE pause tnode >/dev/null 2>&1
+ACCEPTED=$(grep -c 'TRANSPORT accepted, origin released' "$LOGS/tnode.log")
 NOLOSS=1
 for _ in $(seq 1 15); do
-    ACCEPTED=$(grep -c 'TRANSPORT accepted, origin released' "$LOGS/tnode.log")
     LANDED=$(grep -c 'TRANSPORT inbound: landed a unit' "$LOGS/rnode.log")
     if [ "$LANDED" -ge "$ACCEPTED" ] && [ "$ACCEPTED" -ge 1 ]; then NOLOSS=0; break; fi
     sleep 2
 done
+$COMPOSE unpause tnode >/dev/null 2>&1
 echo "        (accepted=$ACCEPTED landed=$LANDED)"
 [ "$NOLOSS" -eq 0 ]
 check "S6 no release without a landed copy (accepted <= landed)" $?
