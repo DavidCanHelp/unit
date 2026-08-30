@@ -180,6 +180,39 @@ snap_logs S4
 TO="$TO_SAVE"
 down
 
+echo "=== S5: cgroup honesty — limited containers advertise their own truth ==="
+# Container awareness: each cgroup-limited node measures against its own
+# memory budget, so peers on ONE host advertise genuinely different
+# headroom — the differentiation the shared-/proc reading made impossible —
+# and placement must prefer the truthful roomier peer.
+up cboss ctight croomy
+TIGHT_ID=$(wait_discovery cboss ctight); check "S5 discovery: boss sees tight" $?
+ROOMY_ID=$(wait_discovery cboss croomy); check "S5 discovery: boss sees roomy" $?
+# Ballast tight and boss over their 400 MiB cgroup ceilings (roomy stays idle).
+inject ctight 'ALLOC-ENABLE'; inject ctight '340 ALLOC-MB .'
+inject cboss  'ALLOC-ENABLE'; inject cboss  '340 ALLOC-MB .'
+sleep 15   # ballast resident + at least one re-advertisement cycle
+inject cboss 'MESH-STATUS'; sleep 2
+TIGHT_HR=$(grep -oE "$TIGHT_ID @ [^ ]+ headroom=[0-9]+" "$LOGS/cboss.log" | tail -1 | grep -oE '[0-9]+$')
+ROOMY_HR=$(grep -oE "$ROOMY_ID @ [^ ]+ headroom=[0-9]+" "$LOGS/cboss.log" | tail -1 | grep -oE '[0-9]+$')
+echo "        (advertised: tight=${TIGHT_HR:-?}% roomy=${ROOMY_HR:-?}%)"
+[ -n "${TIGHT_HR:-}" ] && [ "${TIGHT_HR:-100}" -le 20 ]
+check "S5 tight container honestly advertises insufficient headroom" $?
+[ -n "${ROOMY_HR:-}" ] && [ "${ROOMY_HR:-0}" -ge 50 ]
+check "S5 roomy container honestly advertises abundant headroom" $?
+# Boss is over ITS ceiling -> declines locally, recruits — placement must
+# pick the truthful roomy peer, never the tight one.
+inject cboss 'PARALLEL" (parallel (+ 1 1) (+ 2 2))"'
+poll "$BOUND" "$LOGS/cboss.log" 'parallel #1 complete'
+check "S5 job completes via recruitment under cgroup pressure" $?
+inject cboss 'RECRUITS'; sleep 2
+grep -qE "from $ROOMY_ID: ok value=" "$LOGS/cboss.log"
+check "S5 placement chose the roomy peer (results from roomy)" $?
+! grep -qE "(->|from) $TIGHT_ID" "$LOGS/cboss.log"
+check "S5 nothing was placed on the tight peer" $?
+snap_logs S5
+down
+
 echo
 echo "  PASSED: $PASS"
 echo "  FAILED: $FAIL"

@@ -11,6 +11,12 @@
 //!   SwapFree — RAM and swap form one combined memory budget),
 //!   `/proc/loadavg` (1-minute figure), and the logical CPU count from
 //!   `/proc/cpuinfo` (or `/proc/stat` as a fallback).
+//! - Linux in a container with a cgroup v2 memory limit: the memory axis
+//!   measures against the CGROUP budget (`memory.max` / `memory.current` /
+//!   `memory.swap.*`) instead of the host-wide `/proc` figures, which would
+//!   advertise headroom the process cannot actually use. See the container-
+//!   awareness section below. No limit (`memory.max` = "max") → the plain
+//!   `/proc` path.
 //! - Other native (e.g. macOS): `/proc` isn't present, so we return a
 //!   clearly-marked unavailable reading rather than guessing.
 //! - wasm32: a unit in the browser can't read host resources at all, so the
@@ -186,6 +192,12 @@ impl HostResources {
         // CPU count: prefer /proc/cpuinfo, fall back to /proc/stat.
         let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
         let stat = std::fs::read_to_string("/proc/stat").unwrap_or_default();
+        // Container awareness: when a cgroup v2 memory limit is in force,
+        // measure the memory axis against the cgroup budget — the host-wide
+        // /proc numbers would advertise headroom this process cannot use.
+        if let Some(r) = cgv2_reading(&loadavg, &cpuinfo, &stat) {
+            return r;
+        }
         from_proc_text(&meminfo, &loadavg, &cpuinfo, &stat)
     }
 
@@ -352,15 +364,151 @@ fn from_proc_text(meminfo: &str, loadavg: &str, cpuinfo: &str, stat: &str) -> Ho
     }
 }
 
+// ---------------------------------------------------------------------------
+// Container awareness — cgroup v2
+// ---------------------------------------------------------------------------
+//
+// Inside a container, /proc/meminfo is the HOST's: a limited container that
+// measures from it advertises headroom it cannot actually use — its cgroup
+// limit OOM-kills it long before the host fills. That is an accidental lie
+// on the mesh, and honest advertisement is the placement layer's whole
+// premise (surfaced by the Docker wedge drill, where every container
+// advertised the same host-wide 93%). When a cgroup v2 memory limit is
+// present (`memory.max` is a number, not "max"), the memory axis measures
+// against the cgroup budget instead:
+//
+//   total = memory.max
+//   used  = memory.current - inactive_file   (reclaimable page cache is not
+//           pressure; the same convention `docker stats` uses)
+//   swap  = memory.swap.max / memory.swap.current ("max" -> no swap budget:
+//           the RAM limit is what binds)
+//
+// The load axis stays host-derived: there is no per-cgroup loadavg, and
+// normalizing host load by a CPU quota would fabricate pressure. Memory is
+// the axis a limit actually enforces. An unlimited cgroup ("max", the
+// default on hosts and limit-less containers) falls through to the /proc
+// path unchanged.
+
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+
+/// Parses a cgroup v2 scalar file: a byte count, or "max" (no limit → None).
+fn parse_cgv2_bytes(text: &str) -> Option<u64> {
+    let t = text.trim();
+    if t == "max" {
+        return None;
+    }
+    t.parse::<u64>().ok()
+}
+
+/// Parses `inactive_file` (bytes) from a cgroup v2 `memory.stat` blob.
+/// Returns 0 when absent — used-memory then composes conservatively (page
+/// cache counts as pressure rather than being credited back).
+fn parse_cgv2_inactive_file(stat: &str) -> u64 {
+    for line in stat.lines() {
+        if let Some(rest) = line.strip_prefix("inactive_file ") {
+            return rest.trim().parse().unwrap_or(0);
+        }
+    }
+    0
+}
+
+/// Composes the cgroup v2 memory reading, in kB:
+/// `(mem_total_kb, mem_available_kb, swap_total_kb, swap_free_kb)`.
+/// Returns `None` when `memory.max` imposes no limit ("max", empty, or
+/// unparseable) — the caller falls back to the host `/proc` reading.
+fn cgv2_memory_parts(
+    memory_max: &str,
+    memory_current: &str,
+    memory_stat: &str,
+    swap_max: &str,
+    swap_current: &str,
+) -> Option<(u64, u64, u64, u64)> {
+    let max_b = parse_cgv2_bytes(memory_max)?;
+    if max_b == 0 {
+        return None;
+    }
+    let current_b = parse_cgv2_bytes(memory_current).unwrap_or(0);
+    let inactive_b = parse_cgv2_inactive_file(memory_stat);
+    let mut used_b = current_b.saturating_sub(inactive_b);
+    let swap_current_b = parse_cgv2_bytes(swap_current).unwrap_or(0);
+    let (swap_total_b, swap_used_b) = match parse_cgv2_bytes(swap_max) {
+        // A real swap budget: compose it as its own axis of the combined
+        // budget, exactly like host SwapTotal/SwapFree.
+        Some(st) => (st, swap_current_b.min(st)),
+        // Unbudgeted swap ("max"): there is no swap axis to report — but
+        // pages the kernel swapped out of memory.current are still this
+        // container's weight, and hiding them would under-report pressure
+        // (observed: a 200 MiB ballast in a 300 MiB container advertised
+        // 66% headroom while its ballast sat in host swap). Count them
+        // against the RAM budget instead.
+        None => {
+            used_b = used_b.saturating_add(swap_current_b);
+            (0, 0)
+        }
+    };
+    let used_b = used_b.min(max_b);
+    Some((
+        max_b / 1024,
+        (max_b - used_b) / 1024,
+        swap_total_b / 1024,
+        (swap_total_b - swap_used_b) / 1024,
+    ))
+}
+
+/// Reads the cgroup v2 files and composes a full reading (memory axis from
+/// the cgroup budget, load axis from the host as documented above), or
+/// `None` when no real memory limit is in force.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+fn cgv2_reading(loadavg: &str, cpuinfo: &str, stat: &str) -> Option<HostResources> {
+    let read = |f: &str| std::fs::read_to_string(format!("{}/{}", CGROUP_ROOT, f));
+    let memory_max = read("memory.max").ok()?;
+    let memory_current = read("memory.current").unwrap_or_default();
+    let memory_stat = read("memory.stat").unwrap_or_default();
+    let swap_max = read("memory.swap.max").unwrap_or_default();
+    let swap_current = read("memory.swap.current").unwrap_or_default();
+    let (total_kb, avail_kb, swap_total_kb, swap_free_kb) = cgv2_memory_parts(
+        &memory_max,
+        &memory_current,
+        &memory_stat,
+        &swap_max,
+        &swap_current,
+    )?;
+    let load = parse_loadavg(loadavg)?;
+    let cpus = parse_cpu_count(cpuinfo).or_else(|| parse_cpu_count_from_stat(stat))?;
+    Some(HostResources::from_parts_with_swap(
+        total_kb,
+        avail_kb,
+        swap_total_kb,
+        swap_free_kb,
+        load,
+        cpus,
+    ))
+}
+
 /// The combined RAM + swap memory budget (MemTotal + SwapTotal) in kB, read
-/// from `/proc/meminfo`. Returns 0 when unavailable (no `/proc`, wasm, or a
-/// parse failure) — callers MUST treat 0 as "budget unknown" and disable
+/// from `/proc/meminfo` — or, when a cgroup v2 memory limit is in force, the
+/// cgroup budget (`memory.max` + bounded `memory.swap.max`), so the
+/// committed-work denominator agrees with what `measure()` reports inside a
+/// container. Returns 0 when unavailable (no `/proc`, wasm, or a parse
+/// failure) — callers MUST treat 0 as "budget unknown" and disable
 /// committed-work accounting (fail-safe to observed-only admission). This is the
 /// denominator for run_parallel's per-call committed tally; it does NOT change
 /// `measure()` or any `HostResources` field.
 pub(crate) fn measure_mem_budget_kb() -> u64 {
     #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
     {
+        if let Ok(memory_max) = std::fs::read_to_string(format!("{}/memory.max", CGROUP_ROOT)) {
+            if let Some(max_b) = parse_cgv2_bytes(&memory_max) {
+                if max_b > 0 {
+                    let swap_b = std::fs::read_to_string(format!("{}/memory.swap.max", CGROUP_ROOT))
+                        .ok()
+                        .and_then(|s| parse_cgv2_bytes(&s))
+                        .unwrap_or(0);
+                    return max_b / 1024 + swap_b / 1024;
+                }
+            }
+        }
         let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
         let ram_total = parse_meminfo(&meminfo).map(|(t, _)| t).unwrap_or(0);
         let (swap_total, _) = parse_swap(&meminfo);
@@ -503,6 +651,108 @@ cpu2 25 0 13 225 0 0 0 0 0 0
 cpu3 25 0 13 225 0 0 0 0 0 0
 intr 12345
 ";
+
+    // --- Container awareness: cgroup v2 fixtures ---
+
+    #[test]
+    fn test_parse_cgv2_bytes() {
+        assert_eq!(parse_cgv2_bytes("max\n"), None);
+        assert_eq!(parse_cgv2_bytes("268435456\n"), Some(268_435_456));
+        assert_eq!(parse_cgv2_bytes(""), None);
+        assert_eq!(parse_cgv2_bytes("garbage"), None);
+    }
+
+    #[test]
+    fn test_parse_cgv2_inactive_file() {
+        let stat = "anon 104857600\nfile 52428800\ninactive_anon 0\n\
+                    inactive_file 41943040\nactive_file 10485760\n";
+        assert_eq!(parse_cgv2_inactive_file(stat), 41_943_040);
+        assert_eq!(parse_cgv2_inactive_file(""), 0);
+        // `inactive_anon` must not match via prefix confusion.
+        assert_eq!(parse_cgv2_inactive_file("inactive_anon 999\n"), 0);
+    }
+
+    #[test]
+    fn test_cgv2_memory_parts_composes() {
+        // 300 MiB limit, 200 MiB current of which 40 MiB is reclaimable
+        // page cache -> used 160 MiB, available 140 MiB. Swap: 64 MiB
+        // budget, 16 MiB used.
+        let parts = cgv2_memory_parts(
+            "314572800\n",
+            "209715200\n",
+            "inactive_file 41943040\n",
+            "67108864\n",
+            "16777216\n",
+        )
+        .unwrap();
+        assert_eq!(parts, (307_200, 143_360, 65_536, 49_152));
+    }
+
+    #[test]
+    fn test_cgv2_no_limit_falls_back() {
+        // memory.max = "max" (host root cgroup / unlimited container): no
+        // cgroup reading — the /proc path stays authoritative.
+        assert_eq!(
+            cgv2_memory_parts("max\n", "209715200\n", "", "max\n", "0\n"),
+            None
+        );
+        // A zero limit is nonsense -> also fall back.
+        assert_eq!(cgv2_memory_parts("0\n", "0\n", "", "", ""), None);
+    }
+
+    #[test]
+    fn test_cgv2_unbudgeted_swap_counts_against_ram() {
+        // 300 MiB limit; 100 MiB resident but another 120 MiB of the
+        // container's pages swapped out under an UNBUDGETED swap ("max"):
+        // used must compose as 220 MiB, not 100 — swapped-out ballast is
+        // still this container's weight.
+        let (total, avail, st, sf) = cgv2_memory_parts(
+            "314572800\n",
+            "104857600\n",
+            "",
+            "max\n",
+            "125829120\n",
+        )
+        .unwrap();
+        assert_eq!(total, 307_200);
+        assert_eq!(avail, 307_200 - 102_400 - 122_880);
+        assert_eq!((st, sf), (0, 0));
+    }
+
+    #[test]
+    fn test_cgv2_swap_max_means_no_swap_budget() {
+        // Unlimited swap ("max") composes as a zero swap budget: the RAM
+        // limit is what binds, and the ceiling applies to it alone.
+        let (total, _avail, swap_total, swap_free) = cgv2_memory_parts(
+            "314572800\n",
+            "104857600\n",
+            "",
+            "max\n",
+            "0\n",
+        )
+        .unwrap();
+        assert_eq!(total, 307_200);
+        assert_eq!((swap_total, swap_free), (0, 0));
+    }
+
+    #[test]
+    fn test_cgv2_reading_binds_ceiling_like_a_small_host() {
+        // A 300 MiB container holding 265 MiB net is over the 0.80 ceiling
+        // even while the host underneath is nearly idle — the honest
+        // container reading the wedge drill needs.
+        let (total_kb, avail_kb, st_kb, sf_kb) = cgv2_memory_parts(
+            "314572800\n",
+            "277872640\n",
+            "",
+            "max\n",
+            "0\n",
+        )
+        .unwrap();
+        let r = HostResources::from_parts_with_swap(total_kb, avail_kb, st_kb, sf_kb, 0.1, 8);
+        assert!(r.is_available());
+        assert!(!r.has_headroom(), "utilization {} must bind", r.utilization);
+        assert!(!headroom_pct_sufficient(r.advertised_headroom_pct()));
+    }
 
     #[test]
     fn test_parse_meminfo_sample() {

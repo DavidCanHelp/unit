@@ -3,6 +3,42 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **Container awareness: honest resource advertisement under cgroup v2
+  limits.** Inside a container, `/proc/meminfo` is the host's, so a limited
+  unit advertised headroom it could not actually use — its cgroup limit
+  would OOM-kill it long before the host filled (surfaced by the Docker
+  wedge drill, where every container advertised the same host-wide figure).
+  When a cgroup v2 memory limit is in force (`memory.max` is a number, not
+  "max"), the memory axis now measures against the cgroup budget:
+  `memory.max` as total, `memory.current − inactive_file` as used (the
+  `docker stats` convention — reclaimable page cache is not pressure), and
+  `memory.swap.max`/`memory.swap.current` as the swap axis. Unbudgeted swap
+  ("max") counts `memory.swap.current` against the RAM budget instead —
+  pages the kernel swapped out are still the container's weight; hiding
+  them under-reported pressure by ~40 points in testing. The
+  committed-work denominator (`measure_mem_budget_kb`) uses the same
+  budget, so admission accounting agrees with what `measure()` reports.
+  The load axis stays host-derived (there is no per-cgroup loadavg, and
+  normalizing host load by a CPU quota would fabricate pressure); no limit
+  → the plain `/proc` path, byte-for-byte as before. Zero new
+  dependencies; 7 new fixture tests.
+
+- **Drill scenario S5 — cgroup honesty across real containers.** Three
+  cgroup-limited services (400 MiB boss and tight peers, 2 GiB roomy peer,
+  `memswap_limit == mem_limit` so the combined-budget model pivots on RAM)
+  prove the differentiation end-to-end on one host: with ballast, the
+  tight peer honestly advertises ~14% headroom (insufficient) while the
+  roomy peer advertises ~98% (abundant), and a boss over its own cgroup
+  ceiling recruits its parallel parts to the roomy peer — never the tight
+  one — and completes with real values. 32 checks total across the five
+  scenarios, green with and without netem. This is the differentiated-
+  headroom substrate the deferred placement-proportionality thread needs
+  to be testable at all.
+
 ## [0.35.0] - 2026-08-28
 
 ### Fixed

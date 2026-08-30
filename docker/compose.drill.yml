@@ -61,3 +61,37 @@ services:
       <<: *node-env
       DRILL_NAME: leaf2
       UNIT_PEERS: root:4200,mid:4200
+  # --- S5: cgroup honesty (container awareness) ----------------------------
+  # Three cgroup-limited services. memswap_limit == mem_limit pins the swap
+  # budget to zero so the combined-budget model pivots on RAM alone: with
+  # ballast, ctight honestly advertises insufficient headroom while croomy
+  # stays abundant — and placement must prefer the truthful roomier peer.
+  cboss:
+    <<: *node
+    hostname: cboss
+    profiles: [cgroup]
+    mem_limit: 400m
+    memswap_limit: 400m
+    environment:
+      <<: *node-env
+      DRILL_NAME: cboss
+  ctight:
+    <<: *node
+    hostname: ctight
+    profiles: [cgroup]
+    mem_limit: 400m
+    memswap_limit: 400m
+    environment:
+      <<: *node-env
+      DRILL_NAME: ctight
+      UNIT_PEERS: cboss:4200
+  croomy:
+    <<: *node
+    hostname: croomy
+    profiles: [cgroup]
+    mem_limit: 2g
+    memswap_limit: 2g
+    environment:
+      <<: *node-env
+      DRILL_NAME: croomy
+      UNIT_PEERS: cboss:4200
