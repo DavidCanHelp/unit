@@ -208,7 +208,9 @@ check "S5 job completes via recruitment under cgroup pressure" $?
 inject cboss 'RECRUITS'; sleep 2
 grep -qE "from $ROOMY_ID: ok value=" "$LOGS/cboss.log"
 check "S5 placement chose the roomy peer (results from roomy)" $?
-! grep -qE "(->|from) $TIGHT_ID" "$LOGS/cboss.log"
+# Ledger/recruit shapes only — the boss log also records inbound chatter
+# ("sexp from <id>: (peer-status ...)"), which is not placement.
+! grep -qE "recruit #[0-9]+( seq [0-9]+)? (->|from) $TIGHT_ID" "$LOGS/cboss.log"
 check "S5 nothing was placed on the tight peer" $?
 snap_logs S5
 down
