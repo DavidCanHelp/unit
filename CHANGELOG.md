@@ -3,6 +3,49 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A lost recruit datagram no longer guarantees abandonment.** Recruits are
+  single UDP datagrams; if the one delivery to a chosen worker was lost (the
+  Docker drill caught a just-booted worker missing it), the wedged-holder
+  exclusion meant no re-delivery could ever happen — a healthy holder rode
+  every fail-closed reset straight to the attempt cap. The fail-closed
+  expiry now RE-SENDS the retained instruction to the still-live holder
+  (no fresh bounty — the wage was paid at first emission). Idempotent by the
+  existing first-write-wins rule: a worker that computes twice replies
+  twice and the duplicate is dropped, proven by test.
+
+### Added
+
+- **`RECRUITS-SEXP` — machine-readable recruit status (345 words).** One
+  parseable `(recruit-slot :id … :seq … :holder … :state
+  pending|unplaced|ok|err …)` per line, in the mesh's own notation. This is
+  the STABLE surface for harnesses and tooling; `RECRUITS`' prose is now
+  free to change. The Docker drill's slot-state assertions parse this
+  instead of grepping prose — the class of false-positive that hit CI twice
+  (chatter lines, wording drift) is gone by construction. Round-trip
+  proven: every emitted line reparses through `sexp::parse` with hostile
+  message content intact.
+
+- **Drill S7-grade coverage for TRANSPORT (scenario S6): confirm-before-
+  release across real containers.** A 160 MiB sender boots 900 in-process
+  units (honestly OVER-CEILING on its cgroup budget from the first
+  measure) and sheds toward a 1 GiB receiver over real TCP+UDP, netem
+  included. Event-ordered, race-free invariants: an origin releases only
+  after its copy landed (`accepted <= landed` — under loss the design
+  fails toward duplication, never loss), and the receiver's own landing
+  lines must self-consistently count `20 + landed`. This is the first CI
+  coverage for the code most capable of losing something irreplaceable;
+  previously TRANSPORT was validated only manually on droplets (v0.30).
+
+- **Drill hygiene:** the last blind sleeps are gone — `poll_adv` waits for
+  the actual advertised-headroom conditions the next step depends on;
+  node-mode services are supported via `DRILL_ARGS`. 39 checks total,
+  green with and without netem. (Node-mode note: `--peers` must be passed
+  as a flag — the persistent node path does not read `UNIT_PEERS`.)
+
 ## [0.36.0] - 2026-08-30
 
 ### Added

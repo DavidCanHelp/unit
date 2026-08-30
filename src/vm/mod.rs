@@ -295,6 +295,7 @@ pub(crate) const P_INBOX_QUERY: usize = 506;
 pub(crate) const P_MARK_BANG: usize = 507;
 pub(crate) const P_SENSE: usize = 508;
 pub(crate) const P_GIVE: usize = 509;
+pub(crate) const P_RECRUITS_SEXP: usize = 510;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -761,6 +762,7 @@ impl VM {
             // Recruit pattern (manual trigger + collected results)
             ("RECRUIT\"", P_RECRUIT, true),
             ("RECRUITS", P_RECRUITS, false),
+            ("RECRUITS-SEXP", P_RECRUITS_SEXP, false),
             ("PARALLEL\"", P_PARALLEL, true),
             // Load generator (forces the resource ceiling for recruit-path tests)
             ("ALLOC-MB", P_ALLOC_MB, false),
@@ -1433,6 +1435,7 @@ impl VM {
             P_SEXP_RECV => self.prim_sexp_recv(),
             P_RECRUIT => self.prim_recruit(),
             P_RECRUITS => self.prim_recruits(),
+            P_RECRUITS_SEXP => self.prim_recruits_sexp(),
             P_PARALLEL => self.prim_parallel(),
             P_ALLOC_MB => self.prim_alloc_mb(),
             P_RECLAIM_MB => self.prim_reclaim_mb(),

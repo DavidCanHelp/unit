@@ -154,7 +154,7 @@ mating with #cafe (fitness=45)...
   fibonacci: 100% (modifier: 2.0x)
 ```
 
-See [docs/words.md](docs/words.md) for the word reference (344 words in the live dictionary).
+See [docs/words.md](docs/words.md) for the word reference (345 words in the live dictionary).
 
 ## Interfaces
 
@@ -295,7 +295,7 @@ The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 
 ## Documentation
 
-- [docs/words.md](docs/words.md) — word reference (344 words in the live dictionary)
+- [docs/words.md](docs/words.md) — word reference (345 words in the live dictionary)
 - [docs/protocol.md](docs/protocol.md) — S-expression wire format and mesh protocol
 - [docs/operations.md](docs/operations.md) — monitoring, goals, trust, persistence, swarm mode
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — two-tier deployment design rationale and bench results

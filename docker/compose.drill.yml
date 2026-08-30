@@ -97,3 +97,29 @@ services:
       # cboss for S5; ctight for S4 (cboss may be down then — the
       # unresolvable seed is skipped with a logged error).
       UNIT_PEERS: cboss:4200,ctight:4200
+
+  # --- S6: transport under the ceiling (confirm-before-release) ------------
+  # A 200 MiB sender boots 900 in-process units (~86% of its cgroup budget:
+  # honestly OVER-CEILING, deterministically) and sheds toward a roomy
+  # receiver. Mirrors the v0.30 droplet validation, in CI.
+  tnode:
+    <<: *node
+    hostname: tnode
+    profiles: [transport]
+    mem_limit: 160m
+    memswap_limit: 160m
+    environment:
+      <<: *node-env
+      DRILL_NAME: tnode
+      DRILL_ARGS: --multi-unit 900 --port 4200 --peers rnode:4200 --gossip-k 8
+      UNIT_PEERS: rnode:4200
+  rnode:
+    <<: *node
+    hostname: rnode
+    profiles: [transport]
+    mem_limit: 1g
+    memswap_limit: 1g
+    environment:
+      <<: *node-env
+      DRILL_NAME: rnode
+      DRILL_ARGS: --multi-unit 20 --port 4200 --gossip-k 8

@@ -28,4 +28,7 @@ chmod +x /usr/local/bin/inject
 
 echo "[drill] $NAME starting: port=${UNIT_PORT:-4200} peers=${UNIT_PEERS:-<none>}"
 # tail -f keeps the FIFO (and the REPL's stdin) open for the whole drill.
-tail -f /tmp/in | unit 2>&1 | tee -a "/logs/$NAME.log"
+# DRILL_ARGS lets a service run in node mode (e.g. --multi-unit 900);
+# word-splitting is intended. REPL services leave it empty.
+# shellcheck disable=SC2086
+tail -f /tmp/in | unit ${DRILL_ARGS:-} 2>&1 | tee -a "/logs/$NAME.log"

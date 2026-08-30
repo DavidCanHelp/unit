@@ -43,7 +43,7 @@ poll() { # poll <secs> <file> <grep-ERE> [svc-to-nudge-with-RECRUITS]
     local deadline=$(( $(date +%s) + $1 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         grep -qE "$3" "$2" 2>/dev/null && return 0
-        [ -n "${4:-}" ] && inject "$4" 'RECRUITS' >/dev/null 2>&1
+        [ -n "${4:-}" ] && inject "$4" 'RECRUITS-SEXP' >/dev/null 2>&1
         sleep 2
     done
     grep -qE "$3" "$2" 2>/dev/null
@@ -59,13 +59,28 @@ up() { # up <svc...> — fresh stack with current TO. The logs dir is
 
 down() {
     $COMPOSE unpause mid >/dev/null 2>&1 || true
-    $COMPOSE --profile leaves --profile cgroup down -t 2 >/dev/null 2>&1
+    $COMPOSE --profile leaves --profile cgroup --profile transport down -t 2 >/dev/null 2>&1
 }
 
 snap_logs() { # snap_logs <scenario> — keep logs for post-mortem/CI artifacts
     rm -rf "drill-logs-$1"; cp -r "$LOGS" "drill-logs-$1" 2>/dev/null || true
 }
 trap down EXIT
+
+poll_adv() { # poll_adv <secs> <watcher> <peer-id> <-le|-ge> <pct> — wait until
+    # the watcher's gossiped view advertises the peer's headroom on the right
+    # side of pct. Replaces blind sleeps: we wait for the CONDITION the next
+    # step depends on, not for a guessed settling time.
+    local deadline=$(( $(date +%s) + $1 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        inject "$2" 'MESH-STATUS' >/dev/null 2>&1
+        sleep 2
+        local hr
+        hr=$(grep -oE "$3 @ [^ ]+ headroom=[0-9]+" "$LOGS/$2.log" | tail -1 | grep -oE '[0-9]+$')
+        [ -n "$hr" ] && [ "$hr" "$4" "$5" ] && return 0
+    done
+    return 1
+}
 
 wait_discovery() { # wait_discovery <watcher> <target> — watcher sees target id
     local tid=""
@@ -87,24 +102,25 @@ up root mid leaf1
 MID_ID=$(wait_discovery root mid); check "S1 discovery: root sees mid" $?
 $COMPOSE pause mid >/dev/null 2>&1
 inject root "RECRUIT\" $MID_ID (parallel (+ 1 1) (+ 2 2))\""
-poll "$BOUND" "$LOGS/root.log" 'ABANDONED|ok value=' root
+poll "$BOUND" "$LOGS/root.log" 'recruit-slot :id 1 :seq 0 .*:state (ok|err)' root
 check "S1 wedged slot reaches a terminal state within ${BOUND}s" $?
-if grep -q 'ok value=' "$LOGS/root.log"; then
+if grep -qE 'recruit-slot :id 1 :seq 0 .*:state ok' "$LOGS/root.log"; then
     echo "        (path: re-recruited to leaf, result collected)"
 else
     echo "        (path: no capacity accepted -> abandoned fail-closed)"
 fi
-SNAP1=$(grep -E 'recruit #1 seq 0 (->|from)' "$LOGS/root.log" | tail -1)
-! echo "$SNAP1" | grep -q 'pending'; check "S1 slot not left pending" $?
+SNAP1=$(grep -E '\(recruit-slot :id 1 :seq 0 ' "$LOGS/root.log" | tail -1)
+! echo "$SNAP1" | grep -qE ':state (pending|unplaced)'
+check "S1 slot not left pending" $?
 inject root '111 222 + .'
 poll 10 "$LOGS/root.log" '333'; check "S1 root responsive after resolution" $?
 $COMPOSE unpause mid >/dev/null 2>&1
 sleep $(( TO + 3 ))   # let the thawed mid flush its late reply
 $COMPOSE exec -T mid pgrep -x unit >/dev/null 2>&1
 check "S1 wedged worker alive after unpause (never torn down)" $?
-inject root 'RECRUITS'; sleep 2
-SNAP2=$(grep -E 'recruit #1 seq 0 (->|from)' "$LOGS/root.log" | tail -1)
-[ "$(echo "$SNAP1" | sed 's/.*seq 0 //')" = "$(echo "$SNAP2" | sed 's/.*seq 0 //')" ]
+inject root 'RECRUITS-SEXP'; sleep 2
+SNAP2=$(grep -E '\(recruit-slot :id 1 :seq 0 ' "$LOGS/root.log" | tail -1)
+[ "$SNAP1" = "$SNAP2" ]
 check "S1 late reply is a dropped duplicate (slot state unchanged)" $?
 snap_logs S1
 down
@@ -116,8 +132,9 @@ $COMPOSE pause mid >/dev/null 2>&1
 inject root "RECRUIT\" $MID_ID (+ 40 2)\""
 poll "$BOUND" "$LOGS/root.log" 'ABANDONED'
 check "S2 empty-view wait terminally bounded (ABANDONED)" $?
-inject root 'RECRUITS'
-poll 10 "$LOGS/root.log" 'ERR \[abandoned\]'; check "S2 abandoned error visible in RECRUITS" $?
+inject root 'RECRUITS-SEXP'
+poll 10 "$LOGS/root.log" ':state err :from "[0-9a-f]*" :kind "abandoned"'
+check "S2 abandoned slot visible on the sexp surface" $?
 inject root '111 222 + .'
 poll 10 "$LOGS/root.log" '333'; check "S2 root responsive after abandonment" $?
 $COMPOSE unpause mid >/dev/null 2>&1
@@ -142,16 +159,16 @@ inject ctight 'ALLOC-ENABLE'; inject ctight '340 ALLOC-MB .'
 inject cboss  'ALLOC-ENABLE'; inject cboss  '340 ALLOC-MB .'
 poll 30 "$LOGS/ctight.log" '340 +ok'; check "S3 ballast resident on tight" $?
 poll 30 "$LOGS/cboss.log" '340 +ok'; check "S3 ballast resident on boss" $?
-sleep 12   # let re-advertisement carry the ballasted (insufficient) readings
+BOSS_ID=$(node_id cboss)
+poll_adv 45 ctight "$BOSS_ID" -le 20
+check "S3 tight sees boss advertise insufficient headroom (the no-candidate precondition)" $?
 inject cboss "RECRUIT\" $TIGHT_ID (parallel (+ 1 1) (+ 2 2))\""
 poll "$BOUND" "$LOGS/ctight.log" 'unplaced, no candidate with headroom'
 check "S3 declined parts land as UNPLACED slots (supervised)" $?
 poll "$BOUND" "$LOGS/ctight.log" 'ABANDONED'
 check "S3 tight abandons at the attempt cap" $?
-poll "$BOUND" "$LOGS/cboss.log" 'ERR \[nested\]' cboss
-check "S3 failure self-reported up: boss settled with the nested error" $?
-SNAP3=$(grep -E "recruit #1 seq 0 (->|from)" "$LOGS/cboss.log" | tail -1)
-! echo "$SNAP3" | grep -q 'pending'; check "S3 boss slot settled by the self-report" $?
+poll "$BOUND" "$LOGS/cboss.log" ':state err :from "[0-9a-f]+" :kind "nested"' cboss
+check "S3 failure self-reported up: boss slot settled err/nested (sexp surface)" $?
 snap_logs S3
 down
 
@@ -171,9 +188,9 @@ check "S4 part declined at emission -> UNPLACED slot" $?
 UNIT_RECRUIT_TIMEOUT_SECS="$TO" DRILL_NETEM="$NETEM" $COMPOSE up -d croomy >/dev/null 2>&1
 poll "$BOUND" "$LOGS/ctight.log" 'parallel #1 complete'
 check "S4 unplaced slot recruited to new capacity, job completes" $?
-inject ctight 'RECRUITS'
-poll 10 "$LOGS/ctight.log" 're-recruited [0-9]+x'
-check "S4 placement pass reassigned the unplaced slots (re-recruited Nx)" $?
+inject ctight 'RECRUITS-SEXP'
+poll 10 "$LOGS/ctight.log" 'recruit-slot :id 1 .*:state ok .*:reassigned [1-9]'
+check "S4 placement pass reassigned the unplaced slots (sexp: reassigned >= 1)" $?
 snap_logs S4
 TO="$TO_SAVE"; BOUND=$(( 15 + TO * 6 + 30 ))
 down
@@ -189,7 +206,10 @@ ROOMY_ID=$(wait_discovery cboss croomy); check "S5 discovery: boss sees roomy" $
 # Ballast tight and boss over their 400 MiB cgroup ceilings (roomy stays idle).
 inject ctight 'ALLOC-ENABLE'; inject ctight '340 ALLOC-MB .'
 inject cboss  'ALLOC-ENABLE'; inject cboss  '340 ALLOC-MB .'
-sleep 15   # ballast resident + at least one re-advertisement cycle
+poll_adv 45 cboss "$TIGHT_ID" -le 20
+check "S5 boss sees tight advertise insufficient headroom" $?
+poll_adv 45 cboss "$ROOMY_ID" -ge 50
+check "S5 boss sees roomy advertise abundant headroom" $?
 inject cboss 'MESH-STATUS'; sleep 2
 TIGHT_HR=$(grep -oE "$TIGHT_ID @ [^ ]+ headroom=[0-9]+" "$LOGS/cboss.log" | tail -1 | grep -oE '[0-9]+$')
 ROOMY_HR=$(grep -oE "$ROOMY_ID @ [^ ]+ headroom=[0-9]+" "$LOGS/cboss.log" | tail -1 | grep -oE '[0-9]+$')
@@ -211,6 +231,45 @@ check "S5 placement chose the roomy peer (results from roomy)" $?
 ! grep -qE "recruit #[0-9]+( seq [0-9]+)? (->|from) $TIGHT_ID" "$LOGS/cboss.log"
 check "S5 nothing was placed on the tight peer" $?
 snap_logs S5
+down
+
+echo "=== S6: transport under the ceiling — confirm-before-release across containers ==="
+# A 200 MiB sender node boots 900 units (~86% of its cgroup budget — honest
+# OVER-CEILING on any host) and sheds toward a 1 GiB receiver. Guards the
+# code most capable of losing something irreplaceable: units must be
+# conserved, and the origin releases ONLY on a confirmed live copy. Under
+# netem loss the design fails toward duplication, never loss.
+up tnode rnode
+poll 180 "$LOGS/tnode.log" 'node up — ticking'; check "S6 sender node up (900 units)" $?
+poll 60 "$LOGS/rnode.log" 'node up — ticking'; check "S6 receiver node up" $?
+poll 90 "$LOGS/tnode.log" 'OVER-CEILING'
+check "S6 sender honestly over its cgroup ceiling" $?
+poll 120 "$LOGS/tnode.log" 'TRANSPORT accepted, origin released'
+check "S6 confirm-before-release transport completed" $?
+poll 30 "$LOGS/rnode.log" 'TRANSPORT inbound: landed a unit'
+check "S6 receiver landed the unit" $?
+# Event-ordered invariants only: the system sheds continuously, so gauge
+# snapshots (units= lines) race the event stream. The no-loss proof is
+# accepted <= landed — an origin releases ONLY after its copy was received
+# — which converges as in-flight landings drain (landed may EXCEED accepted
+# under netem: a landing whose confirm was lost keeps BOTH copies — the
+# design fails toward duplication, never loss).
+NOLOSS=1
+for _ in $(seq 1 15); do
+    ACCEPTED=$(grep -c 'TRANSPORT accepted, origin released' "$LOGS/tnode.log")
+    LANDED=$(grep -c 'TRANSPORT inbound: landed a unit' "$LOGS/rnode.log")
+    if [ "$LANDED" -ge "$ACCEPTED" ] && [ "$ACCEPTED" -ge 1 ]; then NOLOSS=0; break; fi
+    sleep 2
+done
+echo "        (accepted=$ACCEPTED landed=$LANDED)"
+[ "$NOLOSS" -eq 0 ]
+check "S6 no release without a landed copy (accepted <= landed)" $?
+# Receiver self-consistency, race-free: the Nth landing line itself reports
+# the post-landing count, so the LAST one must read exactly 20 + landed.
+LAST_HOSTING=$(grep -oE 'landed a unit — now hosting [0-9]+' "$LOGS/rnode.log" | tail -1 | grep -oE '[0-9]+$')
+[ -n "$LAST_HOSTING" ] && [ "$LAST_HOSTING" -eq $(( 20 + LANDED )) ]
+check "S6 receiver count consistent: last landing reports 20+landed units" $?
+snap_logs S6
 down
 
 echo

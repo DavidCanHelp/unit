@@ -621,10 +621,28 @@ impl VM {
                         // the current holder, a full timeout from now — and
                         // SAY so: a silent fail-closed expiry is
                         // indistinguishable from the pass never firing.
+                        //
+                        // But don't just wait: RE-SEND the retained
+                        // instruction to the still-live holder. Recruits are
+                        // single UDP datagrams; if the original was lost (the
+                        // Docker drill caught a just-booted worker missing
+                        // one), a silent holder with no alternative candidate
+                        // was previously GUARANTEED to ride every reset to
+                        // abandonment. The re-send is idempotent — a worker
+                        // that already computed replies again and the
+                        // duplicate is dropped first-write-wins — and carries
+                        // no fresh bounty (the wage was paid at first
+                        // emission).
                         let resets = self.recruit_ledger.touch(gid, seq);
+                        let my_id = self
+                            .node_id_cache
+                            .map(|id| crate::mesh::id_to_hex(&id))
+                            .unwrap_or_else(|| "local".to_string());
+                        let msg = distgoal::sexp_recruit(gid, seq, &my_id, &instr, 0);
+                        self.send_to_node(&wedged, &msg);
                         self.emit_str(&format!(
-                            "recruit #{} seq {}: timeout expired, no candidate with headroom — deadline reset ({}x), still held by {}\n",
-                            gid, seq, resets, wedged
+                            "recruit #{} seq {}: timeout expired, no candidate with headroom — re-sent to holder {}, deadline reset ({}x)\n",
+                            gid, seq, wedged, resets
                         ));
                         continue;
                     }
@@ -767,6 +785,19 @@ impl VM {
     }
 
     /// RECRUITS — show outstanding and collected recruit round-trips.
+    /// `RECRUITS-SEXP` ( -- ) — machine-readable recruit status. Prints a
+    /// `(recruit-slots :count N)` header, then one
+    /// `(recruit-slot :id N :seq S :holder "…" :state … :reassigned N :resets N)`
+    /// per slot. The stable assertion surface for harnesses (the Docker
+    /// drill) and tooling; `RECRUITS`' prose stays free to change.
+    pub(crate) fn prim_recruits_sexp(&mut self) {
+        let sexps = self.recruit_ledger.status_sexps();
+        self.emit_str(&format!("(recruit-slots :count {})\n", sexps.len()));
+        for s in sexps {
+            self.emit_str(&format!("{}\n", s));
+        }
+    }
+
     pub(crate) fn prim_recruits(&mut self) {
         let report = self.recruit_ledger.format_status();
         self.emit_str(&report);

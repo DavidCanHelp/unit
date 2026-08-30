@@ -1661,8 +1661,10 @@ fn test_fail_closed_expiry_is_logged_and_counted() {
     );
     let out = parent.output_buffer.take().unwrap_or_default();
     assert!(
-        out.contains("deadline reset (1x)") && out.contains("still held by W"),
-        "fail-closed expiry must announce itself: {out:?}"
+        out.contains("deadline reset (1x)") && out.contains("re-sent to holder W"),
+        "fail-closed expiry must announce itself AND re-send to the live \
+         holder (recruits are single UDP datagrams; a lost one previously \
+         guaranteed abandonment): {out:?}"
     );
     let status = parent.recruit_ledger.format_status();
     assert!(
@@ -2552,5 +2554,56 @@ fn test_capacity_arriving_mid_wait_still_recovers_normally() {
         report_envelope(&msg).get_key(":ok").and_then(|s| s.as_number()),
         Some(1),
         "recovered tree completes with success, not abandonment"
+    );
+}
+
+
+#[test]
+fn test_recruits_sexp_word_is_machine_readable() {
+    // RECRUITS-SEXP is the stable harness surface: header + one parseable
+    // (recruit-slot ...) per slot. RECRUITS' prose stays free to change.
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "RECRUITS-SEXP");
+    assert!(out.contains("(recruit-slots :count 0)"), "out: {out}");
+    vm.send_recruit("peerW", 5, 0, "(+ 1 2)");
+    let out = eval(&mut vm, "RECRUITS-SEXP");
+    assert!(out.contains("(recruit-slots :count 1)"), "out: {out}");
+    let line = out
+        .lines()
+        .find(|l| l.starts_with("(recruit-slot "))
+        .expect("slot line");
+    let parsed = crate::sexp::parse(line).unwrap();
+    assert_eq!(parsed.get_key(":state").and_then(|v| v.as_atom()), Some("pending"));
+    assert_eq!(parsed.get_key(":holder").and_then(|v| v.as_str()), Some("peerW"));
+    assert_eq!(parsed.get_key(":id").and_then(|v| v.as_number()), Some(5));
+}
+
+
+#[test]
+fn test_fail_closed_expiry_resend_is_idempotent_on_late_reply() {
+    // The re-send means the holder may compute TWICE (original delivered
+    // late + re-sent copy). Both replies must settle first-write-wins.
+    let mut parent = test_vm();
+    let mut worker = test_vm();
+    parent.send_recruit("W", 23, 0, "(+ 2 3)");
+    // Expire fail-closed once (holder live, no alternative) -> re-send.
+    parent.supervise_recruit_timeouts(
+        &[("W".to_string(), 90, addr("127.0.0.1:9024"))],
+        std::time::Duration::ZERO,
+    );
+    // Two identical replies arrive (original + re-sent execution).
+    let mut m = under_ceiling;
+    let r1 = reply_of(worker.handle_recruit(23, 0, "(+ 2 3)", "parent", &mut m));
+    let r2 = reply_of(worker.handle_recruit(23, 0, "(+ 2 3)", "parent", &mut m));
+    assert!(parent
+        .collect_recruit_result(&crate::sexp::parse(&r1).unwrap())
+        .is_none());
+    assert!(parent
+        .collect_recruit_result(&crate::sexp::parse(&r2).unwrap())
+        .is_none());
+    let rr = parent.recruit_ledger.get(23, 0).expect("settled");
+    assert_eq!(
+        rr.result,
+        crate::sexp::ResultView::Ok { value: vec![5], output: String::new() }
     );
 }

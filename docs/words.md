@@ -1,6 +1,6 @@
 # unit — Word Reference
 
-344 words in the live dictionary (run `WORDS` to list them). Organized by
+345 words in the live dictionary (run `WORDS` to list them). Organized by
 category below. Stack effects use standard Forth notation `( before -- after )`;
 words shown without one are `( -- )` (pure side effect / print). Words whose
 name ends in `"` parse a trailing string argument up to a closing `"`.
@@ -102,6 +102,7 @@ word's action).
 | `DIST-CANCEL` | cancel all distributed goals |
 | `RECRUIT"` | send `"<peer> <s-expr>"` as a recruit round-trip |
 | `RECRUITS` | show outstanding and collected recruit round-trips |
+| `RECRUITS-SEXP` | machine-readable slot status — one parseable `(recruit-slot :id … :state pending\|unplaced\|ok\|err …)` per line (the stable surface for harnesses/tooling) |
 | `PARALLEL"` | run `"(parallel (e1) (e2) ...)"` under local resource pressure, print collected results |
 
 ## Genetic Programming

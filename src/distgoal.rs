@@ -736,6 +736,69 @@ impl RecruitLedger {
     }
 
     /// Human-readable dump for the RECRUITS REPL word (sorted for determinism).
+    /// Machine-readable slot status: one `(recruit-slot …)` S-expression
+    /// per slot, sorted by `(goal_id, seq)`. This is the STABLE surface for
+    /// harnesses and tooling (the Docker drill, a future TUI): the prose
+    /// `format_status` prints may be reworded freely, but this shape is API.
+    ///
+    /// States: `unplaced` (no holder — declined at emission, awaiting the
+    /// placement pass), `pending` (held, awaiting a reply), `ok` (settled
+    /// with a result), `err` (settled with a failure — `:kind` carries e.g.
+    /// `abandoned` / `nested` / `runtime`).
+    pub fn status_sexps(&self) -> Vec<crate::sexp::Sexp> {
+        use crate::sexp::Sexp;
+        let mut keys: Vec<(GoalId, usize)> = self.entries.keys().copied().collect();
+        keys.sort();
+        keys.into_iter()
+            .map(|key| {
+                let slot = &self.entries[&key];
+                let mut items = vec![
+                    Sexp::Atom("recruit-slot".into()),
+                    Sexp::Atom(":id".into()),
+                    Sexp::Number(key.0 as i64),
+                    Sexp::Atom(":seq".into()),
+                    Sexp::Number(key.1 as i64),
+                    Sexp::Atom(":holder".into()),
+                    Sexp::Str(slot.peer.clone()),
+                    Sexp::Atom(":state".into()),
+                ];
+                match &slot.result {
+                    None => {
+                        let state = if slot.peer.is_empty() { "unplaced" } else { "pending" };
+                        items.push(Sexp::Atom(state.into()));
+                    }
+                    Some(rr) => match &rr.result {
+                        crate::sexp::ResultView::Ok { value, output } => {
+                            items.push(Sexp::Atom("ok".into()));
+                            items.push(Sexp::Atom(":from".into()));
+                            items.push(Sexp::Str(rr.from.clone()));
+                            items.push(Sexp::Atom(":value".into()));
+                            items.push(Sexp::List(
+                                value.iter().map(|v| Sexp::Number(*v)).collect(),
+                            ));
+                            items.push(Sexp::Atom(":output".into()));
+                            items.push(Sexp::Str(output.clone()));
+                        }
+                        crate::sexp::ResultView::Err { kind, msg } => {
+                            items.push(Sexp::Atom("err".into()));
+                            items.push(Sexp::Atom(":from".into()));
+                            items.push(Sexp::Str(rr.from.clone()));
+                            items.push(Sexp::Atom(":kind".into()));
+                            items.push(Sexp::Str(kind.clone()));
+                            items.push(Sexp::Atom(":msg".into()));
+                            items.push(Sexp::Str(msg.clone()));
+                        }
+                    },
+                }
+                items.push(Sexp::Atom(":reassigned".into()));
+                items.push(Sexp::Number(slot.reassignments as i64));
+                items.push(Sexp::Atom(":resets".into()));
+                items.push(Sexp::Number(slot.deadline_resets as i64));
+                Sexp::List(items)
+            })
+            .collect()
+    }
+
     pub fn format_status(&self) -> String {
         if self.entries.is_empty() {
             return "no recruits\n".to_string();
@@ -929,6 +992,62 @@ impl ParallelJob {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn test_status_sexps_states_round_trip() {
+        let mut ledger = RecruitLedger::new();
+        ledger.open(1, 0, "(+ 1 2)", "W"); // pending
+        ledger.open(1, 1, "(+ 3 4)", ""); // unplaced (declined at emission)
+        ledger.open(2, 0, "(+ 5 6)", "X"); // -> ok
+        ledger.collect(RecruitResult {
+            goal_id: 2,
+            seq: 0,
+            from: "X".to_string(),
+            result: crate::sexp::ResultView::Ok {
+                value: vec![11],
+                output: "hi \"q\"".to_string(),
+            },
+        });
+        ledger.open(2, 1, "(+ 7 8)", "Y"); // -> err (abandoned after attempts)
+        ledger.touch(2, 1);
+        ledger.reassign(2, 1, "Z");
+        ledger.abandon(2, 1, "cap reached — \"quoted\"");
+
+        let sexps = ledger.status_sexps();
+        assert_eq!(sexps.len(), 4);
+        // Every line round-trips through the wire parser — the shape IS the
+        // mesh notation, so harness assertions parse instead of grepping prose.
+        for sx in &sexps {
+            let parsed = crate::sexp::parse(&sx.to_string()).unwrap();
+            assert_eq!(crate::sexp::msg_type(&parsed), Some("recruit-slot"));
+        }
+        let state = |i: usize| {
+            sexps[i]
+                .get_key(":state")
+                .and_then(|v| v.as_atom())
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(state(0), "pending");
+        assert_eq!(state(1), "unplaced");
+        assert_eq!(state(2), "ok");
+        assert_eq!(
+            sexps[2].get_key(":value").unwrap().as_list().unwrap()[0].as_number(),
+            Some(11)
+        );
+        assert_eq!(state(3), "err");
+        assert_eq!(sexps[3].get_key(":kind").unwrap().as_str(), Some("abandoned"));
+        assert_eq!(sexps[3].get_key(":reassigned").unwrap().as_number(), Some(1));
+        assert_eq!(sexps[3].get_key(":resets").unwrap().as_number(), Some(1));
+        // Hostile message content survives serialize -> parse byte-exact.
+        let p3 = crate::sexp::parse(&sexps[3].to_string()).unwrap();
+        assert!(p3
+            .get_key(":msg")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains("\"quoted\""));
+    }
+
     use super::*;
 
     // --- RecruitLedger job-timeout state ---
