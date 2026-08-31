@@ -28,7 +28,7 @@ up)
     mkdir -p "$LOGS"
     : > "$LOGS/s1.log"; : > "$LOGS/s2.log"; : > "$LOGS/s3.log"
     $COMPOSE up -d s1 s2 s3
-    echo "soak colony up (3 nodes × 300 units, 128 MiB each)."
+    echo "soak colony up (3 nodes × 300 units, ${SOAK_MEM:-128m} each)."
     echo "let it live for hours, then: bash docker/soak.sh report"
     ;;
 report)

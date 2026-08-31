@@ -190,8 +190,8 @@ services:
     <<: *node
     hostname: s1
     profiles: [soak]
-    mem_limit: 128m
-    memswap_limit: 128m
+    mem_limit: ${SOAK_MEM:-128m}
+    memswap_limit: ${SOAK_MEM:-128m}
     environment:
       <<: *node-env
       DRILL_NAME: s1
@@ -200,8 +200,8 @@ services:
     <<: *node
     hostname: s2
     profiles: [soak]
-    mem_limit: 128m
-    memswap_limit: 128m
+    mem_limit: ${SOAK_MEM:-128m}
+    memswap_limit: ${SOAK_MEM:-128m}
     environment:
       <<: *node-env
       DRILL_NAME: s2
@@ -210,8 +210,8 @@ services:
     <<: *node
     hostname: s3
     profiles: [soak]
-    mem_limit: 128m
-    memswap_limit: 128m
+    mem_limit: ${SOAK_MEM:-128m}
+    memswap_limit: ${SOAK_MEM:-128m}
     environment:
       <<: *node-env
       DRILL_NAME: s3
