@@ -7,6 +7,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Receiver admission now digests before swallowing more (windowed
+  admission cap).** Admission measured honestly at decision time, but the
+  LOAD axis is a trailing average: landing a unit costs real CPU (fresh VM
+  + prelude eval), so a multi-sender burst approved against a not-yet-risen
+  loadavg pushed a small receiver past the wall AFTER acceptance — CI's
+  2-cpu runners showed receiver samples at 87–93% util, then shed-back
+  thrash that never quiesced and refusal/retry cycles that inflated
+  duplication under packet loss (+13 observed). This is the burst-overshoot
+  mechanism docs/self-replication.md predicted, caught in the wild by drill
+  S8. The transport listener now caps accepts per rolling window
+  (`ADMISSION_WINDOW_CAP` per `ADMISSION_WINDOW_MS`); beyond it, inbound
+  transports are refused — and refused senders already stay put and retry,
+  so no new protocol. Local rule, no coordination. With the cap: wall
+  samples peak at 14–16, thrash gone, conservation exact (1600/1600 both
+  netem legs).
+
+
+### Fixed
+
 - **Shedding units now physically relieves memory pressure.** Dropping a
   transported-out (or dead) unit freed its heap to the allocator, but glibc
   retained the pages: cgroup `memory.current` never fell, the placement

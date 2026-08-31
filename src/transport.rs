@@ -264,9 +264,58 @@ impl HandleResult {
 /// self deserializes, `Refused` (no snapshot) otherwise. Confirm-before-release
 /// is unchanged: a refused inbound still echoes the node_id with `Refused`, so
 /// the sender gets `Err` and keeps its unit.
+/// Windowed admission cap — "digest before swallowing more". The admission
+/// measure is honest at decision time, but the LOAD axis is a trailing
+/// average: landing a unit costs real CPU (fresh VM + prelude eval), so a
+/// burst approved against a not-yet-risen loadavg pushes the receiver past
+/// the wall AFTER acceptance. Observed in drill S8 on 2-cpu CI runners:
+/// receiver samples at 87–93% util post-burst, then shed-back thrash, and
+/// refusal/retry cycles that inflate duplication under packet loss. Capping
+/// accepts per rolling window lets the trailing signal catch up between
+/// gulps; beyond the cap we refuse, and refused senders already stay put
+/// and retry — no new protocol.
+pub const ADMISSION_WINDOW_MS: u64 = 5_000;
+pub const ADMISSION_WINDOW_CAP: usize = 8;
+
+/// Rolling-window accept tracker for the transport listener. Time is a
+/// caller-supplied millisecond counter so the logic is purely testable.
+pub struct AdmissionWindow {
+    accepts: std::collections::VecDeque<u64>,
+}
+
+impl Default for AdmissionWindow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AdmissionWindow {
+    pub fn new() -> Self {
+        AdmissionWindow {
+            accepts: std::collections::VecDeque::new(),
+        }
+    }
+    /// Record-and-check: may we admit at `now_ms`? True records the accept.
+    pub fn try_admit(&mut self, now_ms: u64) -> bool {
+        while self
+            .accepts
+            .front()
+            .is_some_and(|&t| t + ADMISSION_WINDOW_MS <= now_ms)
+        {
+            self.accepts.pop_front();
+        }
+        if self.accepts.len() >= ADMISSION_WINDOW_CAP {
+            return false;
+        }
+        self.accepts.push_back(now_ms);
+        true
+    }
+}
+
 pub fn handle_transport_frame(
     frame: &[u8],
     dest_res: &crate::resources::HostResources,
+    admission_open: bool,
 ) -> Result<HandleResult, TransportError> {
     let payload = decode_transport_frame(frame)?;
 
@@ -284,7 +333,7 @@ pub fn handle_transport_frame(
 
     // Fail closed: accept only with admission headroom (a margin below the
     // ceiling), so an unseen burst can't push us transiently over the wall.
-    if dest_res.has_admission_headroom() {
+    if dest_res.has_admission_headroom() && admission_open {
         let confirm_frame = encode_confirm_frame(&snap.node_id, ConfirmStatus::Accepted);
         Ok(HandleResult {
             confirm_frame,
@@ -538,6 +587,8 @@ pub fn start_transport_listener(
     let (tx, rx) = std::sync::mpsc::channel();
 
     std::thread::spawn(move || {
+        let listener_epoch = std::time::Instant::now();
+        let mut admission_window = AdmissionWindow::new();
         for mut stream in listener.incoming().flatten() {
             let timeout = Some(Duration::from_secs(HANDSHAKE_TIMEOUT_SECS));
             stream.set_read_timeout(timeout).ok();
@@ -585,7 +636,9 @@ pub fn start_transport_listener(
             // easy to get wrong; until then the margin's slack carries the
             // accept-to-instantiate gap alone. Kept simple and zero-dep here.
             let res = crate::resources::HostResources::measure();
-            if let Ok(result) = handle_transport_frame(&frame, &res) {
+            let now_ms = listener_epoch.elapsed().as_millis() as u64;
+            let admission_open = admission_window.try_admit(now_ms);
+            if let Ok(result) = handle_transport_frame(&frame, &res, admission_open) {
                 // Confirm first (the origin is waiting on it before releasing)...
                 let _ = stream.write_all(&result.confirm_frame);
                 // ...then hand an accepted self to the caller to instantiate.
@@ -820,7 +873,7 @@ mod tests {
         let usav = serialize_snapshot(&sample_snapshot());
         let frame = encode_transport_frame(&usav).unwrap();
 
-        let result = handle_transport_frame(&frame, &available()).unwrap();
+        let result = handle_transport_frame(&frame, &available(), true).unwrap();
         assert!(result.accepted());
         let snap = result.snapshot.expect("accepted → snapshot handed back");
         assert_eq!(snap.node_id, [1, 2, 3, 4, 5, 6, 7, 8]);
@@ -837,7 +890,7 @@ mod tests {
         let frame = encode_transport_frame(&usav).unwrap();
 
         // Over the ceiling → refuse, fail closed.
-        let result = handle_transport_frame(&frame, &over_ceiling()).unwrap();
+        let result = handle_transport_frame(&frame, &over_ceiling(), true).unwrap();
         assert!(!result.accepted());
         assert!(
             result.snapshot.is_none(),
@@ -857,7 +910,7 @@ mod tests {
         assert!(near_ceiling().has_headroom());
         // ...but is within the admission margin, so it refuses the inbound unit
         // to leave slack for in-flight burst transports it can't yet see.
-        let result = handle_transport_frame(&frame, &near_ceiling()).unwrap();
+        let result = handle_transport_frame(&frame, &near_ceiling(), true).unwrap();
         assert!(
             !result.accepted(),
             "must refuse inbound within the admission margin"
@@ -876,7 +929,7 @@ mod tests {
         let frame = encode_transport_frame(&usav).unwrap();
 
         // A coordinate that cannot measure itself refuses.
-        let result = handle_transport_frame(&frame, &HostResources::unavailable()).unwrap();
+        let result = handle_transport_frame(&frame, &HostResources::unavailable(), true).unwrap();
         assert!(!result.accepted());
         assert!(result.snapshot.is_none());
         let (_id, status) = decode_confirm_frame(&result.confirm_frame).unwrap();
@@ -887,7 +940,7 @@ mod tests {
     fn handle_refuses_undeserializable_self() {
         // A structurally valid frame whose payload is not a USAV snapshot.
         let frame = encode_transport_frame(b"not a snapshot").unwrap();
-        let result = handle_transport_frame(&frame, &available()).unwrap();
+        let result = handle_transport_frame(&frame, &available(), true).unwrap();
         assert!(!result.accepted());
         assert!(result.snapshot.is_none());
         let (_id, status) = decode_confirm_frame(&result.confirm_frame).unwrap();
@@ -899,7 +952,7 @@ mod tests {
         let mut frame = encode_transport_frame(b"x").unwrap();
         frame[0] = b'Z';
         // A bad-magic frame is an Err the listener drops — no confirm produced.
-        assert!(handle_transport_frame(&frame, &available()).is_err());
+        assert!(handle_transport_frame(&frame, &available(), true).is_err());
     }
 
     // ----- the safety invariant: release ONLY on Ok(Accepted) -----
@@ -1215,5 +1268,51 @@ mod tests {
             TransportAttempt::Attempted(o) => assert!(!should_release(&o)),
             other => panic!("expected Attempted, got {other:?}"),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod admission_window_tests {
+    use super::*;
+
+    #[test]
+    fn test_admission_window_caps_per_rolling_window() {
+        let mut w = AdmissionWindow::new();
+        // The full cap admits within one window...
+        for i in 0..ADMISSION_WINDOW_CAP {
+            assert!(w.try_admit(i as u64), "admit #{i} inside cap");
+        }
+        // ...the next is refused (digest before swallowing more)...
+        assert!(!w.try_admit(10));
+        // ...and refused attempts do NOT extend the window.
+        assert!(!w.try_admit(ADMISSION_WINDOW_MS - 1));
+        // Once the window slides past the burst, admission reopens.
+        assert!(w.try_admit(ADMISSION_WINDOW_MS + 1));
+    }
+
+    #[test]
+    fn test_closed_window_refuses_even_with_headroom() {
+        // A roomy receiver mid-gulp still refuses: the load axis is a
+        // trailing signal, so headroom alone is not consent.
+        let snap = crate::persist::VmSnapshot {
+            node_id: [7u8; 8],
+            dictionary: Vec::new(),
+            memory: Vec::new(),
+            here: 0,
+            goals: crate::goals::GoalRegistry::empty(),
+            fitness: crate::features::fitness::FitnessTracker::new(),
+            code_strings: Vec::new(),
+        };
+        let payload = crate::persist::serialize_snapshot(&snap);
+        let frame = encode_transport_frame(&payload).unwrap();
+        let res = crate::resources::HostResources::from_parts_with_swap(
+            8_000_000, 7_000_000, 0, 0, 0.1, 8,
+        );
+        assert!(res.has_admission_headroom());
+        let r = handle_transport_frame(&frame, &res, false).unwrap();
+        assert!(r.snapshot.is_none(), "closed window must refuse");
+        let (_, status) = decode_confirm_frame(&r.confirm_frame).unwrap();
+        assert_eq!(status, ConfirmStatus::Refused);
     }
 }
