@@ -2699,3 +2699,75 @@ fn test_gp_evolve_generations_are_step_bounded() {
         "two GP-EVOLVE calls took {elapsed:?} — step budget not enforced?"
     );
 }
+
+#[test]
+fn test_challenge_scheduling_rotates_least_attempted() {
+    // The colony must not grind one rung while winnable rungs wait: after
+    // the first win generates harder challenges, successive sessions rotate
+    // by least-attempted (soak finding: reward-descending selection put
+    // ~20k generations into fib15 with three easier rungs untouched).
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "GP-EVOLVE");
+    assert!(out.contains("WINNER"), "{out}");
+    let mut seen = std::collections::HashSet::new();
+    // Sessions are 100 generations = 10 batches of GP-EVOLVE; run enough
+    // batches to cover several sessions and record which rungs get attacked.
+    for _ in 0..40 {
+        eval(&mut vm, "GP-EVOLVE");
+        if let Some(evo) = vm.evolution.as_ref() {
+            seen.insert(evo.challenge.name.clone());
+        }
+    }
+    assert!(
+        seen.len() >= 2,
+        "attention must rotate across rungs, saw only {seen:?}"
+    );
+    // The trivially-winnable short9 rung (the 890-scoring seed passes the
+    // winner gate) must be solved once its turn comes.
+    let solved: Vec<String> = vm
+        .challenge_registry
+        .challenges
+        .values()
+        .filter(|c| c.solved)
+        .map(|c| c.name.clone())
+        .collect();
+    assert!(
+        solved.len() >= 2,
+        "rotation must convert queued-winnable rungs into solves: {solved:?}"
+    );
+    // Attempts are now real observability, not a dead field.
+    assert!(
+        vm.challenge_registry
+            .challenges
+            .values()
+            .any(|c| c.attempts > 0),
+        "attempt counts must be recorded"
+    );
+}
+
+#[test]
+fn test_landscape_generation_dedupes_by_name() {
+    // Solving related rungs must not re-register clones of known
+    // challenges: the registry grew without bound (a second fib10-short9,
+    // a second fib15, ...) — per-unit memory creep at colony scale.
+    let mut vm = test_vm();
+    eval(&mut vm, "GP-EVOLVE");
+    // Enough sessions to solve several rungs and trigger repeated generation.
+    for _ in 0..40 {
+        eval(&mut vm, "GP-EVOLVE");
+    }
+    let mut names: Vec<String> = vm
+        .challenge_registry
+        .challenges
+        .values()
+        .map(|c| c.name.clone())
+        .collect();
+    let total = names.len();
+    names.sort();
+    names.dedup();
+    assert_eq!(
+        names.len(),
+        total,
+        "registry must never hold duplicate challenge names"
+    );
+}

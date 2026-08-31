@@ -129,9 +129,29 @@ impl VM {
         if new_challenges.is_empty() {
             return;
         }
-        let count = new_challenges.len();
         let depth = self.landscape.depth();
         let my_id = self.node_id_cache.unwrap_or([0; 8]);
+        // Dedupe by NAME against everything already known (solved or not):
+        // generators re-derive the same rungs from related parents, and
+        // re-registering them made the registry grow without bound — each
+        // solve of a clone generated more clones (observed: a second
+        // fib10-short9 at reward 140, a second fib15 at 170, forever).
+        // Unbounded per-unit registry growth × colony size was a real slice
+        // of the memory-creep open problem.
+        let known: std::collections::HashSet<String> = self
+            .challenge_registry
+            .challenges
+            .values()
+            .map(|c| c.name.clone())
+            .collect();
+        let new_challenges: Vec<_> = new_challenges
+            .into_iter()
+            .filter(|ch| !known.contains(&ch.name))
+            .collect();
+        if new_challenges.is_empty() {
+            return;
+        }
+        let count = new_challenges.len();
         for ch in new_challenges {
             let id = self.challenge_registry.register_discovered(
                 &ch.name,

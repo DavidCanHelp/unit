@@ -97,6 +97,7 @@ impl VM {
                 );
             }
             let challenge = if let Some(ch_id) = self.challenge_registry.next_unsolved() {
+                self.challenge_registry.record_attempt(ch_id);
                 if let Some(mut fc) = self.challenge_registry.to_fitness_challenge(ch_id) {
                     // Apply environment modifiers.
                     fc.max_steps = self.landscape.environment.apply_to_max_steps(fc.max_steps);
@@ -107,7 +108,11 @@ impl VM {
             } else {
                 evolve::fib10_challenge()
             };
-            let mut evo = evolve::EvolutionState::new(challenge.clone(), 1000);
+            // Attention span: 100 generations per session, then the state is
+            // reaped and the least-attempted rung gets the next session. At
+            // 1000, a unit monomaniacally ground one hard rung for ~100
+            // idle ticks while winnable rungs waited.
+            let mut evo = evolve::EvolutionState::new(challenge.clone(), 100);
             evo.population = evolve::init_population(&challenge, 50, &mut self.rng);
             evo.running = true;
             self.evolution = Some(evo);

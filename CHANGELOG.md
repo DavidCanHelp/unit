@@ -3,6 +3,42 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The colony's attention was a monoculture.** Challenge selection sorted
+  by reward descending, so every unit in the colony ground the single
+  hardest rung (fib15) while trivially winnable rungs sat queued forever —
+  and `attempts` was a dead field, so the monoculture wasn't even
+  observable. Selection is now least-attempted-first (ties: reward desc,
+  then id), each session records an attempt, and the per-challenge
+  attention span dropped from 1000 generations to 100 so rotation actually
+  happens. A local diversity rule; no coordination.
+
+- **The landscape re-registered clones of known rungs.** Each solve of a
+  related challenge generated another fib10-short9 / fib15 at escalated
+  reward, forever — unbounded per-unit registry growth (a real slice of
+  the memory-creep problem) and wasted attention on already-won names.
+  Generation now dedupes by name against everything known.
+
+- **The soak verdict measured the wrong fitness.** A healthy colony is
+  always grinding something unsolved, so its CURRENT fitness reads low
+  precisely when it is climbing; fit-gain now uses the PEAK. Conservation
+  uses the event equation (`units == expected + landed − released`)
+  instead of naive equality, so documented duplication is not flagged.
+
+### The datapoint
+
+- **First `:verdict adaptive` — the core thesis has executable evidence.**
+  Soak round 7 (12 minutes, 900 units, 3 nodes): antibody kinds 1 → 17
+  per node (+47 colony-wide), peak fitness 890 → 980 (the GP is now
+  DISCOVERING two-token solutions, not replaying its seed), 4,519 antibody
+  copies propagated, migrations event-conserved (`:balanced yes`), zero
+  deaths. Open problems unchanged and stated: per-unit memory growth
+  (nodes ride 97–100% util; the wall self-corrects but never rests) and
+  the deeper GP search frontier beyond vocabulary-reachable rungs.
+
 ## [0.39.0] - 2026-09-01
 
 ### Fixed

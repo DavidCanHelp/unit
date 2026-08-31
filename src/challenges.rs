@@ -211,10 +211,26 @@ impl ChallengeRegistry {
 
     /// Returns all unsolved challenges, sorted by reward descending.
     pub fn get_unsolved(&self) -> Vec<&Challenge> {
+        // Least-attempted FIRST (ties: reward desc, then id for stable order).
+        // Reward-descending alone produced a colony-wide MONOCULTURE: every
+        // unit ground the single hardest rung (fib15) while trivially
+        // winnable rungs sat queued forever — the soak measured ~20k
+        // generations on one challenge with three easier ones untouched.
+        // Attempts-ascending is a local diversity rule: each unit rotates
+        // its own attention across its rungs, no coordination needed.
         let mut unsolved: Vec<&Challenge> =
             self.challenges.values().filter(|c| !c.solved).collect();
-        unsolved.sort_by_key(|c| std::cmp::Reverse(c.reward));
+        unsolved.sort_by_key(|c| (c.attempts, std::cmp::Reverse(c.reward), c.id));
         unsolved
+    }
+
+    /// Record that a unit spent an evolution session on this challenge.
+    /// Feeds both observability (CHALLENGES shows real attempt counts) and
+    /// the least-attempted scheduling rule above.
+    pub fn record_attempt(&mut self, id: ChallengeId) {
+        if let Some(ch) = self.challenges.get_mut(&id) {
+            ch.attempts += 1;
+        }
     }
 
     /// Looks up a challenge by ID.
