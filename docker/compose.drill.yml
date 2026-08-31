@@ -123,3 +123,60 @@ services:
       <<: *node-env
       DRILL_NAME: rnode
       DRILL_ARGS: --multi-unit 20 --port 4200 --gossip-k 8
+
+  # --- S8: ecology — heterogeneous colony under pressure ------------------
+  # Three over-ceiling senders (450 units in a 96 MiB budget ≈ 94%) and two
+  # small receivers (20 units in 128 MiB ≈ 18%). Tests the README claim
+  # "the colony rebalances toward boxes with room" under SIMULTANEOUS
+  # multi-sender pressure — convergence, wall integrity on receivers,
+  # conservation — plus a mid-shed receiver blackhole (partition, no RST).
+  e1:
+    <<: *node
+    hostname: e1
+    profiles: [ecology]
+    mem_limit: 96m
+    memswap_limit: 96m
+    environment:
+      <<: *node-env
+      DRILL_NAME: e1
+      DRILL_ARGS: --multi-unit 520 --port 4200 --peers e4:4200,e5:4200 --gossip-k 8
+  e2:
+    <<: *node
+    hostname: e2
+    profiles: [ecology]
+    mem_limit: 96m
+    memswap_limit: 96m
+    environment:
+      <<: *node-env
+      DRILL_NAME: e2
+      DRILL_ARGS: --multi-unit 520 --port 4200 --peers e4:4200,e5:4200 --gossip-k 8
+  e3:
+    <<: *node
+    hostname: e3
+    profiles: [ecology]
+    mem_limit: 96m
+    memswap_limit: 96m
+    environment:
+      <<: *node-env
+      DRILL_NAME: e3
+      DRILL_ARGS: --multi-unit 520 --port 4200 --peers e4:4200,e5:4200 --gossip-k 8
+  e4:
+    <<: *node
+    hostname: e4
+    profiles: [ecology]
+    mem_limit: 128m
+    memswap_limit: 128m
+    environment:
+      <<: *node-env
+      DRILL_NAME: e4
+      DRILL_ARGS: --multi-unit 20 --port 4200 --peers e1:4200 --gossip-k 8
+  e5:
+    <<: *node
+    hostname: e5
+    profiles: [ecology]
+    mem_limit: 128m
+    memswap_limit: 128m
+    environment:
+      <<: *node-env
+      DRILL_NAME: e5
+      DRILL_ARGS: --multi-unit 20 --port 4200 --peers e1:4200 --gossip-k 8

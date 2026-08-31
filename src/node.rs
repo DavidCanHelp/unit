@@ -187,6 +187,33 @@ mod run_signals {
     }
 }
 
+/// Return freed heap pages to the OS after unit releases. Rust dropping a
+/// VM frees to the ALLOCATOR, but glibc retains the pages in its arenas —
+/// so a node that sheds units keeps its full cgroup footprint
+/// (memory.current never falls), the local placement rule sees no relief
+/// from migration, and an over-ceiling node bleeds its entire population
+/// into the colony without ever converging (drill S8 finding: a 520-unit
+/// sender shed 312 units and still measured 84%). malloc_trim makes the
+/// release physically real. glibc-only FFI against the already-linked
+/// libc (same pattern as run_signals) — a no-op elsewhere (macOS dev
+/// boxes, musl), where the drill does not run.
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux", target_env = "gnu"))]
+mod mem_release {
+    extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    pub fn trim() {
+        unsafe {
+            let _ = malloc_trim(0);
+        }
+    }
+}
+
+#[cfg(not(all(not(target_arch = "wasm32"), target_os = "linux", target_env = "gnu")))]
+mod mem_release {
+    pub fn trim() {}
+}
+
 /// UTC `HH:MM:SS` timestamp for log lines — zero-dependency, comparable across
 /// machines under NTP, and readable in a live tail.
 #[cfg(not(target_arch = "wasm32"))]
@@ -319,6 +346,14 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     // Whether we were mislocated last tick, so the "MISLOCATED" line logs on
     // crossing the ceiling rather than every tick while stuck over it.
     let mut prev_mislocated = false;
+    // Chronicle counters for the machine-readable (node-status ...) line:
+    // cumulative confirmed transports out (origin released), landed inbound
+    // units, and deaths. Event-derived, so an external tool can account for
+    // every unit's whereabouts without parsing prose logs.
+    let mut chron_out: u64 = 0;
+    let mut chron_in: u64 = 0;
+    let mut chron_deaths: u64 = 0;
+    let mut chron_released_last: u64 = 0;
     loop {
         if run_signals::requested() {
             println!(
@@ -338,6 +373,7 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
         if let Some(ref rx) = transport_rx {
             while let Ok(snap) = rx.try_recv() {
                 land_transported_unit(&mut node, snap);
+                chron_in += 1;
                 println!(
                     "[{}] TRANSPORT inbound: landed a unit — now hosting {} units",
                     log_ts(),
@@ -366,8 +402,10 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
 
         // Obituaries. A death is a real colony event and always logs: the
         // failed life strategy died, the immune memory was bequeathed.
+        chron_deaths += report.deaths.len() as u64;
         for d in &report.deaths {
             println!(
+                // (chronicle counted below)
                 "[{}] DIED gen={} fitness={} — starved (at floor {} ticks); bequeathed {} antibod{} to {} heir{} — now hosting {} units",
                 log_ts(),
                 d.generation,
@@ -420,11 +458,14 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                     target_headroom
                 );
                 match outcome {
-                    Ok(_) => println!(
+                    Ok(_) => {
+                        chron_out += 1;
+                        println!(
                         "[{}] TRANSPORT accepted, origin released — now hosting {} units",
                         log_ts(),
                         node.host.len()
-                    ),
+                        );
+                    }
                     Err(e) => println!(
                         "[{}] TRANSPORT refused/failed, staying put ({})",
                         log_ts(),
@@ -471,6 +512,21 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                     node.host.len(),
                     fmt_kb(read_rss_kb()),
                 );
+                // Machine-readable chronicle line, one per measure cadence.
+                // The stable surface for drills and external tools (parse
+                // with any sexp reader; the prose RES line above may change
+                // freely). Counters are cumulative since node start.
+                println!(
+                    "(node-status :id \"{}\" :tick {} :units {} :util {} :headroom {} :out {} :in {} :deaths {})",
+                    host_hex,
+                    tick_n,
+                    node.host.len(),
+                    (res.utilization * 100.0).round() as u32,
+                    (res.headroom * 100.0).round() as u32,
+                    chron_out,
+                    chron_in,
+                    chron_deaths
+                );
             } else {
                 println!(
                     "[{}] RES unavailable (fail-closed: will not replicate or accept) units={} rss={}",
@@ -506,6 +562,12 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
         }
 
         tick_n = tick_n.wrapping_add(1);
+        // Physical release: if this tick shed or buried units, hand their
+        // freed heap back to the OS so the next measure() sees the relief.
+        if chron_out + chron_deaths != chron_released_last {
+            chron_released_last = chron_out + chron_deaths;
+            mem_release::trim();
+        }
         std::thread::sleep(Duration::from_millis(TICK_INTERVAL_MS));
     }
 

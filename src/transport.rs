@@ -59,6 +59,10 @@ const MAX_PAYLOAD: usize = 100_000_000;
 /// Read/write timeout for the handshake, matching `spawn.rs`'s 30s.
 #[cfg(not(target_arch = "wasm32"))]
 const HANDSHAKE_TIMEOUT_SECS: u64 = 30;
+/// Bounded TCP connect for transport sends — see `send_transport`. Short,
+/// because an unreachable destination must cost the tick loop ~2s, not the
+/// OS's multi-minute SYN retry schedule.
+const CONNECT_TIMEOUT_SECS: u64 = 2;
 
 // ---------------------------------------------------------------------------
 // Status + outcome + error types
@@ -458,8 +462,18 @@ pub fn send_transport(addr: &str, payload: &[u8]) -> Result<ConfirmOutcome, Tran
 
     let frame = encode_transport_frame(payload)?;
 
-    let mut stream =
-        TcpStream::connect(addr).map_err(|e| TransportError::Connect(e.to_string()))?;
+    // Bounded connect: a BLACKHOLED destination (partition — packets dropped,
+    // no RST) makes a plain TcpStream::connect block for the OS default SYN
+    // retry schedule (minutes). send_transport runs INSIDE the node tick
+    // loop, so that block starves ticking: drill S8 measured 5 ticks in 25s
+    // while a just-blackholed peer was still in the placement view. Two
+    // seconds is generous for real DC/WAN RTTs; the long HANDSHAKE timeout
+    // below still governs the payload transfer of an ESTABLISHED connection.
+    let sock_addr = addr
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| TransportError::Connect(format!("bad addr {}: {}", addr, e)))?;
+    let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .map_err(|e| TransportError::Connect(e.to_string()))?;
     let timeout = Some(Duration::from_secs(HANDSHAKE_TIMEOUT_SECS));
     stream.set_write_timeout(timeout).ok();
     stream.set_read_timeout(timeout).ok();

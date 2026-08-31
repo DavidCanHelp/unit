@@ -268,3 +268,39 @@ content to keep what it has yet decline to take on more.
 | Gossiped headroom advertisement | `src/mesh.rs` (heartbeat, `peer_resource_view`) |
 | Sufficient-first placement, mislocation, relocate-with-release | `src/multi_unit.rs` (`MultiUnitNode`) + `src/transport.rs` |
 | `TRANSPORT` word, energy cost | `src/main.rs` (`prim_transport`), `src/vm/mod.rs`, `src/energy.rs` |
+
+
+## Multi-sender ecology validation (v0.38)
+
+The rebalancing claim — *the colony rebalances toward boxes with room* — was
+validated for one polite sender in v0.30. Drill scenario S8 tests it under
+SIMULTANEOUS pressure with only local rules: three 96 MiB nodes boot 520
+units each (~82%, hard over-ceiling) beside two 128 MiB receivers, and one
+receiver is **blackholed** (network partition — packets dropped, no RST)
+mid-shed. Two real failures fell out before the claim held:
+
+1. **Shedding didn't relieve pressure.** Dropping a transported-out unit
+   frees its heap to the ALLOCATOR, but glibc retains the pages — cgroup
+   `memory.current` never fell, the local rule saw no relief, and a sender
+   shed 312 of 520 units while still measuring 84%: an over-ceiling node
+   would bleed its whole population without ever converging. Fix:
+   `malloc_trim(0)` after any tick that releases units (raw libc FFI, no
+   new dependency) — the release is now physically real.
+
+2. **A blackholed destination starved the tick loop.** `TcpStream::connect`
+   has no timeout of its own; against a partitioned peer still in the
+   placement view it blocked on the OS SYN retry schedule. S8 measured 5
+   ticks in 25 seconds. Fix: `connect_timeout` (2s) — an unreachable
+   destination now costs one bounded attempt, and the established-
+   connection handshake timeout is unchanged.
+
+What S8 now proves, from the machine-readable `(node-status …)` chronicle
+alone: all three senders converge under the wall and shedding goes
+quiescent; the surviving receiver's utilization never crosses the ceiling
+under multi-sender bursts (observed max 15–25%); ticking continues at full
+rate through the blackhole window; and the colony's unit count balances to
+the initial total exactly, with loss bounded by the in-flight window
+swallowed by the partition and duplication bounded the same way (the
+documented fail-toward-duplication was observed live: one unit landed on
+the blackholed receiver, its confirm died in the partition, and both
+copies were retained — never silent loss).

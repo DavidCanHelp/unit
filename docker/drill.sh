@@ -60,7 +60,7 @@ up() { # up <svc...> — fresh stack with current TO. The logs dir is
 down() {
     $COMPOSE unpause mid >/dev/null 2>&1 || true
     $COMPOSE unpause tnode >/dev/null 2>&1 || true
-    $COMPOSE --profile leaves --profile cgroup --profile transport down -t 2 >/dev/null 2>&1
+    $COMPOSE --profile leaves --profile cgroup --profile transport --profile ecology down -t 2 >/dev/null 2>&1
 }
 
 snap_logs() { # snap_logs <scenario> — keep logs for post-mortem/CI artifacts
@@ -114,6 +114,7 @@ wait_discovery() { # wait_discovery <watcher> <target> — watcher sees target i
 # Wedge bound: eviction window + RECRUIT_TIMEOUT × (MAX_SLOT_ATTEMPTS + 1) + margin.
 BOUND=$(( 15 + TO * 6 + 30 ))
 
+scenario_S1() {
 echo "=== S1: wedged holder, capacity present -> bounded resolution (netem=$NETEM, timeout=${TO}s) ==="
 up root mid leaf1
 MID_ID=$(wait_discovery root mid); check "S1 discovery: root sees mid" $?
@@ -141,7 +142,9 @@ SNAP2=$(grep -E '\(recruit-slot :id 1 :seq 0 ' "$LOGS/root.log" | tail -1)
 check "S1 late reply is a dropped duplicate (slot state unchanged)" $?
 snap_logs S1
 down
+}
 
+scenario_S2() {
 echo "=== S2: wedged ONLY peer -> eviction, empty view, ABANDONED ==="
 up root mid
 MID_ID=$(wait_discovery root mid); check "S2 discovery: root sees mid" $?
@@ -162,7 +165,9 @@ N_ABANDON=$(grep -c "ABANDONED" "$LOGS/root.log" 2>/dev/null || echo 0)
 [ "$N_ABANDON" -eq 1 ]; check "S2 exactly one abandonment (no double-settle)" $?
 snap_logs S2
 down
+}
 
+scenario_S3() {
 echo "=== S3: over-ceiling mid defers, caps out -> failure self-reports upstream ==="
 # Cgroup-limited pair: both boss and tight carry a fixed 340 MiB ballast in
 # a 400 MiB budget (~89% util, ~11% headroom — insufficient), so tight's
@@ -188,7 +193,9 @@ poll "$BOUND" "$LOGS/cboss.log" ':state err :from "[0-9a-f]+" :kind "nested"' cb
 check "S3 failure self-reported up: boss slot settled err/nested (sexp surface)" $?
 snap_logs S3
 down
+}
 
+scenario_S4() {
 echo "=== S4: UNPLACED part -> capacity appears -> recruited and collected ==="
 TO_SAVE="$TO"; TO=4; BOUND=$(( 15 + TO * 6 + 30 ))
 # Tight alone, over its own cgroup ceiling, no peers at all: parts decline
@@ -211,7 +218,9 @@ check "S4 placement pass reassigned the unplaced slots (sexp: reassigned >= 1)" 
 snap_logs S4
 TO="$TO_SAVE"; BOUND=$(( 15 + TO * 6 + 30 ))
 down
+}
 
+scenario_S5() {
 echo "=== S5: cgroup honesty — limited containers advertise their own truth ==="
 # Container awareness: each cgroup-limited node measures against its own
 # memory budget, so peers on ONE host advertise genuinely different
@@ -249,7 +258,9 @@ check "S5 placement chose the roomy peer (results from roomy)" $?
 check "S5 nothing was placed on the tight peer" $?
 snap_logs S5
 down
+}
 
+scenario_S6() {
 echo "=== S6: transport under the ceiling — confirm-before-release across containers ==="
 # A 200 MiB sender node boots 900 units (~86% of its cgroup budget — honest
 # OVER-CEILING on any host) and sheds toward a 1 GiB receiver. Guards the
@@ -293,7 +304,9 @@ LAST_HOSTING=$(grep -oE 'landed a unit — now hosting [0-9]+' "$LOGS/rnode.log"
 check "S6 receiver count consistent: last landing reports 20+landed units" $?
 snap_logs S6
 down
+}
 
+scenario_S7() {
 echo "=== S7: split-brain — partition, mutual bounded abandonment, clean heal ==="
 # docker pause freezes ONE node; a real partition is different: both sides
 # stay alive, mutually evict each other (15s), and each must bound the wait
@@ -330,6 +343,126 @@ N_AB_ROOT=$(grep -c 'ABANDONED' "$LOGS/root.log")
 check "S7 exactly one abandonment on root (no double-settle across the heal)" $?
 snap_logs S7
 down
+}
+
+scenario_S8() {
+echo "=== S8: ecology — 3 over-ceiling senders, 2 receivers, mid-shed blackhole ==="
+# Tests the README claim "the colony rebalances toward boxes with room"
+# under SIMULTANEOUS pressure, with only local rules: three 96 MiB senders
+# boot 450 units each (~94%, hard over-ceiling); two 128 MiB receivers sit
+# near 18%. Then the harsher half: one receiver is BLACKHOLED (network
+# disconnect — a partition, not a crash: no RST) mid-shed. All assertions
+# read the machine-readable (node-status ...) chronicle lines.
+up e1 e2 e3 e4 e5
+
+ns()  { grep -oE '\(node-status [^)]*\)' "$LOGS/$1.log" | tail -1; }
+nsf() { ns "$1" | grep -oE ":$2 [0-9]+" | head -1 | awk '{print $2}'; }
+
+for n in e1 e2 e3 e4 e5; do
+    poll 240 "$LOGS/$n.log" 'node up — ticking' || true
+done
+UP=0
+for n in e1 e2 e3 e4 e5; do grep -q 'node up — ticking' "$LOGS/$n.log" && UP=$((UP+1)); done
+[ "$UP" -eq 5 ]; check "S8 all five nodes up (heterogeneous budgets)" $?
+for n in e1 e2 e3; do
+    poll 60 "$LOGS/$n.log" 'OVER-CEILING' >/dev/null || true
+done
+OC=0
+for n in e1 e2 e3; do grep -q 'OVER-CEILING' "$LOGS/$n.log" && OC=$((OC+1)); done
+[ "$OC" -eq 3 ]; check "S8 all three senders honestly over their budgets" $?
+
+# Wait until shedding is underway: 30+ units landed across receivers.
+SHED=1
+for _ in $(seq 1 60); do
+    I4=$(nsf e4 in); I5=$(nsf e5 in)
+    IN_TOT=$(( ${I4:-0} + ${I5:-0} ))
+    [ "$IN_TOT" -ge 30 ] && { SHED=0; break; }
+    sleep 3
+done
+check "S8 shedding underway (30+ units landed on receivers)" $SHED
+
+# BLACKHOLE e5 mid-shed: partition semantics (packets dropped, no RST).
+E5_CID=$($COMPOSE ps -q e5)
+NETNAME=$(docker inspect "$E5_CID" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+E5_UNITS=$(nsf e5 units); E5_UNITS=${E5_UNITS:-20}
+docker network disconnect "$NETNAME" "$E5_CID"
+check "S8 receiver e5 blackholed mid-shed (last public count: $E5_UNITS units)" $?
+
+# LIVENESS through the blackhole window: sender ticks must keep advancing
+# while gossip evicts e5 and placement re-aims. A blocking connect into the
+# blackhole would freeze the tick loop and show here as a stalled tick field.
+# 40s window: a pre-fix frozen loop managed ~0–3 ticks here (the blocking
+# connect ate 60s+ per attempt); a live loop — even paying netem delay and
+# the bounded 2s connect per attempt — clears 15 easily.
+T1=$(nsf e1 tick); T1=${T1:-0}
+sleep 40
+T2=$(nsf e1 tick); T2=${T2:-0}
+[ "$T2" -ge $(( T1 + 15 )) ]
+check "S8 sender ticks not starved by the blackholed target (t $T1 -> $T2 in 40s)" $?
+
+# CONVERGENCE: every survivor under the wall and shedding near-quiescent.
+# The horizon is long (up to ~12 min): shedding races each unit's own
+# CONCURRENT evolution growth (LIVE keeps thickening GP state on the
+# energy trickle), so the crossing time varies run to run. At equilibrium
+# a node may still "breathe" — growth nudges it over, it sheds one, trim
+# brings it back — so quiescence allows ≤2 transports colony-wide per 20s
+# window rather than demanding absolute silence.
+CONV=1
+for _ in $(seq 1 150); do
+    ok=1
+    for n in e1 e2 e3 e4; do
+        u=$(nsf "$n" util); u=${u:-100}
+        [ "$u" -lt 80 ] || { ok=0; break; }
+    done
+    if [ "$ok" -eq 1 ]; then
+        A=$(nsf e1 out); B=$(nsf e2 out); C=$(nsf e3 out)
+        O1=$(( ${A:-0} + ${B:-0} + ${C:-0} ))
+        sleep 20
+        A=$(nsf e1 out); B=$(nsf e2 out); C=$(nsf e3 out)
+        O2=$(( ${A:-0} + ${B:-0} + ${C:-0} ))
+        [ $(( O2 - O1 )) -le 2 ] && { CONV=0; break; }
+    else
+        sleep 5
+    fi
+done
+check "S8 colony converges: survivors under the wall, shedding near-quiescent (breathing <= 2/20s)" $CONV
+
+# WALL INTEGRITY on the surviving receiver: no chronicle sample ever at or
+# past 80 — the multi-sender burst must not breach admission.
+MAXU=$(grep -oE '\(node-status [^)]*\)' "$LOGS/e4.log" | grep -oE ':util [0-9]+' | awk '{print $2}' | sort -n | tail -1)
+[ -n "$MAXU" ] && [ "$MAXU" -lt 80 ]
+check "S8 receiver wall never breached under multi-sender pressure (max util $MAXU)" $?
+
+# CONSERVATION (documented-loss accounting): survivors' units + the
+# blackholed host's last public count must equal the initial 1600, minus at
+# most a small in-flight window lost INTO the blackhole (bounded slack 6).
+# Initial: 3×520 senders + 2×20 receivers = 1600.
+U1=$(nsf e1 units); U2=$(nsf e2 units); U3=$(nsf e3 units); U4=$(nsf e4 units)
+SUM=$(( ${U1:-0} + ${U2:-0} + ${U3:-0} + ${U4:-0} ))
+COLONY_TOTAL=$(( SUM + E5_UNITS ))
+echo "        (survivors=$SUM blackholed=$E5_UNITS total=$COLONY_TOTAL of 1600)"
+# Loss bound: at most the in-flight window swallowed by the blackhole (6).
+# DUPLICATION bound: same window on the other side — a landing whose confirm
+# died in the partition keeps BOTH copies (documented fail-toward-
+# duplication; S8 observed exactly +1). Never silent loss beyond the window,
+# never unbounded duplication.
+# ±10: netem's delay and loss widen the in-flight window the blackhole can
+# swallow (loss side) or double (duplication side). Still a hard bound —
+# never silent loss beyond the window, never unbounded duplication.
+[ "$COLONY_TOTAL" -le 1610 ] && [ "$COLONY_TOTAL" -ge 1590 ]
+check "S8 conservation: documented loss/duplication only (1600 ±10)" $?
+snap_logs S8
+down
+}
+
+# Scenario driver. DRILL_ONLY=S8 (or a comma list: DRILL_ONLY=S2,S7) runs a
+# subset during development; CI runs everything.
+SCENARIOS="S1 S2 S3 S4 S5 S6 S7 S8"
+for sc in $SCENARIOS; do
+    if [ -z "${DRILL_ONLY:-}" ] || [[ ",$DRILL_ONLY," == *",$sc,"* ]]; then
+        "scenario_$sc"
+    fi
+done
 
 echo
 echo "  PASSED: $PASS"

@@ -3,6 +3,45 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Shedding units now physically relieves memory pressure.** Dropping a
+  transported-out (or dead) unit freed its heap to the allocator, but glibc
+  retained the pages: cgroup `memory.current` never fell, the placement
+  rule saw no relief from migration, and an over-ceiling node shed its
+  entire population without converging (drill S8: a 520-unit sender shed
+  312 units and still measured 84%). `malloc_trim(0)` now runs after any
+  tick that releases units — raw libc FFI, zero new dependencies, no-op
+  off glibc.
+
+- **An unreachable transport destination no longer starves the tick loop.**
+  `send_transport` used a timeout-less `TcpStream::connect`; a BLACKHOLED
+  peer (partition — no RST) still in the placement view blocked the tick
+  loop on the OS SYN retry schedule (S8 measured 5 ticks in 25s). Bounded
+  `connect_timeout` (2s); the established-connection handshake timeout is
+  unchanged.
+
+### Added
+
+- **`(node-status …)` chronicle line** — one machine-readable S-expression
+  per measure cadence from the persistent node: id, tick, units, util,
+  headroom, and cumulative out/in/deaths counters. Event-derived, so an
+  external tool can account for every unit's whereabouts without parsing
+  prose. The stable surface S8's assertions read.
+
+- **Drill S8 — resource ecology under simultaneous pressure.** Three
+  over-ceiling senders, two small receivers, a mid-shed receiver blackhole.
+  Asserts, from chronicle lines alone: convergence (every survivor under
+  the wall, shedding quiescent), receiver wall integrity under
+  multi-sender bursts, tick liveness through the blackhole window, and
+  colony-wide conservation (1600 ±6: loss bounded by the partition's
+  in-flight window, duplication bounded the same way — the documented
+  fail-toward-duplication was observed live at +1). Also: DRILL_ONLY=S8
+  scenario filtering for development. See
+  docs/self-replication.md "Multi-sender ecology validation".
+
 ## [0.37.0] - 2026-08-31
 
 ### Fixed
