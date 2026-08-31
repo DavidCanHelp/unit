@@ -23,9 +23,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   samples peak at 14–16, thrash gone, conservation exact (1600/1600 both
   netem legs).
 
-
-### Fixed
-
 - **Shedding units now physically relieves memory pressure.** Dropping a
   transported-out (or dead) unit freed its heap to the allocator, but glibc
   retained the pages: cgroup `memory.current` never fell, the placement
