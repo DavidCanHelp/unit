@@ -28,6 +28,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   uses the event equation (`units == expected + landed − released`)
   instead of naive equality, so documented duplication is not flagged.
 
+### Documentation
+
+- **The harnesses are documented** — new [docs/validation.md](docs/validation.md):
+  the drill scenario map S1–S8, netem and wedge semantics, the evolution
+  soak, and the stable sexp surfaces they assert against.
+  [docs/operations.md](docs/operations.md) gains the observability
+  reference (`(node-status …)` field table with the unit-accounting
+  equation, `RECRUITS-SEXP`). ARCHITECTURE's future-work list updated:
+  per-unit time slicing shipped (LIVE budget + wall-clock slice); the
+  remaining wall is mid-eval preemption. Test-count figures refreshed.
+
 ### The datapoint
 
 - **First `:verdict adaptive` — the core thesis has executable evidence.**

@@ -104,6 +104,37 @@ Snapshots written by pre-v0.34 units (JSON, `<id>.json`) still resurrect —
 the loader sniffs the format — and convert to the sexp genome on their next
 save.
 
+## Observability surfaces
+
+Machine-readable S-expressions, stable by contract (prose log lines may
+change; these shapes may not). Parse them with any sexp reader.
+
+**`(node-status …)`** — emitted by a persistent node (`--multi-unit N
+--port P`) every resource-measure cadence (~5s):
+
+| Field | Meaning |
+|-------|---------|
+| `:id` | host mesh id (hex) |
+| `:tick` | run-loop tick counter |
+| `:units` | units hosted right now |
+| `:util` / `:headroom` | measured utilization / advertised headroom (%) |
+| `:out` / `:in` | cumulative confirmed transports out / landed in |
+| `:deaths` | cumulative starvation deaths |
+| `:fit` | best fitness across ACTIVE evolutions (reads low while climbing) |
+| `:sol-kinds` / `:sol-copies` | distinct antibodies known / copies installed |
+
+`:out`, `:in`, and `:deaths` are event-derived, so an external tool can
+account for every unit: at any quiescent moment,
+`units == initial + in − out − deaths`, and a surplus equals landings
+whose confirms were lost (documented fail-toward-duplication).
+
+**`RECRUITS-SEXP`** — the recruit ledger, one
+`(recruit-slot :id … :seq … :holder … :state pending|unplaced|ok|err …)`
+per slot, with `:reassigned`/`:resets` attempt accounting and, when
+settled, the full result or `:kind`/`:msg` failure.
+
+**Soak report lines** — see [docs/validation.md](validation.md).
+
 ## Swarm Mode
 
 ```

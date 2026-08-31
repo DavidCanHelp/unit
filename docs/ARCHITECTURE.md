@@ -236,10 +236,13 @@ The two-tier work deliberately stops at "the WASM model's strengths,
 native, with bounded-k gossip between hosts." Several pieces that fit
 naturally into this architecture are not built yet:
 
-- **Scheduler fairness for in-process units.** Today every host evals
-  serially and one slow unit blocks its siblings. A cooperative
-  scheduler with per-unit time slicing, or true async eval with a
-  yieldable VM, would address this. Either is a substantial project.
+- **Scheduler fairness for in-process units.** Partially shipped: the
+  node tick runs LIVE under a per-tick budget (at most
+  `LIVE_BUDGET_PER_TICK` units inside a `LIVE_TICK_BUDGET_MS` wall-clock
+  slice, rotating so every unit evolves in turn) — tick latency no longer
+  scales with population. What remains open is PREEMPTION: a unit that is
+  slow *mid-eval* still blocks the slice until its step budget or
+  deadline fires, because the VM has no yield points.
 - **Async eval.** The Forth VM has no yield points. Adding them — for
   network I/O, for sibling messaging, for time slicing — is a VM-level
   change with implications for every Forth word that already exists.

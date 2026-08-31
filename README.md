@@ -255,7 +255,7 @@ testing could never expose. See
 [docs/self-replication.md](docs/self-replication.md#multi-machine-validation-v030).
 
 The single-host bench tops out around 10 000 aggregate units on loopback; the
-remaining walls (in-process scheduler fairness, async eval) are explicit in
+remaining walls (mid-eval preemption, async eval) are explicit in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Architecture
@@ -291,7 +291,7 @@ domain, so no single file carries the whole surface.
 
 The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 
-470+ Rust tests, 22 Python tests, Go tests. Zero dependencies.
+530+ Rust tests, 22 Python tests, Go tests. Zero dependencies.
 
 ## Documentation
 
@@ -300,6 +300,7 @@ The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 - [docs/operations.md](docs/operations.md) — monitoring, goals, trust, persistence, swarm mode
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — two-tier deployment design rationale and bench results
 - [docs/signaling.md](docs/signaling.md) — inter-unit signaling design (v0.28)
+- [docs/validation.md](docs/validation.md) — the adversarial harnesses: Docker wedge drills S1–S8 (partitions, blackholes, cgroup pressure, netem) and the long-lived evolution soak
 - [docs/self-replication.md](docs/self-replication.md) — resource-aware self-replication: the 80% ceiling, emergent local rule, confirm-before-release transport, sufficient-first placement (v0.29)
 
 ## Binary Sizes

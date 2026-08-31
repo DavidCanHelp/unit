@@ -50,7 +50,7 @@ formatting gate to satisfy.
 
 Branch from `main`. Keep PRs focused — one concern per PR is easier to
 review than five. Add a test where it makes sense; the existing suite
-(`cargo test`, ~470 Rust tests) is the safety net. Run `just ci` before
+(`cargo test`, 530+ Rust tests) is the safety net. Run `just ci` before
 opening the PR.
 
 A few area-specific notes:
