@@ -53,6 +53,7 @@ impl VM {
         // `take` both stashes any outer fault and resets to None for this run,
         // so a fault from a prior evaluation cannot leak into this result.
         let saved_fault = self.fault.take();
+        let saved_step_budget = self.step_budget;
 
         // Set up sandbox.
         self.stack = Vec::with_capacity(256);
@@ -96,6 +97,7 @@ impl VM {
         self.timed_out = saved_timed_out;
         self.sandbox_active = saved_sandbox;
         self.fault = saved_fault;
+        self.step_budget = saved_step_budget;
         self.running = true; // task execution must not kill the unit
 
         goals::TaskResult {

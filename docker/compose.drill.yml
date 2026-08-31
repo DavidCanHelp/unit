@@ -180,3 +180,39 @@ services:
       <<: *node-env
       DRILL_NAME: e5
       DRILL_ARGS: --multi-unit 20 --port 4200 --peers e1:4200 --gossip-k 8
+
+  # --- Soak: long-lived evolution colony (docker/soak.sh) -----------------
+  # Three balanced nodes with mild pressure (~50% at boot): room for GP
+  # state to grow, occasional pressure-driven migration, and hours of
+  # uninterrupted evolution. The chronicle lines are the record; soak.sh
+  # report turns them into an adaptation-vs-churn verdict.
+  s1:
+    <<: *node
+    hostname: s1
+    profiles: [soak]
+    mem_limit: 128m
+    memswap_limit: 128m
+    environment:
+      <<: *node-env
+      DRILL_NAME: s1
+      DRILL_ARGS: --multi-unit 300 --port 4200 --peers s2:4200,s3:4200 --gossip-k 8
+  s2:
+    <<: *node
+    hostname: s2
+    profiles: [soak]
+    mem_limit: 128m
+    memswap_limit: 128m
+    environment:
+      <<: *node-env
+      DRILL_NAME: s2
+      DRILL_ARGS: --multi-unit 300 --port 4200 --peers s1:4200,s3:4200 --gossip-k 8
+  s3:
+    <<: *node
+    hostname: s3
+    profiles: [soak]
+    mem_limit: 128m
+    memswap_limit: 128m
+    environment:
+      <<: *node-env
+      DRILL_NAME: s3
+      DRILL_ARGS: --multi-unit 300 --port 4200 --peers s1:4200,s2:4200 --gossip-k 8

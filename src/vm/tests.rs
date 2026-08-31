@@ -2607,3 +2607,95 @@ fn test_fail_closed_expiry_resend_is_idempotent_on_late_reply() {
         crate::sexp::ResultView::Ok { value: vec![5], output: String::new() }
     );
 }
+
+#[test]
+fn test_gp_evolve_default_challenge_installs_solution() {
+    // The ladder's first rung: a fresh VM with an EMPTY challenge registry
+    // must register the default challenge before evolving it, so winning it
+    // actually counts — mark_solved fires, SOL-FIB10 installs, and the
+    // landscape can generate harder challenges. Before this, the off-registry
+    // fallback won silently every idle tick, forever (soak finding: 12 min,
+    // 900 units, zero solves).
+    let mut vm = test_vm();
+    assert!(vm.challenge_registry.challenges.is_empty(), "fresh registry");
+    let out = eval(&mut vm, "GP-EVOLVE");
+    assert!(out.contains("WINNER"), "seed program wins in gen 0: {out}");
+    assert!(
+        vm.find_word("SOL-FIB10").is_some(),
+        "solution must install as an antibody"
+    );
+    assert!(
+        vm.challenge_registry
+            .challenges
+            .values()
+            .any(|c| c.solved),
+        "challenge marked solved in the registry"
+    );
+}
+
+#[test]
+fn test_solving_default_challenge_generates_next_rung() {
+    // The ladder must CONTINUE: solving fib10 should make the landscape
+    // register at least one harder unsolved challenge, so the colony's
+    // next idle tick has somewhere to climb. (Soak finding: kinds froze at
+    // 1 — every unit owned SOL-FIB10 and nothing came after.)
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "GP-EVOLVE");
+    assert!(out.contains("WINNER"), "{out}");
+    let unsolved = vm.challenge_registry.get_unsolved().len();
+    let total = vm.challenge_registry.challenges.len();
+    assert!(
+        unsolved > 0,
+        "after the first solve the registry must hold a next rung \
+         (total={total}, unsolved={unsolved}): output was {out}"
+    );
+}
+
+#[test]
+fn test_gp_evolve_moves_to_next_rung_after_winning() {
+    // After a win, the next GP-EVOLVE must attack the NEXT unsolved
+    // challenge — a finished evolution state used to persist and turn every
+    // later call into a no-op (fitness pinned at the first win forever).
+    let mut vm = test_vm();
+    let out = eval(&mut vm, "GP-EVOLVE");
+    assert!(out.contains("WINNER"), "{out}");
+    let first = vm.evolution.as_ref().unwrap().challenge.name.clone();
+    assert_eq!(first, "fib10");
+    eval(&mut vm, "GP-EVOLVE");
+    let second = vm.evolution.as_ref().unwrap().challenge.name.clone();
+    assert_ne!(
+        second, "fib10",
+        "second call must re-initialize onto a new rung, got {second}"
+    );
+}
+
+#[test]
+fn test_step_budget_bounds_runaway_candidate_eval() {
+    // FitnessChallenge.max_steps must be ENFORCED: before, it was
+    // decorative and a looping candidate ran to the 10s sandbox wall clock
+    // (one bad mutant per generation stalled a colony's whole tick).
+    let mut vm = test_vm();
+    vm.step_budget = Some(10_000);
+    let r = vm.execute_sandbox("55 0 DO 55 0 DO 55 0 DO I DROP LOOP LOOP LOOP .");
+    assert!(!r.success, "a >10k-step candidate must time out by budget");
+    // The budget is restored by the sandbox, and normal evals still work.
+    vm.step_budget = None;
+    let ok = vm.execute_sandbox("2 3 + .");
+    assert!(ok.success, "unbudgeted eval unaffected: {:?}", ok.output);
+}
+
+#[test]
+fn test_gp_evolve_generations_are_step_bounded() {
+    // Wall-time regression guard for the whole class: two GP-EVOLVE calls
+    // (a win plus ten full generations against the next rung) must complete
+    // in seconds, not 10s-per-pathological-candidate.
+    let start = std::time::Instant::now();
+    let mut vm = test_vm();
+    eval(&mut vm, "GP-EVOLVE");
+    eval(&mut vm, "GP-EVOLVE");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "two GP-EVOLVE calls took {elapsed:?} — step budget not enforced?"
+    );
+}

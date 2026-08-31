@@ -3,6 +3,72 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The evolutionary ladder actually climbs now — three churn mechanisms
+  found by the new soak harness, all fixed.** The core thesis (colony life
+  produces adaptation, not churn) had no long-run evidence; the first soak
+  said CHURN and gave reasons:
+  1. **The default challenge lived outside the registry.** A fresh unit's
+     GP fell back to an off-registry fib10; it WON every idle tick (fitness
+     890 = the correct 11-token seed), but the whole winner path hides
+     behind `active_challenge` — nothing installed, no landscape, and the
+     next tick re-ran the same fallback forever. The default is now
+     registered first, so the first win lays the ladder's first rung
+     (SOL-FIB10 installs, the landscape generates fib15 / fib10-short9 /
+     square-55 / an evolved rung).
+  2. **A finished evolution state blocked re-initialization.** After a win,
+     `evolution` stayed `Some(running=false)`, so every later GP-EVOLVE
+     broke out immediately — a unit's evolutionary life was a permanent
+     no-op after its first success. Finished states are now reaped so the
+     next call takes the next unsolved rung.
+  3. **`FitnessChallenge.max_steps` was decorative.** Nothing enforced it:
+     an evolved looping candidate ran to the 10s sandbox wall clock — four
+     orders of magnitude over budget; one bad mutant per generation cost
+     10s (measured: 10.24s for a single GP-EVOLVE call; 47-second node
+     ticks). Candidate evaluation now sets a hard VM step budget consumed
+     in `execute_body` (exhaustion = timeout); two full GP-EVOLVE calls
+     dropped to 0.24s and the whole test suite got 3× faster.
+
+### Added
+
+- **Per-tick LIVE budget with a wall-clock time box.** Unbudgeted, every
+  idle unit evolved serially inside one tick; with real work on every unit
+  a 300-unit node's tick ballooned to ~47s, degrading supervision and
+  transport cadence 47×. At most `LIVE_BUDGET_PER_TICK` (16) units run per
+  tick within a `LIVE_TICK_BUDGET_MS` (250ms) slice, rotating so every
+  unit evolves in turn — tick latency stays a tick regardless of
+  population or per-unit cost.
+
+- **`docker/soak.sh` — the long-lived evolution harness.** `up` starts a
+  balanced three-node colony (900 units), `report` (anytime) turns the
+  chronicle into `(soak-node …)` / `(soak-colony … :verdict
+  adaptive|partial|churn)` / `(soak-conservation …)` lines under stated
+  evidence rules, `down` cleans up. Twelve-minute rounds drove all three
+  fixes above; conservation self-audits exactly (900/900, out == in).
+
+- **Drill S8 truth-aligned to the discovered dynamics.** With the colony
+  genuinely alive, landed units GROW (evolution state), so a static
+  equilibrium — everyone under the wall, shedding quiescent — does not
+  exist; the wall is an ATTRACTOR with self-correcting transients. S8 now
+  asserts what is true: every survivor keeps ticking under sustained
+  pressure, any wall breach self-corrects (receiver alive and responding),
+  and conservation holds with a traffic-scaled duplication bound. The
+  static-equilibrium claim is retired to the open-problems list alongside
+  its cause: **per-unit memory growth is unbounded** — the next honest
+  target.
+
+- **Chronicle carries evolution observables** (from 0.38.0's line): `:fit`
+  now honestly reflects the ACTIVE frontier (a grinding colony reads low
+  current fitness with a preserved peak), and `:sol-kinds`/`:sol-copies`
+  separate what the colony knows from how far it spread. Soak round 6:
+  copies saturate the colony while kinds hold at 1 — the remaining churn is
+  a measured SEARCH-CAPACITY limit of the GP (vocabulary/operators/seeding
+  could not find even the 2-token `55 .` for fib10-short9 in ~20k
+  generations), not broken machinery.
+
 ## [0.38.0] - 2026-08-31
 
 ### Fixed

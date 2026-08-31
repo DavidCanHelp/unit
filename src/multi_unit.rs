@@ -515,7 +515,31 @@ pub struct MultiUnitNode {
     /// Antibody words absorbed from remote death-cries during the most
     /// recent `drain_and_dispatch` (read by `tick` into its report).
     pub scavenged_last_drain: usize,
+    /// Round-robin cursor for the per-tick LIVE budget (see
+    /// [`LIVE_BUDGET_PER_TICK`]).
+    live_cursor: usize,
 }
+
+/// How many idle units run their LIVE word per tick. Unbudgeted, every idle
+/// unit evolved serially inside one tick: once evolution had real work on
+/// every unit (the post-win no-op fix), a 300-unit node's tick cost
+/// exploded from ~1s to minutes — starving supervision, transport cadence,
+/// and the chronicle itself (soak finding #3: one status line in 700s).
+/// Time-slicing is host physics, not policy: the budget bounds tick
+/// latency, the rotating cursor guarantees every unit still evolves in
+/// turn, and colony-wide evolutionary throughput becomes a measurable
+/// budget×tick-rate instead of an accident of population size.
+pub const LIVE_BUDGET_PER_TICK: usize = 16;
+
+/// Wall-clock budget for the tick's LIVE pass. The unit-count budget alone
+/// still let ticks balloon when every unit had REAL evolutionary work
+/// (soak round 4: 16 units × ~3s of post-win GP = 47s ticks — supervision
+/// and transport cadence degraded 47×). Time is the resource the tick loop
+/// actually spends, so time is what the budget bounds: rotate until the
+/// slice is spent (always at least one unit), and evolution throughput
+/// becomes whatever fits in the slice — cheap LIVEs run many units per
+/// tick, expensive ones few, and the tick stays a tick.
+pub const LIVE_TICK_BUDGET_MS: u64 = 250;
 
 /// Harvest a unit's immune memory: its `SOL-*` antibody words (name +
 /// re-evaluable decompiled source), the inheritance a dying unit leaves
@@ -562,6 +586,7 @@ impl MultiUnitNode {
             mesh,
             rng: crate::features::mutation::SimpleRng::new(rng_seed),
             scavenged_last_drain: 0,
+            live_cursor: 0,
         })
     }
 
@@ -779,7 +804,20 @@ impl MultiUnitNode {
         //    runaway LIVE starve instead of hanging the host; a unit
         //    without LIVE idles.
         let mut evolved_units = 0;
-        for i in 0..self.host.units.len() {
+        let budget = LIVE_BUDGET_PER_TICK.min(self.host.units.len());
+        let live_deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(LIVE_TICK_BUDGET_MS);
+        for _ in 0..budget {
+            if self.host.units.is_empty() {
+                break;
+            }
+            // Time box: the count budget is the deterministic ceiling, the
+            // wall clock the real one. At least one unit always lives.
+            if evolved_units > 0 && std::time::Instant::now() >= live_deadline {
+                break;
+            }
+            let i = self.live_cursor % self.host.units.len();
+            self.live_cursor = self.live_cursor.wrapping_add(1);
             if !self.host.units[i].busy {
                 self.host.units[i].busy = true;
                 if self.host.units[i].vm.find_word("LIVE").is_some() {
@@ -1242,13 +1280,15 @@ mod bridge_tests {
         let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
         a.spawn_n(1);
 
-        // Seed a finished GP run with a known best. running=false and
-        // generation at max so the tick's GP-EVOLVE pass is a no-op and
-        // can't improve on the seeded value.
-        let mut evo = crate::evolve::EvolutionState::new(crate::evolve::fib10_challenge(), 50);
-        evo.generation = 50;
+        // Seed an UNFINISHED GP run (a finished one is now reaped so the
+        // next tick can take the next rung — the post-win no-op fix) with an
+        // unbeatable best, so the tick's LIVE pass continues it but cannot
+        // change the max the report must surface.
+        let mut evo = crate::evolve::EvolutionState::new(crate::evolve::fib10_challenge(), 5000);
+        evo.running = true;
+        evo.generation = 1;
         let mut best = crate::evolve::Candidate::new("0 1 10 0 DO OVER + SWAP LOOP DROP .");
-        best.fitness = 432.0;
+        best.fitness = 5432.0;
         evo.best = Some(best);
         a.host.units[0].vm.evolution = Some(evo);
         // The mesh ledger stays at 0 — the old code would report 0 here.
@@ -1256,7 +1296,7 @@ mod bridge_tests {
 
         let report = a.tick(&under_ceiling_reading(), never_transport);
         assert_eq!(
-            report.best_fitness, 432,
+            report.best_fitness, 5432,
             "report must surface evolution.best.fitness, not fitness.score"
         );
     }
@@ -1963,5 +2003,41 @@ mod sol_stats_tests {
         let (kinds, copies) = h.sol_stats();
         assert_eq!(kinds, 2, "two distinct antibodies known");
         assert_eq!(copies, 3, "three installed copies across the colony");
+    }
+}
+
+#[cfg(test)]
+mod live_budget_tests {
+    use super::*;
+
+    #[test]
+    fn test_live_budget_bounds_per_tick_and_rotates() {
+        // Tick latency must not scale with population: at most
+        // LIVE_BUDGET_PER_TICK units run LIVE per tick, and the cursor
+        // rotates so every unit gets its turn across consecutive ticks.
+        let n = LIVE_BUDGET_PER_TICK * 2;
+        let mut node = MultiUnitNode::new(n * 2, None, vec![]).unwrap();
+        node.spawn_n(n);
+        // Mark each unit so we can see who lived: LIVE pushes its index.
+        for (i, slot) in node.host.units.iter_mut().enumerate() {
+            slot.vm.eval(&format!(": LIVE {} ;", i));
+        }
+        let r1 = node.tick(&crate::resources::HostResources::unavailable(), |_, _| {
+            Err(crate::transport::TransportError::Refused)
+        });
+        assert_eq!(r1.evolved_units, LIVE_BUDGET_PER_TICK, "budget per tick");
+        let r2 = node.tick(&crate::resources::HostResources::unavailable(), |_, _| {
+            Err(crate::transport::TransportError::Refused)
+        });
+        assert_eq!(r2.evolved_units, LIVE_BUDGET_PER_TICK);
+        // Rotation: after two ticks, EVERY unit lived exactly once (its
+        // index sits on its stack).
+        for (i, slot) in node.host.units.iter().enumerate() {
+            assert_eq!(
+                slot.vm.stack_top(),
+                Some(i as i64),
+                "unit {i} must have lived exactly once across the rotation"
+            );
+        }
     }
 }

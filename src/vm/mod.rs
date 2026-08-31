@@ -373,6 +373,16 @@ pub struct VM {
     /// EVAL", deeply nested calls) so a recursion bomb is a clean error
     /// instead of an uncatchable stack-overflow abort.
     body_depth: usize,
+    /// Hard VM-step budget for the CURRENT evaluation, consumed by
+    /// `execute_body`. `None` = unbounded (normal operation; the metabolic
+    /// meter and sandbox wall-clock deadline still apply). GP candidate
+    /// evaluation sets it to the challenge's `max_steps`: before this, that
+    /// field was DECORATIVE — nothing enforced it, so an evolved looping
+    /// candidate ran until the 10s sandbox wall clock, four orders of
+    /// magnitude over budget, and one bad candidate per generation stalled
+    /// a colony's whole tick (soak finding: 10.24s for a single
+    /// GP-EVOLVE call; 47-second node ticks).
+    pub step_budget: Option<u64>,
     /// `interpret_line` re-entrancy count: `halted` clears only at the true
     /// top level, so EVAL"-style nested lines can't wipe an active halt.
     interp_nesting: u32,
@@ -497,6 +507,7 @@ impl VM {
             deadline: None,
             timed_out: false,
             step_meter: 0,
+            step_budget: None,
             halted: false,
             body_depth: 0,
             interp_nesting: 0,
@@ -1030,6 +1041,15 @@ impl VM {
             // when the unit can no longer pay, execution halts — a runaway
             // loop starves to death instead of hanging the organism.
             self.step_meter += 1;
+            // Hard per-evaluation step budget (GP candidates): exhausting it
+            // is a timeout, reusing the existing abort path.
+            if let Some(b) = self.step_budget {
+                if b == 0 {
+                    self.timed_out = true;
+                    return;
+                }
+                self.step_budget = Some(b - 1);
+            }
             if self.step_meter >= Self::STEPS_PER_ENERGY {
                 self.step_meter = 0;
                 if self.deadline.is_none()

@@ -12,9 +12,10 @@ impl VM {
 
     pub(crate) fn evaluate_population(&mut self) {
         // Extract programs and target to avoid borrow conflicts with execute_sandbox.
-        let (target, programs) = match self.evolution.as_ref() {
+        let (target, max_steps, programs) = match self.evolution.as_ref() {
             Some(evo) => (
                 evo.challenge.target_output.clone(),
+                evo.challenge.max_steps,
                 evo.population
                     .iter()
                     .map(|c| c.program.clone())
@@ -23,10 +24,15 @@ impl VM {
             None => return,
         };
 
-        // Evaluate each candidate in the sandbox.
+        // Evaluate each candidate in the sandbox UNDER THE CHALLENGE'S STEP
+        // BUDGET. max_steps was decorative before — nothing enforced it, so
+        // a looping candidate ran to the 10s wall clock and one bad mutant
+        // per generation stalled the colony's tick.
         let mut scores = Vec::with_capacity(programs.len());
         for prog in &programs {
+            self.step_budget = Some(max_steps.max(1) as u64);
             let result = self.execute_sandbox(prog);
+            self.step_budget = None;
             let tc = evolve::tokenize(prog).len();
             scores.push(evolve::score_candidate(
                 &result.output,
@@ -49,9 +55,47 @@ impl VM {
     }
 
     pub(crate) fn prim_gp_evolve(&mut self) {
+        // A FINISHED evolution state (won, or generation cap hit) must not
+        // block re-initialization: it used to persist as `Some` with
+        // `running=false`, so every later GP-EVOLVE broke out of the batch
+        // loop immediately — after its first win a unit's evolutionary life
+        // was a permanent no-op (soak finding #2: fitness pinned at 890,
+        // antibody kinds frozen at 1 across 665 ticks of idle GP). Clearing
+        // it lets the next call take the NEXT unsolved rung from the
+        // registry, so the ladder is actually climbed.
+        let finished = self
+            .evolution
+            .as_ref()
+            .is_some_and(|e| !e.running || e.generation >= e.max_generations);
+        if finished {
+            self.evolution = None;
+        }
         // Initialize if not running.
         if self.evolution.is_none() {
-            // Try to pick from challenge registry first.
+            // Try to pick from challenge registry first. If the registry is
+            // empty, REGISTER the default challenge before running it: the
+            // whole winner path (mark_solved, SOL-* install, niche update,
+            // landscape generation) hides behind `active_challenge`, so an
+            // off-registry fallback used to WIN SILENTLY — nothing installed,
+            // `running=false`, and the next idle tick re-initialized the same
+            // fallback. A fresh node-mode colony churned at fitness 890
+            // forever without ever laying the ladder's first rung (found by
+            // the soak harness: 12 minutes, 900 units, sol-kinds 0).
+            if self.challenge_registry.get_unsolved().is_empty()
+                && self.challenge_registry.challenges.is_empty()
+            {
+                let fc = evolve::fib10_challenge();
+                let my = self.node_id_cache.unwrap_or([0; 8]);
+                self.challenge_registry.register_discovered(
+                    &fc.name,
+                    "default seed challenge",
+                    &fc.target_output,
+                    None,
+                    fc.seed_programs.clone(),
+                    my,
+                    100,
+                );
+            }
             let challenge = if let Some(ch_id) = self.challenge_registry.next_unsolved() {
                 if let Some(mut fc) = self.challenge_registry.to_fitness_challenge(ch_id) {
                     // Apply environment modifiers.
