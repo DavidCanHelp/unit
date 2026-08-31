@@ -7,6 +7,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A healed partition is no longer permanent: seed peers are durable
+  re-contact targets.** Peer-table entries — including the tentative
+  entries `--peers`/`UNIT_PEERS` seeds start as — are evicted after 15s of
+  silence, and heartbeats targeted only the live table. A partition
+  outlasting the timeout on BOTH sides therefore emptied both tables and
+  left no one heartbeating anyone: after the network healed, the mesh
+  could never re-merge (permanent split-brain until restart). Found by
+  the drill's new S7 partition scenario on CI, whose slower timing pushed
+  the partition past both evictions. The original seed addresses are now
+  retained for the mesh's lifetime and joined into every heartbeat's
+  delivery targets (deduped; config-scale, so bounded-k stays bounded) —
+  a node never forgets where home was, and a healed partition re-merges
+  within one heartbeat interval. Unit-tested (empty-table targets = the
+  seeds) and proven end-to-end by S7's post-heal round-trip.
+
 - **A lost recruit datagram no longer guarantees abandonment.** Recruits are
   single UDP datagrams; if the one delivery to a chosen worker was lost (the
   Docker drill caught a just-booted worker missing it), the wedged-holder

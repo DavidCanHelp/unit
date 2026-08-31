@@ -424,6 +424,17 @@ pub(crate) struct MeshState {
     pub(crate) children_ids: Vec<NodeId>,
     // --- S-expression messages ---
     pub(crate) sexp_inbox: VecDeque<String>,
+    /// The ORIGINAL --peers/UNIT_PEERS seed addresses, retained for the
+    /// mesh's lifetime. Regular peer entries are evicted after PEER_TIMEOUT
+    /// (15s) of silence — including the tentative entries seeds start as —
+    /// and heartbeats target only the live table. A network partition
+    /// outlasting the timeout on BOTH sides therefore emptied both tables
+    /// and left no one heartbeating anyone: the mesh could never re-merge
+    /// after the heal (permanent split-brain, found by the Docker drill's
+    /// S7 partition scenario). Seeds are the durable re-contact list: every
+    /// heartbeat also goes to them, so a healed partition re-merges within
+    /// one heartbeat interval.
+    pub(crate) seed_addrs: Vec<SocketAddr>,
 }
 
 /// A word definition received from a peer.
@@ -653,6 +664,11 @@ impl MeshNode {
             parent_id: None,
             children_ids: Vec::new(),
             sexp_inbox: VecDeque::new(),
+            seed_addrs: seed_peers
+                .iter()
+                .filter(|a| !is_self_addr(a, local_port))
+                .copied()
+                .collect(),
         }));
 
         // Add seed peers as tentative entries so the first heartbeat reaches them.
@@ -1854,6 +1870,23 @@ fn network_thread(socket: UdpSocket, state: Arc<Mutex<MeshState>>, my_id: NodeId
     }
 }
 
+/// Heartbeat targets = the live-table delivery sample plus every retained
+/// seed address (deduped). Pure so the re-merge guarantee is unit-testable:
+/// with an EMPTY table (both sides of a partition past PEER_TIMEOUT), the
+/// seeds alone keep the beat going — the property whose absence made a
+/// healed partition permanent.
+fn merge_seed_targets(
+    mut delivery: Vec<SocketAddr>,
+    seeds: &[SocketAddr],
+) -> Vec<SocketAddr> {
+    for s in seeds {
+        if !delivery.contains(s) {
+            delivery.push(*s);
+        }
+    }
+    delivery
+}
+
 fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &NodeId) {
     // Fresh resource measurement per beat (outside the lock — it reads /proc).
     // Applied below only while auto_headroom holds; an explicit set_headroom
@@ -1892,7 +1925,11 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
     if fanout.is_some() {
         st.gossip_rng = rng_state;
     }
+    let seed_addrs = st.seed_addrs.clone();
     drop(st);
+    // Seeds are durable re-contact targets on EVERY beat (deduped; a config-
+    // scale list, so bounded-k stays bounded). See `MeshState::seed_addrs`.
+    let delivery_addrs = merge_seed_targets(delivery_addrs, &seed_addrs);
 
     let mut buf = Vec::with_capacity(HEADER_SIZE + 19 + gossip_addrs.len() * 6);
     encode_header(&mut buf, MSG_HEARTBEAT, my_id, port);
@@ -3570,5 +3607,38 @@ mod reservoir_tests {
             mean,
             expected
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_heartbeat_targets_always_include_seeds() {
+        // The split-brain re-merge guarantee: with an EMPTY live table
+        // (both sides of a partition past PEER_TIMEOUT), the retained seeds
+        // alone keep the beat going. Before this, a healed partition was
+        // permanent — nobody heartbeated anybody (drill S7 finding).
+        let seed_a: SocketAddr = "10.0.0.1:4200".parse().unwrap();
+        let seed_b: SocketAddr = "10.0.0.2:4200".parse().unwrap();
+        let table_peer: SocketAddr = "10.0.0.3:4200".parse().unwrap();
+
+        // Empty table: seeds are the entire target list.
+        assert_eq!(
+            merge_seed_targets(vec![], &[seed_a, seed_b]),
+            vec![seed_a, seed_b]
+        );
+        // Live table: seeds append, deduped against table entries.
+        assert_eq!(
+            merge_seed_targets(vec![table_peer, seed_a], &[seed_a, seed_b]),
+            vec![table_peer, seed_a, seed_b]
+        );
+        // No seeds (a pure-discovery node): unchanged.
+        assert_eq!(merge_seed_targets(vec![table_peer], &[]), vec![table_peer]);
     }
 }
