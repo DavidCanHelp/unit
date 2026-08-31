@@ -1,36 +1,52 @@
 # unit — Operations Guide
 
-## Monitoring & Alerting
+## Monitoring
+
+A unit can watch things and react. Watch ids are pushed on the stack and
+shown in the creation line:
 
 ```
-> 10 WATCH" http://myapp:8080/health"
+> 10 WATCH" http://localhost:9999/health"
 watch #1 created (every 10s)
-
-> 1 ON-ALERT" ." service down!" CR"
-alert handler set for watch #1
-
+ALERT [CRIT] watch #1: connect localhost:9999: Connection refused
+> WATCHES
+  #1 [DOWN] url:http://localhost:9999/health (0ms) connect ... checked 0s ago
 > HEAL
---- heal cycle ---
-  running handler for alert #2
-  service down!
---- heal done ---
+--- heal ---
+--- done ---
 ```
 
-Use `WATCHES` to list active watches, `UNWATCH` to remove them, `WATCH-LOG` for history.
-`DASHBOARD` gives an overview. `HEALTH` and `OPS` summarize system status.
+`ON-ALERT"` stores a Forth handler for an alert. The handler text is read
+up to the next `"`, so it cannot itself contain `."` strings — keep
+handlers to plain words (define a helper word first if you need output):
+
+```
+> : NOTIFY 911 . CR ;
+> 1 ON-ALERT" NOTIFY"
+```
+
+`DASHBOARD` summarizes:
+
+```
+> DASHBOARD
+=== UNIT OPS ===
+watches: 1  alerts: 1
+peers: 0  fitness: 0
+goals: 0 / 0 / 0 / 0 / 0
+---
+```
+
+`HEALTH` is `( -- score )` — it pushes a numeric health score rather than
+printing. `OPS` prints the operational summary.
 
 ## Goals & Task Decomposition
 
 Humans set direction, the mesh navigates.
 
 ```
-> 5 GOAL{ 6 7 * }
-goal #101 created [exec]: 6 7 *
-[auto] stack: 42
-
-> DASHBOARD
---- dashboard ---
-watches: 0  alerts: 0  peers: 1  fitness: 30
+> 5 GOAL{ 6 7 * }        \ pushes the new goal id
+> AUTO-CLAIM             \ off by default; enables auto-execution
+auto-claim: ON
 ```
 
 Task decomposition: `SUBTASK{`, `FORK`, `RESULTS`, `REDUCE"`, `PROGRESS`.
@@ -43,7 +59,8 @@ S-expressions. Collect results. Assemble the answer.
 ```
 > DIST-GOAL{ 99 99 * . | 77 77 * . | 55 55 * . }
 9801 5929 3025
-(distributed 3 sub-goals, 1 local, 2 remote)
+dist-goal #1: 3 sub-goals distributed (1 local, 2 remote)
+waiting for results... type DIST-STATUS to check
 ```
 
 Round-robin across local + peers. If a peer doesn't respond within
@@ -88,7 +105,9 @@ resurrected from snapshot
 343  ok
 ```
 
-The genome is hand-editable, and it parses as a mesh expression:
+The genome is hand-editable and parses as a mesh expression (sample
+abridged — the full file also carries timestamp, energy, landscape,
+mutation-stats, and memory fields; missing keys default on load):
 
 ```lisp
 (unit-snapshot :version 2
@@ -128,7 +147,8 @@ account for every unit: at any quiescent moment,
 `units == initial + in − out − deaths`, and a surplus equals landings
 whose confirms were lost (documented fail-toward-duplication).
 
-**`RECRUITS-SEXP`** — the recruit ledger, one
+**`RECRUITS-SEXP`** — the recruit ledger: a `(recruit-slots :count N)`
+header, then one
 `(recruit-slot :id … :seq … :holder … :state pending|unplaced|ok|err …)`
 per slot, with `:reassigned`/`:resets` attempt accounting and, when
 settled, the full result or `:kind`/`:msg` failure.
@@ -143,13 +163,15 @@ swarm mode active
 ```
 
 One command enables: auto-discovery, word sharing, autonomous
-spawn/cull, fitness-driven evolution. Define a word on one unit,
+spawning, and open trust (`AUTO-DISCOVER AUTO-SHARE AUTO-SPAWN
+TRUST-ALL`). Culling stays opt-in via `AUTO-CULL`; evolution runs via
+the LIVE loop / `AUTO-EVOLVE`, not this switch. Define a word on one unit,
 it appears on the other:
 
 ```
 # Unit A:
 > : CUBE DUP DUP * * ;
-> SHARE" CUBE"
+> SHARE" CUBE"                \ transmits the real decompiled source
 
 # Unit B:
 > 3 CUBE .

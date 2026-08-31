@@ -1663,8 +1663,17 @@ impl VM {
                     if peers.is_empty() {
                         self.emit_str("no peers available for mating\n");
                     } else {
-                        let selected =
-                            crate::reproduction::select_mate(&peers, &mut self.rng);
+                        // Inbox-weighted selection (COURT: a peer that
+                        // broadcast its fitness via SAY! gets weighted into
+                        // the tournament). select_mate_signaled existed and
+                        // was tested but this call site was never swapped —
+                        // README documented behavior the code didn't have
+                        // (found by the docs audit).
+                        let selected = crate::reproduction::select_mate_signaled(
+                            &peers,
+                            &self.inbox,
+                            &mut self.rng,
+                        );
                         if let Some(mate_id) = selected {
                             let my_id = self.node_id_cache.unwrap_or([0; 8]);
                             let my_fitness = self.fitness.score;

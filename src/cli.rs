@@ -38,11 +38,10 @@ pub(crate) fn print_help() {
     println!("                             all-to-all and bounded-k gossip modes.");
     println!("  --gossip-k K               Use bounded random gossip with fan-out K");
     println!("                             on the live mesh (default: all-to-all).");
-    println!("  --multi-unit N             Spawn N units in a single process (no fork,");
-    println!("                             no UDP). Combine with --port and --peers to");
-    println!("                             also participate in the mesh as one peer");
-    println!("                             process advertising N units. Runs a smoke");
-    println!("                             demo and exits.");
+    println!("  --multi-unit N             Spawn N units in a single process. Alone:");
+    println!("                             runs a smoke demo and exits. With --port P:");
+    println!("                             launches the persistent resource-aware node");
+    println!("                             (mesh peer, ticking, transport) until killed.");
     println!("  --bench-two-tier [CONFIGS] Two-tier scaling bench. CONFIGS is a comma-");
     println!("                             separated list of MxN pairs (e.g.");
     println!("                             10x10,100x100). Default:");

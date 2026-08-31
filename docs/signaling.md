@@ -17,7 +17,29 @@ of that substrate.
 
 # Inter-unit signaling
 
-**Status:** design doc for v0.28. No implementation in this PR.
+> **Status: historical design document (v0.28).** The design shipped, and
+> the as-built system diverges in ways this document predates. The
+> current truth lives in [words.md](words.md) (Signaling section),
+> [operations.md](operations.md), and the code. Key divergences:
+>
+> - **Six** words shipped, not five: `SAY!` `LISTEN` `INBOX?` `MARK!`
+>   `SENSE` and later **`GIVE`** (energy gift routing — a real behavior
+>   change this doc never describes).
+> - Costs: `SAY!` = **3**, `MARK!` = **5** (not 2/3).
+> - Delivery is **in-process only**: `Direct` signals go to host siblings
+>   via `route_signals_from`; there is no wire/PeerTable path, and a lone
+>   legacy VM's signals are drained and dropped.
+> - The environmental field is `HashMap<NicheCategory, f64>` owned only by
+>   `MultiUnitHost` (native-only); `MARK!` **sums then maxes against the
+>   new value** — no clamp, no overwrite rule as described below.
+> - Mate selection uses `select_mate_signaled(peers, inbox, rng)` (wired
+>   at the live `MATE` path since v0.40), not a `gather_mate_signals`
+>   helper.
+> - The words live in `src/vm/mod.rs`; signals are tagged
+>   (`SignalKind::{Direct, Environmental, EnergyGift}`), answering §"open
+>   questions" affirmatively; the WASM `SAY!`→bubble shim exists.
+
+
 **Scope:** add a two-layer signaling substrate that evolved Forth code
 can reach. Wire mate selection through the substrate. Leave honesty
 empirical, not enforced.

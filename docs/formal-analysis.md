@@ -1,5 +1,26 @@
 # Formal Analysis of unit's Evolutionary and Distributed Systems
 
+> **Revision note (v0.39 audit).** This analysis was written against an
+> earlier organism; the following claims are superseded by shipped code
+> and the numbers below have been corrected in place where mechanical:
+>
+> - **Throttling (§3.2):** there is no step-limited throttled state; the
+>   `throttled` flag has no execution consumer. Execution is bounded by
+>   the metabolic meter (1 energy / 10,000 top-level steps; sandboxed GP
+>   evaluation is exempt and bounded by each challenge's enforced
+>   `max_steps`), and *"prevents permanent starvation"* is now false the
+>   other way: a unit pinned at the energy floor for 30 ticks **dies**,
+>   bequeathing its antibodies.
+> - **Third-order evolution (§4.3–4.4):** no longer future work —
+>   `ScoringPopulation` evolves the scorers that judge generators
+>   (`META-DEPTH` shows all three levels).
+> - **Gossip (§5):** heartbeats every **2s** (discovery every 5s), and
+>   bounded-k random gossip (`--gossip-k`) ships; the all-to-all scaling
+>   argument below describes the legacy default only.
+> - **Rewards:** challenge solves earn a flat 100; the per-challenge
+>   `reward` field weights *selection*, not the payout.
+
+
 David Liedle · DavidCanHelp · April 2026
 
 This document characterizes the formal properties of unit's evolutionary
@@ -13,7 +34,7 @@ with artificial life, evolutionary computation, and distributed systems.
 
 ### 1.1 Genetic Programming Engine
 
-Unit's GP engine uses tournament selection (size 3) with elitism (top 5
+Unit's GP engine uses tournament selection (size 4) with elitism (top 5
 preserved per generation) over a population of 50 candidate Forth programs.
 
 **Monotonic best-fitness guarantee.** Because the top 5 candidates are
@@ -102,19 +123,19 @@ semantics, ensuring convergence under arbitrary message reordering.
 ### 2.1 Program Space
 
 The GP engine operates over Forth programs represented as token sequences.
-The vocabulary V consists of 30 tokens: integers 0–10 plus 20, 55;
+The vocabulary V consists of 31 tokens: integers 0–10 plus 20, 55;
 arithmetic operators +, -, *; stack operations DUP, DROP, SWAP, OVER, ROT;
 comparisons <, >, =; control flow IF, THEN, ELSE, DO, LOOP, I; and output
 (the `.` word).
 
 For programs of length L tokens, the search space is:
 
-    |S(L)| = |V|^L = 30^L
+    |S(L)| = |V|^L = 31^L
 
 With a maximum program length of 30 tokens (enforced by crossover
 truncation), the total search space is:
 
-    |S| = Σ(L=1 to 30) 30^L ≈ 30^30 ≈ 2.06 × 10^44
+    |S| = Σ(L=1 to 30) 31^L ≈ 31^30 ≈ 5.6 × 10^44
 
 This is vastly larger than exhaustive search can cover. The GP engine's
 effectiveness depends on the fitness landscape being navigable by local
@@ -349,7 +370,7 @@ programs that generate the problems that other programs evolve to solve.
 This is a qualitative step beyond first-order GP.
 
 **Mechanism.** A generator genome is a Forth program operating over a
-limited vocabulary (integers 0–20, arithmetic +/-/*, stack ops DUP/SWAP/
+limited vocabulary (the set {1, 2, 3, 5, 7, 10, 20}, arithmetic +/-/*, stack ops DUP/SWAP/
 OVER/DROP, and shortcuts 1+/1-/2*/2/). When a challenge is solved, each
 generator in the population of 20 is evaluated: the solved target value
 is pushed onto a simulated stack, the generator program executes, and the

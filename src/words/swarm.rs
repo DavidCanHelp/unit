@@ -33,11 +33,18 @@ impl VM {
     pub(crate) fn prim_share_word(&mut self) {
         let name = self.parse_until('"');
         let upper = name.to_uppercase();
-        // Find the word and reconstruct its source (simplified: use SEE-like decompilation).
+        // Share the REAL decompiled source. This was a stub (`: NAME ;`)
+        // for a long time — the receiving unit compiled an empty word and
+        // the whole word-sharing story was silently fake (found by the
+        // docs audit: the operations.md example could never have worked).
+        // decompile_word is the same re-evaluable form genome snapshots
+        // and death-cries already use.
         if let Some(idx) = self.find_word(&upper) {
-            let _entry = &self.dictionary[idx];
-            // Build a Forth source representation.
-            let source = format!(": {} ;", upper); // simplified — real impl would decompile
+            let source = crate::snapshot::decompile_word(
+                &self.dictionary[idx],
+                &self.dictionary,
+                &self.primitive_names,
+            );
             if let Some(ref m) = self.mesh {
                 m.share_word(&upper, &source);
                 self.emit_str(&format!("shared: {}\n", upper));
@@ -53,7 +60,9 @@ impl VM {
             let mut count = 0;
             for entry in &self.dictionary {
                 if entry.body.len() > 1 && !entry.hidden {
-                    let source = format!(": {} ;", entry.name);
+                    // Real decompiled source, not the historical `: NAME ;` stub.
+                    let source =
+                        crate::snapshot::decompile_word(entry, &self.dictionary, &self.primitive_names);
                     m.share_word(&entry.name, &source);
                     count += 1;
                 }

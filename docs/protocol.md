@@ -22,9 +22,9 @@ Mesh messages are self-describing keyword-argument lists:
 (peer-status :id "aaa" :peers 2 :fitness 10 :load 190 :capacity 100)
 (sub-goal :id 1 :seq 0 :from "aaa" :expr "99 99 *")
 (sub-result :id 1 :seq 0 :from "bbb" :result "9801")
-(evolve-share :gen 100 :fitness 890 :program "0 1 10 0 DO OVER + SWAP LOOP DROP .")
-(challenge-broadcast :id 11273 :name "fib15" :target "610 " :reward 150)
-(solution-broadcast :id 11271 :solution "0 1 10 0 DO OVER + SWAP LOOP DROP ." :solver "aaa")
+(evolve-share :gen 100 :fitness 890 :program "0 1 10 0 DO OVER + SWAP LOOP DROP ." :challenge "fib10")
+(challenge :id 11273 :name "fib15" :desc "..." :target "610 " :reward 150 :seeds ("..."))
+(solution :challenge-id 11271 :program "0 1 10 0 DO OVER + SWAP LOOP DROP ." :solver "aaa")
 ```
 
 ## Mating Protocol

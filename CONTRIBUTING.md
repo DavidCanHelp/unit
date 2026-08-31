@@ -16,7 +16,7 @@ unit is a self-replicating software nanobot: a minimal Forth interpreter
 that is also a networked mesh agent. The dictionary is the genome, the
 interpreter is the metabolism, UDP gossip is the voice, and `SPAWN` is
 reproduction. The kernel — Forth VM, mesh protocol, replication, mutation
-engine, persistence — is about 2,000 lines of Rust with zero external
+engine, persistence — is about 9,000 lines of Rust with zero external
 dependencies. Everything else (immune system, metabolic energy, sexual
 reproduction, niche construction, three-order meta-evolution) emerged from
 asking what a self-improving organism should do next.
@@ -24,8 +24,9 @@ asking what a self-improving organism should do next.
 From the ALife side: this is a substrate where genotype and phenotype are
 the same object, evolution runs continuously, and three species (Rust, Go,
 Python) coexist on a shared S-expression mesh. From the systems side: it's
-a hand-rolled Forth + UDP gossip + GP engine with no `unsafe` outside the
-WASM boundary, no async runtime, no JSON crate. See the
+a hand-rolled Forth + UDP gossip + GP engine with no async runtime, no
+JSON crate, and `unsafe` confined to the WASM boundary plus three tiny
+libc FFI shims (signal handlers, `malloc_trim`, `kill`). See the
 [README](README.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the
 [whitepaper](docs/unit-whitepaper-2026.pdf) for depth.
 
@@ -55,7 +56,7 @@ opening the PR.
 
 A few area-specific notes:
 
-- **New Forth words.** Implement in the relevant `src/vm/` module, add to
+- **New Forth words.** Register in `src/vm/mod.rs` and implement in the relevant `src/words/` module, add to
   `src/prelude.fs` if it's a high-level word, and update
   [docs/words.md](docs/words.md). If the word touches platform features
   (filesystem, networking, sleep), check `src/wasm_entry.rs` and

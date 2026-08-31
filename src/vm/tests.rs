@@ -2771,3 +2771,24 @@ fn test_landscape_generation_dedupes_by_name() {
         "registry must never hold duplicate challenge names"
     );
 }
+
+#[test]
+fn test_share_word_transmits_real_source() {
+    // SHARE" used to send an empty stub (`: NAME ;`) — the receiver
+    // compiled a no-op and word sharing was silently fake (docs audit
+    // finding: the operations.md example could never work). The shared
+    // source must be the real decompiled body.
+    let mut vm = test_vm();
+    eval(&mut vm, ": CUBE DUP DUP * * ;");
+    let idx = vm.find_word("CUBE").unwrap();
+    let source = crate::snapshot::decompile_word(
+        &vm.dictionary[idx],
+        &vm.dictionary,
+        &vm.primitive_names,
+    );
+    // The exact string SHARE"/SHARE-ALL now transmit: re-evaluable and real.
+    let mut receiver = test_vm();
+    eval(&mut receiver, &source);
+    let out = eval(&mut receiver, "3 CUBE .");
+    assert!(out.contains("27"), "shared source must carry the body: {out}");
+}

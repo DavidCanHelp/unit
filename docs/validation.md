@@ -24,7 +24,7 @@ UNIT_RECRUIT_TIMEOUT_SECS=2 ...         # compress the 60s recruit window
 | S5 | cgroup-v2-limited containers honestly advertise their own budgets; placement chooses the truthful roomy peer, never the tight one |
 | S6 | TRANSPORT confirm-before-release across containers: an origin releases only after its copy landed (`accepted ≤ landed`); under loss the design fails toward duplication, never loss |
 | S7 | Split-brain: a real partition (network disconnect, no RST), mutual bounded abandonment on both sides, then a clean heal — re-discovery, a fresh round-trip, no double-settles |
-| S8 | Resource ecology under simultaneous pressure: three over-ceiling senders converge onto small receivers; a mid-shed blackhole; liveness under sustained pressure; wall breaches self-correct; colony-wide conservation with a traffic-scaled duplication bound |
+| S8 | Resource ecology under simultaneous pressure: three over-ceiling senders shed toward small receivers; a mid-shed blackhole; every survivor keeps ticking; wall breaches self-correct (the wall is an attractor — static equilibrium does not exist while landed units grow); colony-wide conservation with a traffic-scaled duplication bound |
 
 The wedge semantics differ deliberately: `docker pause` freezes a
 process (its sockets queue), `docker network disconnect` blackholes it

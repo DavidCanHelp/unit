@@ -262,7 +262,7 @@ remaining walls (mid-eval preemption, async eval) are explicit in
 
 ```
 src/
-├── vm/               # Forth virtual machine (~200 primitives)
+├── vm/               # Forth virtual machine (250+ primitives)
 ├── words/            # Primitive-word impls, split by concern (18 modules)
 │                     #   mesh, immune, evolution, goals, io, spawn, …
 ├── mesh.rs           # UDP gossip, peer discovery, bounded-k fan-out
@@ -289,7 +289,7 @@ The `vm/` core defines the `VM` type and the opcode dispatch; the `words/`
 tree provides the primitive implementations as `impl VM` blocks grouped by
 domain, so no single file carries the whole surface.
 
-The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
+The five-concern kernel is ~9,000 lines. The whole organism is ~35,000. Both are intentional.
 
 530+ Rust tests, 22 Python tests, Go tests. Zero dependencies.
 
@@ -308,7 +308,7 @@ The kernel is ~2,000 lines. The organism is ~36,000. Both are intentional.
 | Target | Size |
 |--------|------|
 | Native (macOS arm64, release) | ~1.5 MB |
-| WASM (browser) | ~425 KB |
+| WASM (browser) | ~440 KB |
 
 ## License
 

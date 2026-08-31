@@ -28,6 +28,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   uses the event equation (`units == expected + landed − released`)
   instead of naive equality, so documented duplication is not flagged.
 
+### Fixed
+
+- **Word sharing transmits real code now.** `SHARE"`/`SHARE-ALL` sent an
+  empty stub (`: NAME ;`) — the receiver compiled a no-op and the whole
+  word-sharing story was silently fake (the operations.md example could
+  never have worked). They now send the same re-evaluable decompiled
+  source genomes and death-cries use.
+- **Mate selection actually reads the inbox.** `select_mate_signaled`
+  (COURT-weighted tournament) existed and was tested, but the live `MATE`
+  path still called the unsignaled variant — README documented behavior
+  the code didn't have. The call site is now wired.
+- `--help` no longer claims `--multi-unit` always "runs a smoke demo and
+  exits" — with `--port` it launches the persistent node.
+
+### Documentation
+
+- **Full docs audit against source (75 discrepancies found, all
+  resolved).** Three wire-format shapes corrected in protocol.md
+  (`evolve-share :challenge`, `challenge` head + fields, `solution`
+  head + fields); signaling.md reframed as a historical design doc with
+  an as-built divergence note (six words, costs 3/5, in-process-only
+  delivery, MARK! sum-then-max semantics); formal-analysis.md gains a
+  revision note (no step-throttling — mortality instead; third-order
+  evolution ships; 2s heartbeats; bounded-k exists) plus corrected
+  constants (tournament 4, vocab 31); self-replication.md's placement
+  description now matches the two-tier abundant-emptiest rule and the
+  admission margin + rate window; ARCHITECTURE.md drops stale line
+  numbers, corrects the gossip-k default (off), and updates the
+  failure-boundary text (migration and work re-recruitment exist);
+  operations.md transcripts regenerated from the live binary (HEAL,
+  DASHBOARD, GOAL{, SWARM-ON, FAMILY, SPAWN); words.md stack effects
+  corrected (PEERS, ID, SEND, RECV, AUTO-SNAPSHOT, RESTORE, HEALTH,
+  WATCH"); kernel/organism line counts and primitive counts honestly
+  recomputed.
+
 ### Documentation
 
 - **The harnesses are documented** — new [docs/validation.md](docs/validation.md):

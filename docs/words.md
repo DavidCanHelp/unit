@@ -79,17 +79,20 @@ word's action).
 
 | Word | Description |
 |------|-------------|
-| `PEERS` `MESH-STATUS` `ID` `MY-ADDR` `MESH-HELLO` | mesh info |
+| `MESH-STATUS` `MY-ADDR` `MESH-HELLO` | mesh info (print) |
+| `PEERS` | `( -- n )` peer count (alias of `PEER-COUNT`) |
+| `ID` | `( -- addr n )` node id string written to PAD |
 | `PEER-COUNT` | `( -- n )` count of connected peers |
 | `MESH-AVG-FITNESS` | `( -- avg )` mean fitness across self + peers |
 | `LOAD` `CAPACITY` | `( -- n )` local load metric / capacity threshold |
 | `PEER-TABLE` `MESH-STATS` `MESH-KEY` | cross-machine |
 | `CONNECT"` `DISCONNECT"` | manual peer management |
-| `SEND` `RECV` | raw messaging |
+| `SEND` | `( addr n peer -- )` raw broadcast (peer arg ignored) |
+| `RECV` | `( -- addr n peer )` next message, or `0 0 0` when empty |
 | `PROPOSE` `REPLICATE` | broadcast this unit's serialized state (consensus / direct) |
 | `DISCOVER` `AUTO-DISCOVER` | LAN discovery |
-| `SHARE"` `SHARE-ALL` `AUTO-SHARE` `SHARED-WORDS` | word sharing |
-| `SWARM-ON` `SWARM-OFF` `SWARM` `SWARM-STATUS` | swarm mode |
+| `SHARE"` `SHARE-ALL` `AUTO-SHARE` `SHARED-WORDS` | word sharing (real decompiled source since v0.40) |
+| `SWARM-ON` `SWARM` `SWARM-STATUS` | swarm mode (`SWARM-OFF` only prints — the toggles stay on) |
 | `AUTO-SPAWN` `AUTO-CULL` | toggle population auto-grow / auto-shrink |
 | `MIN-UNITS` `MAX-UNITS` | `( n -- )` population bounds for auto-spawn/cull |
 
@@ -159,13 +162,14 @@ Built-in demo goals (each `( -- id )`): `PING-GOAL` `MATH-GOAL` `STRESS-GOAL`
 
 | Word | Description |
 |------|-------------|
-| `WATCH"` `WATCH-FILE"` `WATCH-PROC"` | create watches |
+| `WATCH"` `WATCH-FILE"` `WATCH-PROC"` | `( interval -- id )` create watches |
 | `WATCHES` `UNWATCH` `WATCH-LOG` `UPTIME` | manage watches |
 | `ON-ALERT"` `ALERTS` `ACK` `ALERT-HISTORY` `HEAL` | alerting |
 | `ALERT-THRESHOLD` | `( level -- )` set alert level; reads a trailing `watch-id"` |
 | `CHECK-WATCHES` `RUN-HANDLERS` | `( -- )` run due checks / fire alert handlers |
 | `WATCH-COUNT` `ALERT-COUNT` | `( -- n )` watch / active-alert counts |
-| `DASHBOARD` `HEALTH` `OPS` | overview |
+| `DASHBOARD` `OPS` | overview (print) |
+| `HEALTH` | `( -- score )` numeric health score |
 | `HEALTH-PORT` | `( -- port )` replication port (0 if mesh offline) |
 | `EVERY` `SCHEDULE` `UNSCHED` | scheduling |
 
@@ -242,11 +246,12 @@ See [signaling.md](signaling.md) for the design rationale.
 | `GENOME-SAVE` `GENOME-LOAD` | save/load the genome snapshot (S-expression since v0.34; legacy JSON files still load) |
 | `JSON-SNAPSHOT` `JSON-RESTORE` | aliases for `GENOME-SAVE`/`GENOME-LOAD` from the JSON-format era |
 | `HIBERNATE` | snapshot and exit |
-| `AUTO-SNAPSHOT` | periodic auto-save |
+| `AUTO-SNAPSHOT` | `( secs -- )` periodic auto-save; 0 disables |
 | `SNAPSHOT-PATH` `GENOMES` | inspect storage (lists both `.sexp` and legacy `.json`; `JSON-SNAPSHOTS` is the legacy alias of `GENOMES`) |
 | `EXPORT-GENOME` `IMPORT-GENOME"` | genome transfer |
 | `SAVE` `LOAD-STATE` `RESET` | binary state management |
-| `SNAPSHOT` `SNAPSHOTS` `RESTORE` | binary versioned backups |
+| `SNAPSHOT` `SNAPSHOTS` | binary versioned backups |
+| `RESTORE` | `( snapshot-id -- )` restore a numbered backup |
 | `AUTO-SAVE` | binary auto-save |
 | `REIDENTIFY` | `( -- )` generate a new node ID and migrate saved state |
 | `PERSIST-TEST` | `( -- )` `SAVE` and confirm (demo helper) |

@@ -87,7 +87,7 @@ The protocol:
 origin                                   destination
   | capture self (USAV)                     |
   | -- UTPT frame (len-prefixed USAV) -->   |
-  |                                         | validate, has_headroom()?  (fail closed)
+  |                                         | validate, admission gate?  (margin + rate window; fail closed)
   |                                         | deserialize the complete self
   |   <------ UTPC confirm (accept|refuse) -|
   | release ONLY on Accepted                |
@@ -108,11 +108,13 @@ already gossip their unit count in the heartbeat; v0.29 appends one more byte �
 advertised headroom (`0..=100`) — kept at the tail so older peers that omit it
 read as 0 (fail closed again). Bounded-k gossip stays bounded.
 
-`choose_destination()` returns the **first** peer that advertises sufficient
-room, in gossip-view order — **not** the emptiest. This is deliberate and it
-mirrors minimum-sufficient: take the first that fits. Sorting for the emptiest
-peer would send every mislocated unit toward the same target at once — a
-thundering herd. Frugal-first spreads load without anyone coordinating it.
+`choose_destination()` is two-tier: it prefers the **emptiest
+abundantly-free** peer (advertised headroom ≥ 50%), breaking ties among
+equals with a per-node random pick so concurrent senders decorrelate, and
+falls back to the first merely-*sufficient* peer in view order when no one
+is abundant. The receiver-side admission gate (margin below the ceiling,
+plus a rate window of at most 8 accepts per 5s) is what actually prevents
+a thundering herd from overshooting a popular target.
 
 A coordinate knows it should consider leaving when it is **mislocated**, and the
 honest trigger is local pressure: `is_mislocated == !has_headroom()`. There is
@@ -123,7 +125,7 @@ capability; the `TRANSPORT` Forth word is something a unit *chooses* to call,
 GP-mutable exactly like `COURT` or `SAY!`. Whether and when units flee local
 pressure is therefore an *evolvable behavior*, selected for or against by the
 same metabolism as everything else — not a policy imposed from above. Calling
-`TRANSPORT` senses mislocation, picks a sufficient-first destination, and
+`TRANSPORT` senses mislocation, picks a destination (emptiest-abundant first, sufficient as fallback), and
 relocates with confirm-before-release; if it is not mislocated or no destination
 fits, it is a safe no-op and the unit stays.
 
@@ -139,7 +141,7 @@ network.
 Placement trusts a peer's advertised headroom. Nothing verifies it. If a peer
 lies — advertises room it doesn't have — the consequence is contained entirely
 by the existing machinery: the destination refuses at the transport layer
-(`has_headroom()` is false there too), `send_transport` returns `Err`, and the
+(the admission gate refuses there too), `send_transport` returns `Err`, and the
 origin stays put. There is no detection, no flag, no blacklist, no reputation.
 The transport simply doesn't complete. Whether honest advertisement is the
 evolutionarily stable strategy is an empirical question the system is built to
@@ -266,8 +268,8 @@ content to keep what it has yet decline to take on more.
 | Emergent local rule, demand sense, evolve-when-unworked | `src/multi_unit.rs` (`MultiUnitHost`) |
 | Confirm-before-release transport, USAV framing | `src/transport.rs` |
 | Gossiped headroom advertisement | `src/mesh.rs` (heartbeat, `peer_resource_view`) |
-| Sufficient-first placement, mislocation, relocate-with-release | `src/multi_unit.rs` (`MultiUnitNode`) + `src/transport.rs` |
-| `TRANSPORT` word, energy cost | `src/main.rs` (`prim_transport`), `src/vm/mod.rs`, `src/energy.rs` |
+| Abundant-emptiest-first placement, mislocation, relocate-with-release | `src/multi_unit.rs` (`MultiUnitNode`) + `src/transport.rs` |
+| `TRANSPORT` word, energy cost | `src/words/persistence.rs` (`prim_transport`), `src/vm/mod.rs`, `src/energy.rs` |
 
 
 ## Multi-sender ecology validation (v0.38)
@@ -295,10 +297,12 @@ mid-shed. Two real failures fell out before the claim held:
    connection handshake timeout is unchanged.
 
 What S8 now proves, from the machine-readable `(node-status …)` chronicle
-alone: all three senders converge under the wall and shedding goes
-quiescent; the surviving receiver's utilization never crosses the ceiling
-under multi-sender bursts (observed max 15–25%); ticking continues at full
-rate through the blackhole window; and the colony's unit count balances to
+alone: all three senders shed toward capacity and every survivor keeps
+ticking under sustained pressure (the stronger static-equilibrium claim —
+everyone under the wall, quiescent — was later RETIRED: landed units grow
+evolution state, so the wall is an attractor with self-correcting
+transients, and per-unit memory growth is the named open problem);
+ticking continues at full rate through the blackhole window; and the colony's unit count balances to
 the initial total exactly, with loss bounded by the in-flight window
 swallowed by the partition and duplication bounded the same way (the
 documented fail-toward-duplication was observed live: one unit landed on

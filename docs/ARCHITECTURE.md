@@ -51,27 +51,28 @@ Two changes, taken together, move the architecture into a different regime.
 (`src/multi_unit.rs`) holds a `Vec<UnitSlot>` where each slot owns one full
 Forth `VM`. New units are added with `spawn`/`spawn_n`; goal dispatch picks
 the least-busy idle VM via `pick_worker`, mirroring the WASM browser demo's
-`_pickWorker` (`web/unit.js:167`). Sibling-to-sibling communication is direct
+`_pickWorker` (`web/unit.js`). Sibling-to-sibling communication is direct
 method calls: `share_word(definition)` evaluates a definition string on every
 sibling, and `teach_from(source_idx, words)` copies named user-defined words
 from one sibling into the rest by replaying their source strings (the host
 tracks them in `UnitSlot.user_words` because Forth's `SEE` returns
 decompiled internal form, not re-evaluable source). The host is the failure
-boundary; per-unit memory is ~140–180 kB measured, roughly 30× smaller than
+boundary; per-unit memory is ~140–180 kB at spawn (it grows with evolution state over a unit's life — the named open problem), roughly 30× smaller than
 fork-per-unit.
 
 **Across processes, the mesh handles bounded-k gossip.** `mesh::MeshNode`
 (`src/mesh.rs`) is unchanged in role — it is still the network thread that
 binds a UDP socket, exchanges heartbeats, runs peer discovery, and routes
 s-expression envelopes — but two changes made it scalable. `PeerTable`
-(`src/mesh.rs:202`) stores peers in a `Vec<PeerInfo>` plus a
+(`src/mesh.rs`) stores peers in a `Vec<PeerInfo>` plus a
 `HashMap<NodeId, usize>` index, supporting `sample_k_addrs(k, &mut rng)` in
 true O(k) by rejection-sampling random indices into the Vec. And
 `gossip_fanout` (now in `MeshState`) controls both `send_sexp` (`mesh.rs:1418`)
 and `send_heartbeat` (`mesh.rs:1776`); when set to `Some(k)`, both paths
 sample k random peers per call instead of broadcasting to all. Information
-propagates epidemically in O(log_k M) ticks. Default k is 8, configurable
-via `--gossip-k K`. The all-to-all path remains available for A/B comparison.
+propagates epidemically in O(log_k M) ticks. Bounded gossip is off by
+default (`None` = legacy all-to-all); enable it with `--gossip-k K` — the
+drills and the v0.30 droplet runs use k=8.
 
 **`multi_unit::MultiUnitNode` is the bridge.** It owns one `MultiUnitHost`
 and one `MeshNode`. The process is the mesh peer; the host's unit count is
