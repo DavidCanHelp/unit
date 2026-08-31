@@ -3,7 +3,7 @@
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.38.0] - 2026-08-31
 
 ### Fixed
 
@@ -43,7 +43,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - **`(node-status …)` chronicle line** — one machine-readable S-expression
   per measure cadence from the persistent node: id, tick, units, util,
-  headroom, and cumulative out/in/deaths counters. Event-derived, so an
+  headroom, cumulative out/in/deaths counters, plus evolution observables
+  (`:fit` best GP fitness, `:sol-kinds` distinct antibodies known,
+  `:sol-copies` installed copies — kinds measure what the colony knows,
+  copies how widely it spread; their divergence over a long soak is an
+  honest adaptation-vs-churn signal). Event-derived, so an
   external tool can account for every unit's whereabouts without parsing
   prose. The stable surface S8's assertions read.
 

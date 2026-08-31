@@ -88,6 +88,25 @@ impl MultiUnitHost {
         Self::new(100)
     }
 
+    /// Colony immune-knowledge stats for the chronicle line:
+    /// `(distinct SOL-* names, total SOL-* copies)` across all hosted units.
+    /// Kinds measure what the colony KNOWS; copies measure how widely the
+    /// knowledge has spread (share/death-cry/inheritance). The divergence of
+    /// the two over a long soak is one honest adaptation-vs-churn signal.
+    pub fn sol_stats(&self) -> (usize, usize) {
+        let mut kinds = std::collections::HashSet::new();
+        let mut copies = 0usize;
+        for slot in &self.units {
+            for e in &slot.vm.dictionary[slot.vm.kernel_word_count..] {
+                if !e.hidden && e.name.starts_with("SOL-") {
+                    copies += 1;
+                    kinds.insert(e.name.clone());
+                }
+            }
+        }
+        (kinds.len(), copies)
+    }
+
     pub fn len(&self) -> usize {
         self.units.len()
     }
@@ -1923,5 +1942,26 @@ mod tests {
         h.route_signals_from(0);
         assert_eq!(h.units[1].vm.energy.energy, before, "no gift from the destitute");
         assert_eq!(h.units[0].vm.energy.energy, -490, "and nothing spent");
+    }
+}
+
+#[cfg(test)]
+mod sol_stats_tests {
+    use super::*;
+
+    #[test]
+    fn test_sol_stats_kinds_vs_copies() {
+        let mut h = MultiUnitHost::new(4);
+        h.spawn();
+        h.spawn();
+        h.spawn();
+        assert_eq!(h.sol_stats(), (0, 0), "fresh colony knows nothing");
+        // Two units learn the same antibody, one learns a second kind.
+        h.units[0].vm.eval(": SOL-FIB10 55 ;");
+        h.units[1].vm.eval(": SOL-FIB10 55 ;");
+        h.units[1].vm.eval(": SOL-SUM10 45 ;");
+        let (kinds, copies) = h.sol_stats();
+        assert_eq!(kinds, 2, "two distinct antibodies known");
+        assert_eq!(copies, 3, "three installed copies across the colony");
     }
 }

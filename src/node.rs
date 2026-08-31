@@ -516,8 +516,9 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                 // The stable surface for drills and external tools (parse
                 // with any sexp reader; the prose RES line above may change
                 // freely). Counters are cumulative since node start.
+                let (sol_kinds, sol_copies) = node.host.sol_stats();
                 println!(
-                    "(node-status :id \"{}\" :tick {} :units {} :util {} :headroom {} :out {} :in {} :deaths {})",
+                    "(node-status :id \"{}\" :tick {} :units {} :util {} :headroom {} :out {} :in {} :deaths {} :fit {} :sol-kinds {} :sol-copies {})",
                     host_hex,
                     tick_n,
                     node.host.len(),
@@ -525,7 +526,10 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                     (res.headroom * 100.0).round() as u32,
                     chron_out,
                     chron_in,
-                    chron_deaths
+                    chron_deaths,
+                    report.best_fitness,
+                    sol_kinds,
+                    sol_copies
                 );
             } else {
                 println!(
