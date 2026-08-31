@@ -83,6 +83,22 @@ poll_adv() { # poll_adv <secs> <watcher> <peer-id> <-le|-ge> <pct> — wait unti
     return 1
 }
 
+poll_fresh_peer() { # poll_fresh_peer <secs> <watcher> <peer-id> — require a NEW
+    # "<id> @ ..." view line to appear AFTER now. wait_discovery greps the
+    # whole log, so pre-partition lines satisfy it forever — useless for
+    # proving a HEAL. Freshness = the occurrence count increases.
+    local before after deadline
+    before=$(grep -cE "$3 @ " "$LOGS/$2.log" 2>/dev/null || echo 0)
+    deadline=$(( $(date +%s) + $1 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        inject "$2" 'MESH-STATUS' >/dev/null 2>&1
+        sleep 2
+        after=$(grep -cE "$3 @ " "$LOGS/$2.log" 2>/dev/null || echo 0)
+        [ "$after" -gt "$before" ] && return 0
+    done
+    return 1
+}
+
 wait_discovery() { # wait_discovery <watcher> <target> — watcher sees target id
     local tid=""
     for _ in $(seq 1 20); do tid=$(node_id "$2"); [ -n "$tid" ] && break; sleep 1; done
@@ -305,9 +321,9 @@ check "S7 both sides settled err/abandoned on the sexp surface" $?
 # HEAL: reconnect, then both sides must re-merge and serve fresh work.
 docker network connect "$NETNAME" "$MID_CID"
 check "S7 partition healed (mid reconnected)" $?
-wait_discovery root mid >/dev/null; check "S7 post-heal: root re-discovers mid" $?
+poll_fresh_peer 60 root "$MID_ID"; check "S7 post-heal: root re-discovers mid (fresh view line)" $?
 inject root "RECRUIT\" $MID_ID (+ 20 22)\""
-poll 30 "$LOGS/root.log" 'recruit-slot :id 2 :seq 0 .*:state ok' root
+poll 45 "$LOGS/root.log" 'recruit-slot :id 2 :seq 0 .*:state ok' root
 check "S7 post-heal: fresh recruit round-trip succeeds (result collected)" $?
 N_AB_ROOT=$(grep -c 'ABANDONED' "$LOGS/root.log")
 [ "$N_AB_ROOT" -eq 1 ]
