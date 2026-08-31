@@ -55,15 +55,34 @@ jobs:
           name: web
           path: web/
 
+  # Build the drill image ONCE per run; both matrix legs load it instead of
+  # rebuilding (the release compile inside Docker was duplicated per leg).
+  drill-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -f docker/Dockerfile -t unit-drill:latest .
+      - run: docker save unit-drill:latest | gzip > /tmp/unit-drill.tar.gz
+      - uses: actions/upload-artifact@v5
+        with:
+          name: drill-image
+          path: /tmp/unit-drill.tar.gz
+          retention-days: 1
+
   wedge-drill:
     runs-on: ubuntu-latest
+    needs: [drill-image]
     strategy:
       fail-fast: false
       matrix:
         netem: ["0", "1"]
     steps:
       - uses: actions/checkout@v5
-      - run: docker build -f docker/Dockerfile -t unit-drill:latest .
+      - uses: actions/download-artifact@v5
+        with:
+          name: drill-image
+          path: /tmp
+      - run: gunzip -c /tmp/unit-drill.tar.gz | docker load
       - name: multihost wedge drill (netem=${{ matrix.netem }})
         run: UNIT_RECRUIT_TIMEOUT_SECS=2 DRILL_NETEM=${{ matrix.netem }} bash docker/drill.sh
       - if: always()

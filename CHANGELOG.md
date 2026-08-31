@@ -19,6 +19,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Drill S7 — split-brain: partition, mutual bounded abandonment, clean
+  heal.** `docker pause` freezes one node; a real partition is different —
+  both sides stay alive, mutually evict each other, and each must bound
+  the wait on slots the other holds. S7 partitions mid off the bridge
+  network, has BOTH sides recruit into the partition, asserts both reach
+  `err/abandoned` on the sexp surface within the terminal bound, then
+  heals the network and proves clean re-merge: re-discovery, a fresh
+  recruit round-trip collecting a real result, and exactly one
+  abandonment per side (no double-settle across the heal). 49 checks
+  total, green with and without netem.
+
+- **CI builds the drill image once per run.** A `drill-image` job
+  builds and `docker save`s the image as an artifact; both matrix legs
+  `docker load` it instead of re-compiling the release binary — the
+  duplicated in-Docker build is gone and the legs start immediately.
+
 - **`RECRUITS-SEXP` — machine-readable recruit status (345 words).** One
   parseable `(recruit-slot :id … :seq … :holder … :state
   pending|unplaced|ok|err …)` per line, in the mesh's own notation. This is

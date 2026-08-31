@@ -278,6 +278,43 @@ check "S6 receiver count consistent: last landing reports 20+landed units" $?
 snap_logs S6
 down
 
+echo "=== S7: split-brain — partition, mutual bounded abandonment, clean heal ==="
+# docker pause freezes ONE node; a real partition is different: both sides
+# stay alive, mutually evict each other (15s), and each must bound the wait
+# on slots the other holds — then the heal must re-merge cleanly with no
+# double-settles and full service. This is the classic place distributed
+# supervision logic breaks.
+up root mid
+MID_ID=$(wait_discovery root mid); check "S7 discovery: root sees mid" $?
+ROOT_ID=$(wait_discovery mid root); check "S7 discovery: mid sees root" $?
+MID_CID=$($COMPOSE ps -q mid)
+NETNAME=$(docker inspect "$MID_CID" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+docker network disconnect "$NETNAME" "$MID_CID"
+check "S7 partition applied (mid disconnected from $NETNAME)" $?
+# Both sides now recruit INTO the partition: neither datagram can arrive.
+inject root "RECRUIT\" $MID_ID (+ 1 2)\""
+inject mid  "RECRUIT\" $ROOT_ID (+ 3 4)\""
+poll "$BOUND" "$LOGS/root.log" 'ABANDONED'
+check "S7 root side: partitioned wait terminally bounded" $?
+poll "$BOUND" "$LOGS/mid.log" 'ABANDONED'
+check "S7 mid side: partitioned wait terminally bounded" $?
+inject root 'RECRUITS-SEXP'; inject mid 'RECRUITS-SEXP'; sleep 2
+grep -qE ':state err :from "[0-9a-f]*" :kind "abandoned"' "$LOGS/root.log" \
+  && grep -qE ':state err :from "[0-9a-f]*" :kind "abandoned"' "$LOGS/mid.log"
+check "S7 both sides settled err/abandoned on the sexp surface" $?
+# HEAL: reconnect, then both sides must re-merge and serve fresh work.
+docker network connect "$NETNAME" "$MID_CID"
+check "S7 partition healed (mid reconnected)" $?
+wait_discovery root mid >/dev/null; check "S7 post-heal: root re-discovers mid" $?
+inject root "RECRUIT\" $MID_ID (+ 20 22)\""
+poll 30 "$LOGS/root.log" 'recruit-slot :id 2 :seq 0 .*:state ok' root
+check "S7 post-heal: fresh recruit round-trip succeeds (result collected)" $?
+N_AB_ROOT=$(grep -c 'ABANDONED' "$LOGS/root.log")
+[ "$N_AB_ROOT" -eq 1 ]
+check "S7 exactly one abandonment on root (no double-settle across the heal)" $?
+snap_logs S7
+down
+
 echo
 echo "  PASSED: $PASS"
 echo "  FAILED: $FAIL"
