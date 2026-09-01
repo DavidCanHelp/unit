@@ -487,6 +487,8 @@ pub struct TickReport {
     pub best_fitness: i64,
     /// True if the host was over the ceiling (mislocated) this tick.
     pub mislocated: bool,
+    /// Per-unit famine tax applied this tick (0 = host under ceiling).
+    pub famine_tax: i64,
     /// The placement outcome, present only if the local rule fired.
     pub transport: Option<TickTransport>,
 }
@@ -800,7 +802,7 @@ impl MultiUnitNode {
         //    OOM-killing a whole node instead of units starving (observed
         //    in the 2026-08-31 scarcity soak). An invalid measurement
         //    taxes nothing: fail toward life.
-        if local.valid && !local.has_headroom() {
+        let famine_tax = if local.valid && !local.has_headroom() {
             let overshoot = ((local.utilization - crate::resources::CEILING_UTILIZATION)
                 / (1.0 - crate::resources::CEILING_UTILIZATION))
                 .clamp(0.0, 1.0);
@@ -808,7 +810,10 @@ impl MultiUnitNode {
             for slot in self.host.units.iter_mut() {
                 slot.vm.energy.famine(tax);
             }
-        }
+            tax
+        } else {
+            0
+        };
         //    A unit pinned at the hard floor is living beyond its means;
         //    consecutive pinned ticks are counted toward death. Ordinary GP
         //    debt hovers above the floor and resets nothing.
@@ -936,6 +941,7 @@ impl MultiUnitNode {
             scavenged_words,
             best_fitness,
             mislocated,
+            famine_tax,
             transport: transport_outcome,
         }
     }

@@ -353,6 +353,7 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     let mut chron_out: u64 = 0;
     let mut chron_in: u64 = 0;
     let mut chron_deaths: u64 = 0;
+    let mut last_famine_tax: i64 = 0;
     let mut chron_released_last: u64 = 0;
     loop {
         if run_signals::requested() {
@@ -398,6 +399,30 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                 ev.unit_index,
                 ev.output.trim().replace('\n', " ")
             );
+        }
+
+        // Famine transitions. The tax itself applies silently every tick;
+        // logging only level changes keeps a long famine from flooding the
+        // chronicle while still bracketing exactly when rationing began,
+        // deepened, eased, and lifted.
+        if report.famine_tax != last_famine_tax {
+            if report.famine_tax > 0 {
+                println!(
+                    "[{}] FAMINE tax={}/tick (util={:.1}% over ceiling) — {} units rationed",
+                    log_ts(),
+                    report.famine_tax,
+                    res.utilization * 100.0,
+                    node.host.len()
+                );
+            } else {
+                println!(
+                    "[{}] FAMINE lifted — util={:.1}% back under ceiling, {} units remain",
+                    log_ts(),
+                    res.utilization * 100.0,
+                    node.host.len()
+                );
+            }
+            last_famine_tax = report.famine_tax;
         }
 
         // Obituaries. A death is a real colony event and always logs: the
