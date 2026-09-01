@@ -139,6 +139,11 @@ impl MultiUnitHost {
         // sender attribution between siblings. The 0xC0FE prefix marks
         // these as host-synthesized rather than mesh-issued.
         vm.node_id_cache = Some([0xC0, 0xFE, 0, 0, 0, 0, 0, idx as u8]);
+        // Distinct per-unit rng streams. VM::new seeds every rng with 0, so
+        // sibling units would draw identical randomness in lockstep — which
+        // turns per-unit famine luck into no variance at all (and synchronizes
+        // any other per-unit draw made at the same cadence).
+        vm.rng = crate::features::mutation::SimpleRng::new(0x9e37_79b9_7f4a_7c15 ^ (idx as u64));
         self.units.push(UnitSlot {
             vm,
             busy: false,
@@ -808,7 +813,16 @@ impl MultiUnitNode {
                 .clamp(0.0, 1.0);
             let tax = 1 + (overshoot * (crate::energy::FAMINE_TAX_MAX - 1) as f64) as i64;
             for slot in self.host.units.iter_mut() {
-                slot.vm.energy.famine(tax);
+                // Foraging luck: each unit draws 50–150% of the tax. Without
+                // per-unit variance a colony of same-aged units pins at the
+                // hard floor in lockstep and mortality arrives as one
+                // synchronized avalanche that blows far past carrying
+                // capacity (observed: 102 deaths in one second, a node
+                // famined from 300 units down to 38 against a ~240
+                // capacity). Variance staggers the deaths so the famine can
+                // lift between waves.
+                let luck = 50 + slot.vm.rng.next_usize(101) as i64;
+                slot.vm.energy.famine((tax * luck / 100).max(1));
             }
             tax
         } else {
@@ -1450,13 +1464,19 @@ mod bridge_tests {
         let _ = a.tick(&under_ceiling_reading(), never_transport);
         assert_eq!(a.host.units[0].vm.energy.energy, 1001, "no famine under ceiling");
         // Over the ceiling at 95% util: overshoot 0.75 of the post-ceiling
-        // range, tax 1 + 0.75×49 = 37, minus the regen the tick pays back.
+        // range, base tax 1 + 0.75×49 = 37, drawn per unit at 50–150%
+        // foraging luck (18..=55), minus the regen the tick pays back.
         let _ = a.tick(&over_ceiling_reading(), never_transport);
-        assert_eq!(
-            a.host.units[0].vm.energy.energy,
-            1001 - 37 + 1,
-            "famine taxes in proportion to overshoot"
+        let taxed = 1001 + 1 - a.host.units[0].vm.energy.energy;
+        assert!(
+            (18..=55).contains(&taxed),
+            "famine taxes in proportion to overshoot with per-unit luck (got {})",
+            taxed
         );
+        // Sibling units must NOT be taxed in lockstep — identical rng
+        // streams would resynchronize starvation into avalanche mortality.
+        let taxed1 = 1001 + 1 - a.host.units[1].vm.energy.energy;
+        assert_ne!(taxed, taxed1, "per-unit foraging luck diverges between siblings");
     }
 
     #[test]
