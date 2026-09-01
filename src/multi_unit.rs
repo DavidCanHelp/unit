@@ -45,6 +45,12 @@ pub struct UnitSlot {
 /// work, or a keeper's FEED can still rescue the unit.
 pub const STARVED_TICKS_TO_DIE: u32 = 30;
 
+/// Starvation-fuse ticks burned per tick under ACUTE famine (see
+/// [`FAMINE_ACUTE_OVERSHOOT`](crate::energy::FAMINE_ACUTE_OVERSHOOT)):
+/// death in 5 pinned ticks instead of 30, because the alternative at
+/// util ≥ 96% is the kernel OOM-killing every resident at once.
+pub const FAMINE_ACUTE_FUSE: u32 = 6;
+
 /// Result of dispatching one goal.
 pub struct GoalResult {
     pub unit_index: usize,
@@ -807,11 +813,16 @@ impl MultiUnitNode {
         //    OOM-killing a whole node instead of units starving (observed
         //    in the 2026-08-31 scarcity soak). An invalid measurement
         //    taxes nothing: fail toward life.
+        let mut famine_acute = false;
         let famine_tax = if local.valid && !local.has_headroom() {
             let overshoot = ((local.utilization - crate::resources::CEILING_UTILIZATION)
                 / (1.0 - crate::resources::CEILING_UTILIZATION))
                 .clamp(0.0, 1.0);
-            let tax = 1 + (overshoot * (crate::energy::FAMINE_TAX_MAX - 1) as f64) as i64;
+            famine_acute = overshoot >= crate::energy::FAMINE_ACUTE_OVERSHOOT;
+            let mut tax = 1 + (overshoot * (crate::energy::FAMINE_TAX_MAX - 1) as f64) as i64;
+            if famine_acute {
+                tax *= crate::energy::FAMINE_ACUTE_MULTIPLIER;
+            }
             for slot in self.host.units.iter_mut() {
                 // Foraging luck: each unit draws 50–150% of the tax. Without
                 // per-unit variance a colony of same-aged units pins at the
@@ -834,7 +845,11 @@ impl MultiUnitNode {
         for slot in self.host.units.iter_mut() {
             slot.vm.energy.tick();
             if slot.vm.energy.at_hard_floor() {
-                slot.starved_ticks += 1;
+                // Acute famine burns the fuse FAMINE_ACUTE_FUSE ticks per
+                // tick: with the kernel seconds from killing the whole
+                // host, individual deaths must land first so their freed
+                // memory (trimmed on the death path) relieves the node.
+                slot.starved_ticks += if famine_acute { FAMINE_ACUTE_FUSE } else { 1 };
             } else {
                 slot.starved_ticks = 0;
             }
@@ -1508,6 +1523,43 @@ mod bridge_tests {
             a.host.units[0].vm.energy.energy > 0,
             "the survivor is the rich unit — famine selects on surplus"
         );
+    }
+
+    #[test]
+    fn acute_famine_wins_the_race_the_kernel_would_win() {
+        // At util 97% (overshoot 0.85 ≥ FAMINE_ACUTE_OVERSHOOT) famine is
+        // acute: tax ×4 and the starvation fuse burns 6/tick. A healthy
+        // 1000-energy unit must die within ~25 ticks — gradual famine's
+        // ~60–90 needed ticks is exactly how three soak nodes lost to the
+        // OOM-killer.
+        let acute = crate::resources::HostResources::from_parts(1000, 30, 0.0, 4);
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(1);
+        a.host.units[0].vm.eval(": LIVE ;");
+        a.host.units[0].vm.energy.energy = 1000;
+        let mut died_at = None;
+        for t in 0..40 {
+            let report = a.tick(&acute, never_transport);
+            if !report.deaths.is_empty() {
+                died_at = Some(t);
+                break;
+            }
+        }
+        assert!(
+            died_at.is_some_and(|t| t <= 25),
+            "acute famine must kill within ~25 ticks (got {:?})",
+            died_at
+        );
+        // Ordinary famine (95% util, below the acute threshold) must NOT
+        // move this fast: same setup survives those same 25 ticks.
+        let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
+        b.spawn_n(1);
+        b.host.units[0].vm.eval(": LIVE ;");
+        b.host.units[0].vm.energy.energy = 1000;
+        for _ in 0..25 {
+            let report = b.tick(&over_ceiling_reading(), never_transport);
+            assert!(report.deaths.is_empty(), "ordinary famine stays gradual");
+        }
     }
 
     #[test]

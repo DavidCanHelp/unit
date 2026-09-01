@@ -67,6 +67,18 @@ pub const STARVATION_THRESHOLD: i64 = 0;
 /// PASSIVE_REGEN (must overwhelm it) and INITIAL_ENERGY (a healthy unit
 /// survives ~40 taxed ticks at full famine before pinning).
 pub const FAMINE_TAX_MAX: i64 = 50;
+/// Overshoot fraction at which famine turns ACUTE. At 0.8 of the
+/// post-ceiling range (util ≥ 96% of budget) the kernel OOM-killer is
+/// seconds away and gradual starvation loses the race (observed three
+/// times in the 192 MiB scarcity soaks: an immigration-flooded node died
+/// with famine engaged but only ~20 s old — starvation needed ~60–90 s).
+/// Acute famine multiplies the tax and burns the starvation fuse
+/// [`FAMINE_ACUTE_FUSE`](crate::multi_unit) ticks per tick, cutting death
+/// latency to ~10–20 s. Mild scarcity thins a population slowly; acute
+/// starvation kills in days, not seasons.
+pub const FAMINE_ACUTE_OVERSHOOT: f64 = 0.8;
+/// Tax multiplier under acute famine.
+pub const FAMINE_ACUTE_MULTIPLIER: i64 = 4;
 
 const HARD_FLOOR: i64 = -500;
 
