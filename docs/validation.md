@@ -34,18 +34,53 @@ both found real bugs.
 ## The evolution soak
 
 ```
-bash docker/soak.sh up        # three balanced 128 MiB nodes, 900 units
+bash docker/soak.sh up        # three balanced nodes, 900 units
 bash docker/soak.sh report    # anytime — hours later included
 bash docker/soak.sh down
 ```
 
+`SOAK_MEM` sets the per-node memory budget (default `128m`).
+
 The report turns the colony's chronicle into a verdict under stated
-evidence rules — `(soak-colony … :verdict adaptive|partial|churn)` —
-plus per-node trajectories and event-consistent conservation
-(`units == expected + landed − released`; documented duplication is not
-a violation). Adaptation evidence is antibody *kinds* growth (new
-challenges solved) together with *peak* fitness growth; a colony that is
-climbing always reads low CURRENT fitness, by construction.
+evidence rules — `(soak-colony … :verdict
+adaptive|partial|churn|casualty)` — plus per-node trajectories and
+event-consistent conservation (`units == expected + landed − released`;
+documented duplication is not a violation). Adaptation evidence is
+antibody *kinds* growth (new challenges solved) together with *peak*
+fitness growth; a colony that is climbing always reads low CURRENT
+fitness, by construction. A node whose chronicle lags the colony max by
+more than 300 ticks is `:stale yes` — dead or wedged, its ledger is
+testimony rather than state — and any stale node forces `:verdict
+casualty` and `:balanced stale-ledger`, whatever the evolution numbers
+say.
+
+### What overnight soaks have established (2026-08-31/09-01)
+
+Three multi-hour runs, 3×300 units each; raw chronicles reproduce these
+via `soak.sh report`:
+
+- **128 MiB/node**: all three unit processes were OOM-killed by the
+  kernel ~35 min in (`memory.events oom_kill 1` each) while the
+  chronicle read `deaths 0` — the energy-mortality model is blind to the
+  memory axis. Growth ran ~7 MB/min with no deceleration at that budget.
+- **512 MiB/node, 8 h**: memory reached a genuine fixed point —
+  ~190–196 MiB per node (≈650 KB per unit at saturation), flat to
+  ±0.5 MiB for seven straight hours. Zero deaths, exact conservation,
+  steady ~0.96 ticks/s. Evolution was *punctuated*: a first-hour burst
+  (597 kinds), three hours of total stasis, then a second burst
+  (+217 kinds in hour 5), then stasis again at 814. Peak fitness pinned
+  at 980 throughout — the GP search-capacity frontier.
+- **192 MiB/node (scarcity — budget ≈ 99% of natural demand)**: the
+  colony was overcommitted from boot (900 units against ~720 of true
+  carrying capacity), and migration is zero-sum, so the pressure had to
+  land somewhere: two nodes shed 157 units onto the third — whose
+  admission gate rightly passed them at arrival size, before their
+  post-landing growth materialized — and that node was OOM-killed at
+  99.9% util with every escape refused. The two survivors then held a
+  flat 460-unit equilibrium for 3+ hours. The open gap this names: the
+  organism has no way to *shrink* under memory pressure (mortality is
+  energy-only), so colony-wide overcommit is resolved by the kernel
+  killing a node rather than by units dying.
 
 ## The observability surfaces these assert against
 

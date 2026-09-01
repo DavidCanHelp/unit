@@ -5,6 +5,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Soak findings (overnight, 2026-08-31)
+
+- Three multi-hour colony runs established: per-unit memory saturates
+  (~650 KB/unit; 8 h flat at 512 MiB/node), evolution is punctuated
+  (bursts separated by hours of stasis, peak pinned at the GP search
+  frontier), and under scarcity the colony sacrifices its most generous
+  node — admission prices immigrants at arrival size, their post-landing
+  growth arrives minutes later, and the organism has no way to shrink
+  under memory pressure, so the kernel resolves overcommit by OOM-killing
+  a node the chronicle still reports as alive. Findings recorded in
+  docs/validation.md.
+- `soak.sh report` now detects stale nodes (chronicle lagging the colony
+  max by >300 ticks): `:stale yes` per node, `:stale-nodes`/`:stale-units`
+  on the colony line, forced `:verdict casualty`, and
+  `:balanced stale-ledger` — a dead third of the colony can no longer
+  hide behind its frozen ledger. `SOAK_MEM` parameterizes node budgets.
+
 ### Fixed
 
 - **The colony's attention was a monoculture.** Challenge selection sorted
