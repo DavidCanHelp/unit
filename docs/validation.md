@@ -86,7 +86,23 @@ via `soak.sh report`:
   weakest pin at the hard floor and die through the ordinary mortality
   path — bequeathing antibodies — and the population settles at the
   host's carrying capacity. Emigration stays the cheaper escape; famine
-  only kills when the colony has nowhere left to shed.
+  only kills when the colony has nowhere left to shed. Three follow-up
+  scarcity runs hardened it: per-unit *foraging luck* (each unit draws
+  50–150% of the tax from its own rng stream) broke the avalanche where
+  same-aged units pinned and died in lockstep, and *acute* famine
+  (util ≥ 96%: tax ×4, fuse ×6) wins the race gradual starvation lost
+  three times to the OOM-killer. The final run's immigration-flooded
+  node survived its own flood — 384→280 units in six seconds of acute
+  rationing — and the colony finished with zero kernel kills, zero
+  stale nodes, every one of 900 units accounted for
+  (`347 == 900 + 140 − 140 − 553`), and `:verdict adaptive`.
+
+  Named open problem from that run: **post-crisis undershoot**. Freed
+  heap fragments in glibc arenas, so measured util stays high after
+  deaths and famine prunes well below true carrying capacity (a node
+  at 32 units still measured 66%); with no rebound mechanism (soak
+  nodes don't reproduce), a crisis-hit population stays small. Nature
+  recovers from famine by breeding back — Unit doesn't, yet.
 
 ## The observability surfaces these assert against
 

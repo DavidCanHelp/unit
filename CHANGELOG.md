@@ -23,6 +23,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `units == expected + landed − released − starved`, with `:deaths` on
   the conservation line.
 
+### Famine hardening (scarcity soak runs 4–6)
+
+- Per-unit foraging luck (50–150% of the tax, distinct rng stream per
+  spawned unit) breaks avalanche mortality — max single-second deaths
+  fell 102 → 26 and rationing settles instead of overshooting.
+- Acute famine above util 96%: tax ×4, starvation fuse ×6 — death in
+  ~10–20 s. The run-6 immigration sink survived the flood that killed
+  a node in runs 3, 4, and 5; the colony finished with zero OOM kills,
+  zero stale nodes, exact conservation, and verdict adaptive.
+- Named open problem: post-crisis undershoot (fragmented RSS keeps
+  util high after deaths; no rebound mechanism). See
+  docs/validation.md.
+
 ### Soak findings (overnight, 2026-08-31)
 
 - Three multi-hour colony runs established: per-unit memory saturates
