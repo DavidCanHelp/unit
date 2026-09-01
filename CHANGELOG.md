@@ -5,6 +5,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Famine: memory scarcity is now priced into the energy economy.**
+  The overnight scarcity soak showed colony-wide overcommit ends with
+  the kernel OOM-killing a whole node while every unit reads healthy —
+  the organism had no way to shrink. Now a host stuck over its resource
+  ceiling taxes each resident's energy in proportion to the overshoot
+  (up to `FAMINE_TAX_MAX` = 50/tick at total overshoot); the weakest
+  pin at the hard floor and die through the existing mortality path,
+  bequeathing antibodies, and the population settles at the host's
+  carrying capacity. Emigration remains the cheaper escape — famine
+  only kills while there is nowhere left to shed. Death by starvation,
+  not execution by the kernel: the most nature-shaped answer to a
+  demonstrated failure.
+- Soak conservation now accounts for mortality:
+  `units == expected + landed − released − starved`, with `:deaths` on
+  the conservation line.
+
 ### Soak findings (overnight, 2026-08-31)
 
 - Three multi-hour colony runs established: per-unit memory saturates

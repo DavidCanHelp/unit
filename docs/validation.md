@@ -77,10 +77,16 @@ via `soak.sh report`:
   admission gate rightly passed them at arrival size, before their
   post-landing growth materialized — and that node was OOM-killed at
   99.9% util with every escape refused. The two survivors then held a
-  flat 460-unit equilibrium for 3+ hours. The open gap this names: the
-  organism has no way to *shrink* under memory pressure (mortality is
-  energy-only), so colony-wide overcommit is resolved by the kernel
-  killing a node rather than by units dying.
+  flat 460-unit equilibrium for 3+ hours. The gap this named: the
+  organism had no way to *shrink* under memory pressure (mortality was
+  energy-only), so colony-wide overcommit was resolved by the kernel
+  killing a node rather than by units dying. **Famine** answers it:
+  a host stuck over its resource ceiling taxes every resident's energy
+  in proportion to the overshoot (`FAMINE_TAX_MAX`, scaled), the
+  weakest pin at the hard floor and die through the ordinary mortality
+  path — bequeathing antibodies — and the population settles at the
+  host's carrying capacity. Emigration stays the cheaper escape; famine
+  only kills when the colony has nowhere left to shed.
 
 ## The observability surfaces these assert against
 

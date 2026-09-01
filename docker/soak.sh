@@ -98,13 +98,14 @@ report)
         if (stale > 0) verdict = "casualty"
         printf "(soak-colony :ticks %d :units %d :migrations-out %d :migrations-in %d :deaths %d :stale-nodes %d :stale-units %d :kinds-gained %d :fit-gained %d :copies-gained %d :verdict %s)\n", \
             ticks, units, out, inn, deaths, stale, stale_units, kg, fg, cg, verdict
-        # Event-consistent accounting: units == expected + (landed - released)
+        # Event-consistent accounting:
+        #   units == expected + landed - released - starved
         # (a landing whose confirm was lost keeps both copies — documented
         # fail-toward-duplication; naive equality would flag it wrongly).
         # A stale ledger contributes units that may no longer exist, so the
         # equation can only be trusted when every node is live.
-        printf "(soak-conservation :units %d :expected 900 :out %d :in %d :balanced %s)\n", \
-            units, out, inn, (stale > 0 ? "stale-ledger" : (units == 900 + inn - out ? "yes" : "VIOLATION"))
+        printf "(soak-conservation :units %d :expected 900 :out %d :in %d :deaths %d :balanced %s)\n", \
+            units, out, inn, deaths, (stale > 0 ? "stale-ledger" : (units == 900 + inn - out - deaths ? "yes" : "VIOLATION"))
     }' "$LOGS"/s1.log "$LOGS"/s2.log "$LOGS"/s3.log
     ;;
 down)

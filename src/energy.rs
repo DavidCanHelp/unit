@@ -59,6 +59,14 @@ pub const MARK_COST: i64 = 5;
 pub const TRANSPORT_COST: i64 = 150;
 /// Energy level at or below which the unit becomes throttled.
 pub const STARVATION_THRESHOLD: i64 = 0;
+/// Per-tick famine tax at total overshoot (util = 100%). A host stuck over
+/// its resource ceiling cannot feed everyone; the tick scales this by the
+/// overshoot fraction, so a marginally-over host applies gentle pressure
+/// (emigration usually wins the race) while a critically-over host drags
+/// its weakest residents to the hard floor within a minute. Sized against
+/// PASSIVE_REGEN (must overwhelm it) and INITIAL_ENERGY (a healthy unit
+/// survives ~40 taxed ticks at full famine before pinning).
+pub const FAMINE_TAX_MAX: i64 = 50;
 
 const HARD_FLOOR: i64 = -500;
 
@@ -109,6 +117,21 @@ impl EnergyState {
             self.throttled = true;
         }
         true
+    }
+
+    /// Famine drain: subtract scarcity, clamping AT the hard floor rather
+    /// than refusing like `spend` — famine is not a purchase the unit can
+    /// decline. A unit held at the floor by famine reads `at_hard_floor`
+    /// and accumulates starved ticks toward ordinary mortality; energy it
+    /// earns meanwhile (task rewards, gifts) lifts it back out, so the
+    /// well-fed outlast the weak by exactly their metabolic surplus.
+    pub fn famine(&mut self, amount: i64) {
+        let drained = (self.energy - HARD_FLOOR).min(amount).max(0);
+        self.energy -= drained;
+        self.total_spent += drained as u64;
+        if self.energy <= STARVATION_THRESHOLD {
+            self.throttled = true;
+        }
     }
 
     /// Earn energy, capped at max_energy.
@@ -297,6 +320,22 @@ mod tests {
         assert_eq!(e.starving_ticks, 1);
         e.tick();
         assert_eq!(e.starving_ticks, 2);
+    }
+
+    #[test]
+    fn test_famine_clamps_at_hard_floor() {
+        let mut e = EnergyState::new();
+        e.energy = -490;
+        e.famine(50);
+        assert_eq!(e.energy, -500, "famine pins at the floor, never below");
+        assert!(e.at_hard_floor());
+        e.famine(10);
+        assert_eq!(e.energy, -500, "already-pinned unit drains nothing more");
+        // Earned energy lifts a famished unit back out — famine is not a
+        // one-way door while the unit can still feed itself.
+        e.earn(600, "task");
+        assert_eq!(e.energy, 100);
+        assert!(!e.at_hard_floor());
     }
 
     #[test]

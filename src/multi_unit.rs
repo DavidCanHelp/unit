@@ -785,10 +785,33 @@ impl MultiUnitNode {
         let dispatched = self.drain_and_dispatch();
         let scavenged_words = self.scavenged_last_drain;
 
-        // b. metabolism: passive regen + starvation accounting for every
-        //    unit. A unit pinned at the hard floor is living beyond its
-        //    means; consecutive pinned ticks are counted toward death.
-        //    Ordinary GP debt hovers above the floor and resets nothing.
+        // b. metabolism: famine, then passive regen + starvation accounting
+        //    for every unit.
+        //
+        //    Famine prices host memory scarcity into the energy economy: a
+        //    host stuck over its resource ceiling cannot feed everyone, so
+        //    each resident is taxed in proportion to the overshoot. The
+        //    weakest pin at the hard floor and die through the ordinary
+        //    mortality path below (bequeathing antibodies), and the
+        //    population shrinks toward the host's carrying capacity.
+        //    Emigration (step d) runs every tick and is the cheaper escape;
+        //    famine only kills while the colony has nowhere left to shed —
+        //    without it, colony-wide overcommit ends with the kernel
+        //    OOM-killing a whole node instead of units starving (observed
+        //    in the 2026-08-31 scarcity soak). An invalid measurement
+        //    taxes nothing: fail toward life.
+        if local.valid && !local.has_headroom() {
+            let overshoot = ((local.utilization - crate::resources::CEILING_UTILIZATION)
+                / (1.0 - crate::resources::CEILING_UTILIZATION))
+                .clamp(0.0, 1.0);
+            let tax = 1 + (overshoot * (crate::energy::FAMINE_TAX_MAX - 1) as f64) as i64;
+            for slot in self.host.units.iter_mut() {
+                slot.vm.energy.famine(tax);
+            }
+        }
+        //    A unit pinned at the hard floor is living beyond its means;
+        //    consecutive pinned ticks are counted toward death. Ordinary GP
+        //    debt hovers above the floor and resets nothing.
         for slot in self.host.units.iter_mut() {
             slot.vm.energy.tick();
             if slot.vm.energy.at_hard_floor() {
@@ -1405,6 +1428,59 @@ mod bridge_tests {
         assert_eq!(
             a.host.units[0].starved_ticks, 0,
             "GP debt does not accumulate toward death"
+        );
+    }
+
+    #[test]
+    fn famine_taxes_only_over_ceiling_hosts() {
+        // Idle LIVE words make the energy accounting exact: no GP costs.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(2);
+        for slot in a.host.units.iter_mut() {
+            slot.vm.eval(": LIVE ;");
+            slot.vm.energy.energy = 1000;
+        }
+        // Under the ceiling: passive regen only.
+        let _ = a.tick(&under_ceiling_reading(), never_transport);
+        assert_eq!(a.host.units[0].vm.energy.energy, 1001, "no famine under ceiling");
+        // Over the ceiling at 95% util: overshoot 0.75 of the post-ceiling
+        // range, tax 1 + 0.75×49 = 37, minus the regen the tick pays back.
+        let _ = a.tick(&over_ceiling_reading(), never_transport);
+        assert_eq!(
+            a.host.units[0].vm.energy.energy,
+            1001 - 37 + 1,
+            "famine taxes in proportion to overshoot"
+        );
+    }
+
+    #[test]
+    fn famine_starves_the_weakest_toward_carrying_capacity() {
+        // A host stuck over ceiling with nowhere to shed (no peers) must
+        // shrink through the ordinary mortality path: its weakest resident
+        // pins at the hard floor and dies, while its richest — the better
+        // earner — survives on metabolic surplus. This is the organism-level
+        // answer to the scarcity soak, where overcommit ended with the
+        // kernel OOM-killing a whole node instead of units starving.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(2);
+        for slot in a.host.units.iter_mut() {
+            slot.vm.eval(": LIVE ;");
+        }
+        a.host.units[0].vm.energy.energy = 5000; // rich
+        a.host.units[1].vm.energy.energy = -400; // already scraping bottom
+        let mut first_death_tick = None;
+        for t in 0..100 {
+            let report = a.tick(&over_ceiling_reading(), never_transport);
+            if !report.deaths.is_empty() {
+                first_death_tick = Some(t);
+                break;
+            }
+        }
+        assert!(first_death_tick.is_some(), "famine must produce a death");
+        assert_eq!(a.host.len(), 1, "population shrank by exactly one");
+        assert!(
+            a.host.units[0].vm.energy.energy > 0,
+            "the survivor is the rich unit — famine selects on surplus"
         );
     }
 
