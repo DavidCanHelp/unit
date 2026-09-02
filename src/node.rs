@@ -138,6 +138,14 @@ pub(crate) fn land_transported_unit(node: &mut crate::multi_unit::MultiUnitNode,
     let idx = node.host.units.len();
     vm.node_id_cache = Some([0xC0, 0xFE, 0, 0, 0, 0, 0, idx as u8]);
     vm.restore_snapshot(snap);
+    // Same distinct-rng rule as MultiUnitHost::spawn: a landed immigrant
+    // keeps VM::new's zero seed otherwise (snapshots don't carry rng
+    // state), and a sink full of immigrants would draw famine luck in
+    // lockstep — resynchronizing exactly the avalanche the luck breaks.
+    node.host.spawned_total += 1;
+    vm.rng = crate::features::mutation::SimpleRng::new(
+        0x9e37_79b9_7f4a_7c15 ^ node.host.spawned_total,
+    );
     node.host.units.push(crate::multi_unit::UnitSlot {
         vm,
         busy: false,
@@ -353,6 +361,7 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     let mut chron_out: u64 = 0;
     let mut chron_in: u64 = 0;
     let mut chron_deaths: u64 = 0;
+    let mut chron_births: u64 = 0;
     let mut last_famine_tax: i64 = 0;
     let mut chron_released_last: u64 = 0;
     loop {
@@ -423,6 +432,19 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                 );
             }
             last_famine_tax = report.famine_tax;
+        }
+
+        // Births. A rebound birth is a real colony event and always logs:
+        // population is regrowing into measured headroom.
+        if let Some((gen, endowment)) = report.birth {
+            chron_births += 1;
+            println!(
+                "[{}] BORN gen={} endowment={} — rebound into headroom, now hosting {} units",
+                log_ts(),
+                gen,
+                endowment,
+                node.host.len()
+            );
         }
 
         // Obituaries. A death is a real colony event and always logs: the
@@ -543,7 +565,7 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                 // freely). Counters are cumulative since node start.
                 let (sol_kinds, sol_copies) = node.host.sol_stats();
                 println!(
-                    "(node-status :id \"{}\" :tick {} :units {} :util {} :headroom {} :out {} :in {} :deaths {} :fit {} :sol-kinds {} :sol-copies {})",
+                    "(node-status :id \"{}\" :tick {} :units {} :util {} :headroom {} :out {} :in {} :deaths {} :births {} :fit {} :sol-kinds {} :sol-copies {})",
                     host_hex,
                     tick_n,
                     node.host.len(),
@@ -552,6 +574,7 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                     chron_out,
                     chron_in,
                     chron_deaths,
+                    chron_births,
                     report.best_fitness,
                     sol_kinds,
                     sol_copies

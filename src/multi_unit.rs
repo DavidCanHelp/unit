@@ -51,6 +51,27 @@ pub const STARVED_TICKS_TO_DIE: u32 = 30;
 /// util ≥ 96% is the kernel OOM-killing every resident at once.
 pub const FAMINE_ACUTE_FUSE: u32 = 6;
 
+/// Utilization below which a host REBOUNDS: population regrows into
+/// measured headroom after famine or emigration has thinned it. Kept a
+/// full 10 points under the 80% famine ceiling so births and deaths
+/// never churn at a shared boundary — the [70%, 80%) band is stable in
+/// both directions. Measured util (not unit count) is deliberately the
+/// signal: whatever heap fragmentation makes of freed memory, births
+/// stop when the measurement says the room is spent.
+pub const REBOUND_UTILIZATION: f64 = 0.70;
+/// Ticks between births during a rebound: refill is deliberate, not a
+/// spawn flood — the newborns' own memory demand must land in measure()
+/// before the next birth decision reads it.
+pub const REBOUND_INTERVAL_TICKS: u64 = 5;
+/// Energy a parent endows its child at birth, on top of the SPAWN_COST
+/// the reproduction itself burns. Only a unit still holding
+/// [`REBOUND_PARENT_MIN`] after both can breed: reproduction is a
+/// surplus behavior, and the endowment keeps the newborn out of famine's
+/// immediate reach without minting energy from nothing.
+pub const BIRTH_ENDOWMENT: i64 = 500;
+/// Post-birth energy a parent must retain to qualify for breeding.
+pub const REBOUND_PARENT_MIN: i64 = 300;
+
 /// Result of dispatching one goal.
 pub struct GoalResult {
     pub unit_index: usize,
@@ -62,6 +83,12 @@ pub struct GoalResult {
 pub struct MultiUnitHost {
     pub units: Vec<UnitSlot>,
     cap: usize,
+    /// Lifetime spawn counter (never decremented). Seeds each new unit's
+    /// rng stream uniquely — slot indexes get reused after deaths, and two
+    /// units sharing a stream draw identical famine luck in lockstep.
+    /// pub(crate): the transport landing path adopts units directly and
+    /// must draw from the same counter.
+    pub(crate) spawned_total: u64,
     /// Backlog of goals that arrived with no idle unit to take them — the
     /// minimal honest demand signal. The synchronous dispatch path
     /// (`execute_goal`) serves each goal immediately, so without this counter
@@ -82,6 +109,7 @@ impl MultiUnitHost {
         MultiUnitHost {
             units: Vec::new(),
             cap,
+            spawned_total: 0,
             pending_goals: 0,
             #[cfg(not(target_arch = "wasm32"))]
             env_field: crate::signaling::EnvironmentalField::new(),
@@ -148,8 +176,12 @@ impl MultiUnitHost {
         // Distinct per-unit rng streams. VM::new seeds every rng with 0, so
         // sibling units would draw identical randomness in lockstep — which
         // turns per-unit famine luck into no variance at all (and synchronizes
-        // any other per-unit draw made at the same cadence).
-        vm.rng = crate::features::mutation::SimpleRng::new(0x9e37_79b9_7f4a_7c15 ^ (idx as u64));
+        // any other per-unit draw made at the same cadence). Seeded from the
+        // lifetime spawn counter, not the slot index: indexes are reused
+        // after deaths.
+        self.spawned_total += 1;
+        vm.rng =
+            crate::features::mutation::SimpleRng::new(0x9e37_79b9_7f4a_7c15 ^ self.spawned_total);
         self.units.push(UnitSlot {
             vm,
             busy: false,
@@ -500,6 +532,8 @@ pub struct TickReport {
     pub mislocated: bool,
     /// Per-unit famine tax applied this tick (0 = host under ceiling).
     pub famine_tax: i64,
+    /// A rebound birth happened this tick: (child generation, child energy).
+    pub birth: Option<(u32, i64)>,
     /// The placement outcome, present only if the local rule fired.
     pub transport: Option<TickTransport>,
 }
@@ -531,6 +565,10 @@ pub struct MultiUnitNode {
     /// Round-robin cursor for the per-tick LIVE budget (see
     /// [`LIVE_BUDGET_PER_TICK`]).
     live_cursor: usize,
+    /// Monotonic tick counter for rate-limited rules (rebound interval).
+    ticks_total: u64,
+    /// Tick of the most recent rebound birth.
+    last_birth_tick: u64,
 }
 
 /// How many idle units run their LIVE word per tick. Unbudgeted, every idle
@@ -600,6 +638,8 @@ impl MultiUnitNode {
             rng: crate::features::mutation::SimpleRng::new(rng_seed),
             scavenged_last_drain: 0,
             live_cursor: 0,
+            ticks_total: 0,
+            last_birth_tick: 0,
         })
     }
 
@@ -924,6 +964,56 @@ impl MultiUnitNode {
                 i += 1;
             }
         }
+        // c3. rebound: births into measured headroom. Famine's demographic
+        //     other half — after deaths or emigration have thinned a host,
+        //     nothing else regrows the population, and post-crisis colonies
+        //     stayed at a fraction of carrying capacity (soak run 6: a
+        //     ~240-capacity node held 32 units for two hours). The rule is
+        //     local and surplus-driven: comfortably under the ceiling, at
+        //     most one birth per interval, and only a unit still rich after
+        //     paying reproduction's full price may breed. The child gets
+        //     the parent's endowment (no energy minted) and inherits its
+        //     antibodies — birth passes immune knowledge down the way death
+        //     bequeaths it sideways.
+        self.ticks_total = self.ticks_total.wrapping_add(1);
+        let mut birth = None;
+        if local.valid
+            && local.utilization < REBOUND_UTILIZATION
+            && !self.host.is_full()
+            && deaths.is_empty()
+            && famine_tax == 0
+            && self.ticks_total.wrapping_sub(self.last_birth_tick) >= REBOUND_INTERVAL_TICKS
+        {
+            let full_price =
+                crate::energy::SPAWN_COST + BIRTH_ENDOWMENT + REBOUND_PARENT_MIN;
+            let parent = self
+                .host
+                .units
+                .iter()
+                .enumerate()
+                .filter(|(_, sl)| sl.vm.energy.energy >= full_price)
+                .max_by_key(|(_, sl)| sl.vm.energy.energy)
+                .map(|(i, _)| i);
+            if let Some(pi) = parent {
+                let paid = self.host.units[pi]
+                    .vm
+                    .energy
+                    .spend(crate::energy::SPAWN_COST + BIRTH_ENDOWMENT, "rebound-birth");
+                if paid {
+                    let antibodies = harvest_antibodies(&self.host.units[pi].vm);
+                    let child_gen = self.host.units[pi].vm.spawn_state.generation + 1;
+                    if let Some(ci) = self.host.spawn() {
+                        let child = &mut self.host.units[ci].vm;
+                        child.energy.energy = BIRTH_ENDOWMENT;
+                        child.spawn_state.generation = child_gen;
+                        child.absorb_antibodies(&antibodies);
+                        self.last_birth_tick = self.ticks_total;
+                        birth = Some((child_gen, BIRTH_ENDOWMENT));
+                    }
+                }
+            }
+        }
+
         // Read the GP engine's own best (evolution.best.fitness), not the
         // mesh fitness ledger (fitness.score) — GP-EVOLVE never writes the
         // latter, which made this report claim "best fitness 0" on live
@@ -971,6 +1061,7 @@ impl MultiUnitNode {
             best_fitness,
             mislocated,
             famine_tax,
+            birth,
             transport: transport_outcome,
         }
     }
@@ -1560,6 +1651,70 @@ mod bridge_tests {
             let report = b.tick(&over_ceiling_reading(), never_transport);
             assert!(report.deaths.is_empty(), "ordinary famine stays gradual");
         }
+    }
+
+    #[test]
+    fn rebound_births_into_measured_headroom() {
+        // Under 70% util with a rich resident: exactly one birth per
+        // interval. The child carries the parent's endowment (no energy
+        // minted) and inherits its antibodies — birth passes immune
+        // knowledge down the way death bequeaths it sideways.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(2);
+        for slot in a.host.units.iter_mut() {
+            slot.vm.eval(": LIVE ;");
+        }
+        a.host.units[0].vm.eval(": SOL-HERITAGE 7 ;");
+        a.host.units[0].vm.energy.energy = 5000; // the qualifying parent
+        a.host.units[1].vm.energy.energy = 100; // too poor to breed
+
+        // Tick 1..=REBOUND_INTERVAL_TICKS-1: interval not yet elapsed.
+        for _ in 0..(REBOUND_INTERVAL_TICKS - 1) {
+            let r = a.tick(&under_ceiling_reading(), never_transport);
+            assert!(r.birth.is_none(), "no birth before the interval elapses");
+        }
+        let r = a.tick(&under_ceiling_reading(), never_transport);
+        assert!(r.birth.is_some(), "interval elapsed + headroom + surplus → birth");
+        assert_eq!(a.host.len(), 3, "population grew by one");
+        let child = &mut a.host.units[2].vm;
+        // Born after this tick's regen pass: exactly the endowment.
+        assert_eq!(child.energy.energy, BIRTH_ENDOWMENT);
+        assert_eq!(child.spawn_state.generation, 1, "child is next generation");
+        child.eval("SOL-HERITAGE");
+        assert_eq!(child.stack.last().copied(), Some(7), "child inherited the antibody");
+        // Parent paid the full price from its own reserves.
+        assert!(
+            a.host.units[0].vm.energy.energy
+                < 5000 - crate::energy::SPAWN_COST - BIRTH_ENDOWMENT
+                + REBOUND_INTERVAL_TICKS as i64 + 2,
+            "parent paid SPAWN_COST + BIRTH_ENDOWMENT"
+        );
+    }
+
+    #[test]
+    fn rebound_never_fires_over_threshold_or_without_surplus() {
+        // 75% util (over REBOUND_UTILIZATION, under the famine ceiling):
+        // the stable band — no births, no famine.
+        let banded = crate::resources::HostResources::from_parts(1000, 250, 0.0, 4);
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(1);
+        a.host.units[0].vm.eval(": LIVE ;");
+        a.host.units[0].vm.energy.energy = 5000;
+        for _ in 0..(REBOUND_INTERVAL_TICKS * 3) {
+            let r = a.tick(&banded, never_transport);
+            assert!(r.birth.is_none(), "the [70%,80%) band must be still");
+            assert_eq!(r.famine_tax, 0);
+        }
+        // Ample headroom but no unit can afford reproduction: no birth.
+        let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
+        b.spawn_n(1);
+        b.host.units[0].vm.eval(": LIVE ;");
+        b.host.units[0].vm.energy.energy = 500; // below the full price
+        for _ in 0..(REBOUND_INTERVAL_TICKS * 3) {
+            let r = b.tick(&under_ceiling_reading(), never_transport);
+            assert!(r.birth.is_none(), "reproduction is a surplus behavior");
+        }
+        assert_eq!(b.host.len(), 1);
     }
 
     #[test]

@@ -139,12 +139,13 @@ change; these shapes may not). Parse them with any sexp reader.
 | `:util` / `:headroom` | measured utilization / advertised headroom (%) |
 | `:out` / `:in` | cumulative confirmed transports out / landed in |
 | `:deaths` | cumulative starvation deaths |
+| `:births` | cumulative rebound births (population regrowth into headroom) |
 | `:fit` | best fitness across ACTIVE evolutions (reads low while climbing) |
 | `:sol-kinds` / `:sol-copies` | distinct antibodies known / copies installed |
 
-`:out`, `:in`, and `:deaths` are event-derived, so an external tool can
-account for every unit: at any quiescent moment,
-`units == initial + in − out − deaths`, and a surplus equals landings
+`:out`, `:in`, `:deaths`, and `:births` are event-derived, so an external
+tool can account for every unit: at any quiescent moment,
+`units == initial + in − out − deaths + births`, and a surplus equals landings
 whose confirms were lost (documented fail-toward-duplication).
 
 **`RECRUITS-SEXP`** — the recruit ledger: a `(recruit-slots :count N)`

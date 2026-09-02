@@ -23,6 +23,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `units == expected + landed − released − starved`, with `:deaths` on
   the conservation line.
 
+### Rebound (famine's demographic other half)
+
+- **Births into measured headroom.** After famine or emigration thins a
+  host, nothing regrew the population — post-crisis colonies idled at a
+  fraction of carrying capacity (a ~240-capacity node held 32 units for
+  two hours). Now, comfortably under the ceiling (util < 70%, a stable
+  band below famine's 80%), at most one birth per interval: the richest
+  unit still holding reserves after paying SPAWN_COST + BIRTH_ENDOWMENT
+  breeds; the child starts with exactly the parent's endowment (no
+  energy minted) and inherits the parent's antibodies — birth passes
+  immune knowledge down the way death bequeaths it sideways. Births are
+  driven by *measured* util, so whatever heap fragmentation does to
+  freed memory, regrowth stops when the measurement says the room is
+  spent.
+- `(node-status …)` gains `:births`; the accounting identity becomes
+  `units == initial + in − out − deaths + births` (soak report and docs
+  updated).
+- Landed immigrants now get distinct rng streams too (seeded from the
+  host's lifetime spawn counter) — a sink full of immigrants drew
+  famine luck in lockstep, quietly resurrecting avalanche mortality.
+
 ### Famine hardening (scarcity soak runs 4–6)
 
 - Per-unit foraging luck (50–150% of the tax, distinct rng stream per
