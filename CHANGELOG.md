@@ -23,6 +23,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `units == expected + landed − released − starved`, with `:deaths` on
   the conservation line.
 
+### Abundance (the income half of energy-tracks-habitat)
+
+- **The habitat feeds.** Run 7 showed rebound starving of capital: 3
+  births in 3 hours — post-famine survivors are paupers, breeding costs
+  ~1000 energy, and a scarcity colony has no income (GP is a net sink;
+  passive regen is +1). Below the rebound threshold residents now earn
+  extra regen in proportion to unused headroom (up to
+  `ABUNDANCE_REGEN_MAX` = 9/tick on an empty host, fading to zero at
+  70% util) — the symmetric other half of the famine tax, making energy
+  an honest function of habitat state in both directions. The
+  [70%, 80%) band is metabolically neutral and still.
+- Starvation accounting moved after the LIVE phase (metabolize, live,
+  then account): checking pre-LIVE let abundance income lift a runaway
+  unit out of the floor zone before its burn, making unsustainable
+  lifestyles immortal in a rich habitat.
+
 ### Rebound (famine's demographic other half)
 
 - **Births into measured headroom.** After famine or emigration thins a

@@ -877,22 +877,26 @@ impl MultiUnitNode {
             }
             tax
         } else {
+            // Abundance: the habitat feeds. Below the rebound threshold,
+            // residents earn extra regen in proportion to unused headroom —
+            // the income side of the energy-tracks-habitat symmetry whose
+            // expense side is the famine tax above. This is what funds
+            // rebound births: without it, post-famine survivors hover at
+            // poverty and the population never regrows.
+            if local.valid && local.utilization < REBOUND_UTILIZATION {
+                let fraction =
+                    ((REBOUND_UTILIZATION - local.utilization) / REBOUND_UTILIZATION).clamp(0.0, 1.0);
+                let bonus = (fraction * crate::energy::ABUNDANCE_REGEN_MAX as f64) as i64;
+                if bonus > 0 {
+                    for slot in self.host.units.iter_mut() {
+                        slot.vm.energy.earn(bonus, "abundance");
+                    }
+                }
+            }
             0
         };
-        //    A unit pinned at the hard floor is living beyond its means;
-        //    consecutive pinned ticks are counted toward death. Ordinary GP
-        //    debt hovers above the floor and resets nothing.
         for slot in self.host.units.iter_mut() {
             slot.vm.energy.tick();
-            if slot.vm.energy.at_hard_floor() {
-                // Acute famine burns the fuse FAMINE_ACUTE_FUSE ticks per
-                // tick: with the kernel seconds from killing the whole
-                // host, individual deaths must land first so their freed
-                // memory (trimmed on the death path) relieves the node.
-                slot.starved_ticks += if famine_acute { FAMINE_ACUTE_FUSE } else { 1 };
-            } else {
-                slot.starved_ticks = 0;
-            }
         }
 
         // c. unworked units run their LIVE word — the dictionary-resident
@@ -926,6 +930,26 @@ impl MultiUnitNode {
                 // energy gifts — so evolved social behavior actually flows
                 // between siblings every tick.
                 self.host.route_signals_from(i);
+            }
+        }
+
+        // c1b. starvation accounting, AFTER the LIVE phase so it reads the
+        //     post-burn balance. A unit pinned at the hard floor is living
+        //     beyond its means; consecutive pinned ticks count toward
+        //     death, and ordinary GP debt hovers above the floor and
+        //     resets nothing. Checking pre-LIVE let abundance income lift
+        //     a runaway unit out of the floor zone each tick before its
+        //     burn — making unsustainable lifestyles immortal in a rich
+        //     habitat. Metabolize, live, then account.
+        for slot in self.host.units.iter_mut() {
+            if slot.vm.energy.at_hard_floor() {
+                // Acute famine burns the fuse FAMINE_ACUTE_FUSE ticks per
+                // tick: with the kernel seconds from killing the whole
+                // host, individual deaths must land first so their freed
+                // memory (trimmed on the death path) relieves the node.
+                slot.starved_ticks += if famine_acute { FAMINE_ACUTE_FUSE } else { 1 };
+            } else {
+                slot.starved_ticks = 0;
             }
         }
 
@@ -1566,14 +1590,15 @@ mod bridge_tests {
             slot.vm.eval(": LIVE ;");
             slot.vm.energy.energy = 1000;
         }
-        // Under the ceiling: passive regen only.
+        // Under the ceiling: passive regen plus the abundance bonus
+        // (50% util → +2); no famine.
         let _ = a.tick(&under_ceiling_reading(), never_transport);
-        assert_eq!(a.host.units[0].vm.energy.energy, 1001, "no famine under ceiling");
+        assert_eq!(a.host.units[0].vm.energy.energy, 1003, "no famine under ceiling");
         // Over the ceiling at 95% util: overshoot 0.75 of the post-ceiling
         // range, base tax 1 + 0.75×49 = 37, drawn per unit at 50–150%
         // foraging luck (18..=55), minus the regen the tick pays back.
         let _ = a.tick(&over_ceiling_reading(), never_transport);
-        let taxed = 1001 + 1 - a.host.units[0].vm.energy.energy;
+        let taxed = 1003 + 1 - a.host.units[0].vm.energy.energy;
         assert!(
             (18..=55).contains(&taxed),
             "famine taxes in proportion to overshoot with per-unit luck (got {})",
@@ -1581,7 +1606,7 @@ mod bridge_tests {
         );
         // Sibling units must NOT be taxed in lockstep — identical rng
         // streams would resynchronize starvation into avalanche mortality.
-        let taxed1 = 1001 + 1 - a.host.units[1].vm.energy.energy;
+        let taxed1 = 1003 + 1 - a.host.units[1].vm.energy.energy;
         assert_ne!(taxed, taxed1, "per-unit foraging luck diverges between siblings");
     }
 
@@ -1718,6 +1743,51 @@ mod bridge_tests {
     }
 
     #[test]
+    fn abundance_feeds_in_proportion_to_headroom() {
+        // 50% util: fraction (0.70−0.50)/0.70 ≈ 0.286 → bonus 2, plus the
+        // ordinary +1 regen. The income side of energy-tracks-habitat.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(1);
+        a.host.units[0].vm.eval(": LIVE ;");
+        a.host.units[0].vm.energy.energy = 100;
+        let _ = a.tick(&under_ceiling_reading(), never_transport);
+        assert_eq!(a.host.units[0].vm.energy.energy, 103, "abundance bonus + regen");
+        // In the [70%, 80%) band there is no habitat income and no famine:
+        // just the bare +1 regen. The band is metabolically neutral.
+        let banded = crate::resources::HostResources::from_parts(1000, 250, 0.0, 4);
+        let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
+        b.spawn_n(1);
+        b.host.units[0].vm.eval(": LIVE ;");
+        b.host.units[0].vm.energy.energy = 2000;
+        let _ = b.tick(&banded, never_transport);
+        assert_eq!(b.host.units[0].vm.energy.energy, 2001, "band is income-neutral");
+    }
+
+    #[test]
+    fn abundance_funds_post_crisis_rebound() {
+        // The run-7 finding: famine survivors are paupers, breeding costs
+        // ~1000 energy, and with no income the population never regrows
+        // (3 births in 3 hours at 39% util). With abundance income the
+        // same paupers must refatten and breed within a bounded horizon.
+        let empty = crate::resources::HostResources::from_parts(1000, 610, 0.0, 4); // 39% util
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(2);
+        for slot in a.host.units.iter_mut() {
+            slot.vm.eval(": LIVE ;");
+            slot.vm.energy.energy = 10; // post-famine poverty
+        }
+        let mut births = 0;
+        for _ in 0..400 {
+            let r = a.tick(&empty, never_transport);
+            if r.birth.is_some() {
+                births += 1;
+            }
+        }
+        assert!(births >= 1, "abundance income must fund at least one birth");
+        assert!(a.host.len() > 2, "population regrows under abundance");
+    }
+
+    #[test]
     fn evolved_altruism_flows_through_the_tick() {
         // A lineage that evolved generosity into LIVE: each tick it gives 10
         // to the neediest sibling. The tick must route the gift.
@@ -1730,10 +1800,11 @@ mod bridge_tests {
 
         let _ = a.tick(&under_ceiling_reading(), never_transport);
 
-        // Sibling got the gift (+10) and its passive regen (+1).
-        assert_eq!(a.host.units[1].vm.energy.energy, 11, "gift arrived via the tick");
-        // Donor: -11 for the gift+friction, +1 regen.
-        assert_eq!(a.host.units[0].vm.energy.energy, 1000 - 11 + 1);
+        // Sibling got the gift (+10), passive regen (+1), and the 50%-util
+        // abundance bonus (+2).
+        assert_eq!(a.host.units[1].vm.energy.energy, 13, "gift arrived via the tick");
+        // Donor: -11 for the gift+friction, +1 regen, +2 abundance.
+        assert_eq!(a.host.units[0].vm.energy.energy, 1000 - 11 + 1 + 2);
     }
 }
 

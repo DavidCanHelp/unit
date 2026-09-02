@@ -79,6 +79,16 @@ pub const FAMINE_TAX_MAX: i64 = 50;
 pub const FAMINE_ACUTE_OVERSHOOT: f64 = 0.8;
 /// Tax multiplier under acute famine.
 pub const FAMINE_ACUTE_MULTIPLIER: i64 = 4;
+/// Extra per-tick regen at total abundance (an empty host), on top of
+/// PASSIVE_REGEN. Famine's symmetric other half: below the rebound
+/// threshold the habitat FEEDS its residents in proportion to unused
+/// headroom, so post-crisis survivors refatten to breeding wealth
+/// instead of hovering at poverty forever (observed: 3 births in 3
+/// hours on a node at 39% util — reproduction requires ~1000 energy
+/// and nothing in a scarcity colony ever earns it back). The bonus
+/// fades to zero as util approaches the rebound threshold; the
+/// [70%, 80%) band stays income-neutral and still.
+pub const ABUNDANCE_REGEN_MAX: i64 = 9;
 
 const HARD_FLOOR: i64 = -500;
 
