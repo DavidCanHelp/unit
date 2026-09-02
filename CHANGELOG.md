@@ -23,6 +23,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `units == expected + landed − released − starved`, with `:deaths` on
   the conservation line.
 
+### Recovery unblocked (run-8 findings)
+
+- **Periodic malloc_trim on the measure cadence.** The event-based trim
+  (sheds/deaths) never fires on a quiet post-crisis node, so glibc
+  arenas' retained free pages measured as occupancy for hours — parking
+  a 44-unit node at util 67% and starving it of abundance income.
+  Trimming just before each measure keeps the reading honest
+  continuously.
+- **Abundance bonus floored at 1** under the rebound threshold: the
+  pure linear fade rounded to zero just below 70%, a dead zone where an
+  "abundant" host earned nothing and recovery stalled asymptotically
+  (2 births in 3 hours).
+
 ### Abundance (the income half of energy-tracks-habitat)
 
 - **The habitat feeds.** Run 7 showed rebound starving of capital: 3

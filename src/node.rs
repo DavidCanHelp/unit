@@ -392,6 +392,18 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
             }
         }
 
+        // Periodic physical release, on the measure cadence: GP evolution
+        // continuously allocates and frees, and glibc arenas retain the
+        // freed pages — the event-based trim below only fires on sheds and
+        // deaths, so a quiet post-crisis node measured its fragmentation
+        // as occupancy for hours (run 8: 44 units parked at util 67%,
+        // ~79 MiB of it retained free pages — right inside the dead zone
+        // where abundance income rounds to zero and recovery stalls).
+        // Trimming just before the measure keeps the reading honest.
+        if tick_n.is_multiple_of(RESOURCE_MEASURE_EVERY_TICKS) {
+            mem_release::trim();
+        }
+
         // Measure this host's resources each tick for the local rule (a cheap
         // /proc read). The real transport sends to a peer's TCP listener.
         let res = crate::resources::HostResources::measure();

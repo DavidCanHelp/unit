@@ -886,11 +886,16 @@ impl MultiUnitNode {
             if local.valid && local.utilization < REBOUND_UTILIZATION {
                 let fraction =
                     ((REBOUND_UTILIZATION - local.utilization) / REBOUND_UTILIZATION).clamp(0.0, 1.0);
-                let bonus = (fraction * crate::energy::ABUNDANCE_REGEN_MAX as f64) as i64;
-                if bonus > 0 {
-                    for slot in self.host.units.iter_mut() {
-                        slot.vm.energy.earn(bonus, "abundance");
-                    }
+                // Floored at 1: any under-threshold habitat feeds at least
+                // a little. A pure linear fade rounds to zero just below
+                // the threshold, leaving a dead zone where a node is
+                // "abundant" but earns nothing — recovery then stalls
+                // asymptotically (run 8: a crisis node parked at 67% util
+                // managed 2 births in 3 hours).
+                let bonus =
+                    ((fraction * crate::energy::ABUNDANCE_REGEN_MAX as f64) as i64).max(1);
+                for slot in self.host.units.iter_mut() {
+                    slot.vm.energy.earn(bonus, "abundance");
                 }
             }
             0
@@ -1761,6 +1766,16 @@ mod bridge_tests {
         b.host.units[0].vm.energy.energy = 2000;
         let _ = b.tick(&banded, never_transport);
         assert_eq!(b.host.units[0].vm.energy.energy, 2001, "band is income-neutral");
+        // Just under the threshold (69% util) the linear bonus computes to
+        // zero but is floored at 1 — no dead zone where an "abundant" host
+        // pays nothing and recovery stalls asymptotically.
+        let near = crate::resources::HostResources::from_parts(1000, 310, 0.0, 4);
+        let mut c = MultiUnitNode::new(8, None, vec![]).unwrap();
+        c.spawn_n(1);
+        c.host.units[0].vm.eval(": LIVE ;");
+        c.host.units[0].vm.energy.energy = 100;
+        let _ = c.tick(&near, never_transport);
+        assert_eq!(c.host.units[0].vm.energy.energy, 102, "floor of 1 under threshold");
     }
 
     #[test]
