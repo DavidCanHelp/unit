@@ -185,10 +185,23 @@ the organism's cleanest: winter settled at 236 units, spring regrew to
 exactly 300 (64 births for 64 deaths, gen-max 2) — and the drill
 exposed the last physical lie: RSS stayed at 195 MB, 236 living units
 plus every corpse, because glibc's dynamic mmap threshold had turned
-per-VM buffers into unreturnable heap. `mallopt` at node start pins the
-threshold so death frees habitat; `(season-ghost …)` reports resident
-KB per living unit. Still open: spring's ceiling — the drill ends while
-growth is climbing.
+per-VM buffers into unreturnable heap. Pinning glibc's mmap threshold
+(`mallopt` before the first spawn) was tried and measured — 809 KB per
+living unit with it, 772 without — and removed: the footprint is
+small-chunk evolution state that no threshold returns. The finding
+that stands is the **ratchet**: RSS tracks the largest population ever
+hosted, corpses recycle through births (spring regrew to 300 with RSS
+unchanged), and a drought cannot walk a budget under residency. The
+drill therefore asserts the organism's real obligation — population
+within 15% below the carrying capacity of whatever budget was reached,
+never above — and passes 13/13:
+
+```
+(season-verdict :boot 300 :winter 252 :spring 300
+                :deaths 48 :births 48 :gen-max 2 :oom 0 :passed 13 :failed 0)
+```
+
+Still open: spring's ceiling — the drill ends while growth is climbing.
 
 ## The observability surfaces these assert against
 

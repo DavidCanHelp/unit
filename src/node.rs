@@ -212,39 +212,25 @@ mod run_signals {
 mod mem_release {
     extern "C" {
         fn malloc_trim(pad: usize) -> i32;
-        fn mallopt(param: i32, value: i32) -> i32;
     }
-    // glibc mallopt parameters (malloc.h).
-    const M_TRIM_THRESHOLD: i32 = -1;
-    const M_MMAP_THRESHOLD: i32 = -3;
-
     pub fn trim() {
         unsafe {
             let _ = malloc_trim(0);
         }
     }
-
-    /// Make death physically free its habitat. glibc's mmap threshold is
-    /// DYNAMIC: after the first large chunk is freed, the threshold rises
-    /// to that size, so every later per-VM buffer of that size comes from
-    /// the heap instead of mmap — and freed heap interiors are not
-    /// returnable by malloc_trim. The seasons drill measured the result:
-    /// 236 living units and 64 dead ones held 195 MB, exactly 236 × 650 KB
-    /// plus every corpse. Pinning the threshold disables the dynamic
-    /// ramp, so a dying unit's large buffers go back to the OS at once and
-    /// the measurement tracks the living population.
-    pub fn configure() {
-        unsafe {
-            let _ = mallopt(M_MMAP_THRESHOLD, 64 * 1024);
-            let _ = mallopt(M_TRIM_THRESHOLD, 128 * 1024);
-        }
-    }
+    // Tried and measured, then removed: pinning glibc's mmap threshold
+    // (mallopt M_MMAP_THRESHOLD/M_TRIM_THRESHOLD before the first spawn)
+    // changed nothing — 809 KB resident per living unit with it, 772
+    // without. A unit's saturated footprint is small-chunk evolution
+    // state, not large buffers, and no threshold returns freed heap
+    // interiors. The footprint RATCHETS: it tracks the largest population
+    // ever hosted, births reuse the corpses' memory, and only the
+    // periodic trim above returns what happens to be returnable.
 }
 
 #[cfg(not(all(not(target_arch = "wasm32"), target_os = "linux", target_env = "gnu")))]
 mod mem_release {
     pub fn trim() {}
-    pub fn configure() {}
 }
 
 /// UTC `HH:MM:SS` timestamp for log lines — zero-dependency, comparable across
@@ -296,10 +282,6 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
             m.set_gossip_fanout(Some(k));
         }
     }
-    // Before the first unit is born: pin the allocator so that death
-    // returns memory (see mem_release::configure). Order matters — the
-    // buffers that must be mmap-backed are allocated by this spawn.
-    mem_release::configure();
     let spawned = node.spawn_n(n);
     let host_hex = node.host_id_hex().unwrap_or_default();
     let mesh_port = node.mesh_port().unwrap_or(0);
