@@ -23,6 +23,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `units == expected + landed − released − starved`, with `:deaths` on
   the conservation line.
 
+### Chronic vs acute famine (run-11 finding)
+
+- Run 11 was the scarcity gauntlet's first clean sheet: zero OOM kills,
+  zero stale nodes, exact conservation at every checkpoint, and the
+  best evolution rate of any scarcity run (680 kinds gained — a thinned
+  colony evolves better than a crammed one). One imperfection: the boot
+  famine ran ACUTE off the committed signal and over-killed ~65 units
+  per node past carrying capacity. Acute famine now answers the
+  MEASUREMENT only — the kernel acts on real memory, not promises — so
+  a boot overcommit shrinks by staggered chronic starvation while the
+  emergency fuse stays reserved for genuinely imminent OOM.
+
 ### Habitat fullness (run-10 finding)
 
 - **Famine, abundance, and rebound now all read

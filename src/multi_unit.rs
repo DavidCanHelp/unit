@@ -878,7 +878,18 @@ impl MultiUnitNode {
             let overshoot = ((habitat_util - crate::resources::CEILING_UTILIZATION)
                 / (1.0 - crate::resources::CEILING_UTILIZATION))
                 .clamp(0.0, 1.0);
-            famine_acute = overshoot >= crate::energy::FAMINE_ACUTE_OVERSHOOT;
+            // Acute famine answers the MEASUREMENT, never the commitment:
+            // it exists because the kernel is seconds away, and the kernel
+            // acts on real memory, not on promises. A boot-overcommitted
+            // node with tiny RSS is in CHRONIC famine — its population
+            // must shrink, but by staggered starvation, not the emergency
+            // fuse (run 11: acute-on-commitment over-killed ~65 units per
+            // node past carrying capacity before famine lifted).
+            let measured_overshoot = ((local.utilization
+                - crate::resources::CEILING_UTILIZATION)
+                / (1.0 - crate::resources::CEILING_UTILIZATION))
+                .clamp(0.0, 1.0);
+            famine_acute = measured_overshoot >= crate::energy::FAMINE_ACUTE_OVERSHOOT;
             let mut tax = 1 + (overshoot * (crate::energy::FAMINE_TAX_MAX - 1) as f64) as i64;
             if famine_acute {
                 tax *= crate::energy::FAMINE_ACUTE_MULTIPLIER;
@@ -1839,14 +1850,16 @@ mod bridge_tests {
         }
         let r = a.tick(&young, never_transport);
         assert!(r.famine_tax > 0, "famine prices the commitment, not the reading");
+        // Chronic famine (the measurement reads only 10%, so no acute
+        // fuse): drain to the floor plus the full 30-tick fuse.
         let mut died = false;
-        for _ in 0..40 {
+        for _ in 0..150 {
             if !a.tick(&young, never_transport).deaths.is_empty() {
                 died = true;
                 break;
             }
         }
-        assert!(died, "acute famine sheds the overcommit before the wall");
+        assert!(died, "chronic famine sheds the overcommit before the wall");
         assert_eq!(a.host.len(), 2, "population shrank toward what the budget feeds");
     }
 
