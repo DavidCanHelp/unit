@@ -853,9 +853,29 @@ impl MultiUnitNode {
         //    OOM-killing a whole node instead of units starving (observed
         //    in the 2026-08-31 scarcity soak). An invalid measurement
         //    taxes nothing: fail toward life.
+        // Habitat fullness: the worse of what the host MEASURES and what it
+        // has COMMITTED to feed (hosted units at saturated cost). The
+        // measurement is reactive — a young or freshly-landed population's
+        // demand materializes minutes later — and run 10 showed what
+        // pricing only one side costs: with trading refused, boot-
+        // overcommitted nodes waited for the measurement to cross the
+        // ceiling while their commitment already guaranteed death, and the
+        // kernel killed all three before famine landed once. Priced on
+        // commitment, famine engages at tick 0 of an overcommit and the
+        // population shrinks BEFORE memory approaches the wall — the race
+        // against the OOM-killer stops being run at all.
+        let committed_fraction = if local.mem_total_kb > 0 {
+            (self.host.units.len() as u64 * crate::resources::SATURATED_UNIT_COST_KB) as f64
+                / local.mem_total_kb as f64
+        } else {
+            0.0
+        };
+        let habitat_util = local.utilization.max(committed_fraction);
         let mut famine_acute = false;
-        let famine_tax = if local.valid && !local.has_headroom() {
-            let overshoot = ((local.utilization - crate::resources::CEILING_UTILIZATION)
+        let famine_tax = if local.valid
+            && habitat_util >= crate::resources::CEILING_UTILIZATION
+        {
+            let overshoot = ((habitat_util - crate::resources::CEILING_UTILIZATION)
                 / (1.0 - crate::resources::CEILING_UTILIZATION))
                 .clamp(0.0, 1.0);
             famine_acute = overshoot >= crate::energy::FAMINE_ACUTE_OVERSHOOT;
@@ -883,9 +903,9 @@ impl MultiUnitNode {
             // expense side is the famine tax above. This is what funds
             // rebound births: without it, post-famine survivors hover at
             // poverty and the population never regrows.
-            if local.valid && local.utilization < REBOUND_UTILIZATION {
+            if local.valid && habitat_util < REBOUND_UTILIZATION {
                 let fraction =
-                    ((REBOUND_UTILIZATION - local.utilization) / REBOUND_UTILIZATION).clamp(0.0, 1.0);
+                    ((REBOUND_UTILIZATION - habitat_util) / REBOUND_UTILIZATION).clamp(0.0, 1.0);
                 // Floored at 1: any under-threshold habitat feeds at least
                 // a little. A pure linear fade rounds to zero just below
                 // the threshold, leaving a dead zone where a node is
@@ -1007,7 +1027,7 @@ impl MultiUnitNode {
         self.ticks_total = self.ticks_total.wrapping_add(1);
         let mut birth = None;
         if local.valid
-            && local.utilization < REBOUND_UTILIZATION
+            && habitat_util < REBOUND_UTILIZATION
             && !self.host.is_full()
             && deaths.is_empty()
             && famine_tax == 0
@@ -1363,9 +1383,9 @@ mod bridge_tests {
     #[test]
     fn node_is_mislocated_tracks_local_headroom() {
         let a = MultiUnitNode::new(8, None, vec![]).unwrap();
-        let healthy = crate::resources::HostResources::from_parts(1000, 500, 0.0, 4);
+        let healthy = crate::resources::HostResources::from_parts(1_024_000, 512_000, 0.0, 4);
         assert!(!a.is_mislocated(&healthy), "with room a unit never flees");
-        let pressed = crate::resources::HostResources::from_parts(1000, 50, 0.0, 4);
+        let pressed = crate::resources::HostResources::from_parts(1_024_000, 51_200, 0.0, 4);
         assert!(a.is_mislocated(&pressed), "over the ceiling → mislocated");
     }
 
@@ -1401,10 +1421,10 @@ mod bridge_tests {
     // A reading with ample headroom (50% util, under the 80% ceiling) and one
     // over the ceiling (95% util). from_parts is pub(crate).
     fn under_ceiling_reading() -> crate::resources::HostResources {
-        crate::resources::HostResources::from_parts(1000, 500, 0.0, 4)
+        crate::resources::HostResources::from_parts(1_024_000, 512_000, 0.0, 4)
     }
     fn over_ceiling_reading() -> crate::resources::HostResources {
-        crate::resources::HostResources::from_parts(1000, 50, 0.0, 4)
+        crate::resources::HostResources::from_parts(1_024_000, 51_200, 0.0, 4)
     }
     // A transport stub that must never run (asserts the rule didn't fire).
     fn never_transport(
@@ -1653,7 +1673,7 @@ mod bridge_tests {
         // 1000-energy unit must die within ~25 ticks — gradual famine's
         // ~60–90 needed ticks is exactly how three soak nodes lost to the
         // OOM-killer.
-        let acute = crate::resources::HostResources::from_parts(1000, 30, 0.0, 4);
+        let acute = crate::resources::HostResources::from_parts(1_024_000, 30_720, 0.0, 4);
         let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
         a.spawn_n(1);
         a.host.units[0].vm.eval(": LIVE ;");
@@ -1725,7 +1745,7 @@ mod bridge_tests {
     fn rebound_never_fires_over_threshold_or_without_surplus() {
         // 75% util (over REBOUND_UTILIZATION, under the famine ceiling):
         // the stable band — no births, no famine.
-        let banded = crate::resources::HostResources::from_parts(1000, 250, 0.0, 4);
+        let banded = crate::resources::HostResources::from_parts(1_024_000, 256_000, 0.0, 4);
         let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
         a.spawn_n(1);
         a.host.units[0].vm.eval(": LIVE ;");
@@ -1759,7 +1779,7 @@ mod bridge_tests {
         assert_eq!(a.host.units[0].vm.energy.energy, 103, "abundance bonus + regen");
         // In the [70%, 80%) band there is no habitat income and no famine:
         // just the bare +1 regen. The band is metabolically neutral.
-        let banded = crate::resources::HostResources::from_parts(1000, 250, 0.0, 4);
+        let banded = crate::resources::HostResources::from_parts(1_024_000, 256_000, 0.0, 4);
         let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
         b.spawn_n(1);
         b.host.units[0].vm.eval(": LIVE ;");
@@ -1769,7 +1789,7 @@ mod bridge_tests {
         // Just under the threshold (69% util) the linear bonus computes to
         // zero but is floored at 1 — no dead zone where an "abundant" host
         // pays nothing and recovery stalls asymptotically.
-        let near = crate::resources::HostResources::from_parts(1000, 310, 0.0, 4);
+        let near = crate::resources::HostResources::from_parts(1_024_000, 317_440, 0.0, 4);
         let mut c = MultiUnitNode::new(8, None, vec![]).unwrap();
         c.spawn_n(1);
         c.host.units[0].vm.eval(": LIVE ;");
@@ -1784,7 +1804,7 @@ mod bridge_tests {
         // ~1000 energy, and with no income the population never regrows
         // (3 births in 3 hours at 39% util). With abundance income the
         // same paupers must refatten and breed within a bounded horizon.
-        let empty = crate::resources::HostResources::from_parts(1000, 610, 0.0, 4); // 39% util
+        let empty = crate::resources::HostResources::from_parts(1_024_000, 624_640, 0.0, 4); // 39% util
         let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
         a.spawn_n(2);
         for slot in a.host.units.iter_mut() {
@@ -1800,6 +1820,34 @@ mod bridge_tests {
         }
         assert!(births >= 1, "abundance income must fund at least one birth");
         assert!(a.host.len() > 2, "population regrows under abundance");
+    }
+
+    #[test]
+    fn committed_overcommit_starts_famine_before_memory_does() {
+        // A tiny budget (2000 KiB) hosting 3 units commits ~97.5% at
+        // saturated cost while the MEASUREMENT still reads 10% — the run-10
+        // configuration in miniature (boot overcommit, trading refused,
+        // reactive famine waiting for a reading that arrives after the
+        // kernel). Famine must engage acutely on the commitment, at tick
+        // zero, and shrink the population before memory ever materializes.
+        let young = crate::resources::HostResources::from_parts(2000, 1800, 0.0, 4);
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(3);
+        for slot in a.host.units.iter_mut() {
+            slot.vm.eval(": LIVE ;");
+            slot.vm.energy.energy = 1000;
+        }
+        let r = a.tick(&young, never_transport);
+        assert!(r.famine_tax > 0, "famine prices the commitment, not the reading");
+        let mut died = false;
+        for _ in 0..40 {
+            if !a.tick(&young, never_transport).deaths.is_empty() {
+                died = true;
+                break;
+            }
+        }
+        assert!(died, "acute famine sheds the overcommit before the wall");
+        assert_eq!(a.host.len(), 2, "population shrank toward what the budget feeds");
     }
 
     #[test]
@@ -2166,7 +2214,7 @@ mod tests {
 
         let mut h = MultiUnitHost::new(3);
         h.spawn_n(2);
-        let healthy = HostResources::from_parts(1000, 500, 0.0, 4); // 50% < ceiling
+        let healthy = HostResources::from_parts(1_024_000, 512_000, 0.0, 4); // 50% < ceiling
         let spawn = SpawnState::new();
 
         // No demand yet → rule does not fire, regardless of headroom.
@@ -2182,7 +2230,7 @@ mod tests {
         assert!(h.replication_decision(&healthy, &spawn).is_ok());
 
         // Same demand, but host over the ceiling → refuse (never a target).
-        let over = HostResources::from_parts(1000, 50, 0.0, 4); // 95% used
+        let over = HostResources::from_parts(1_024_000, 51_200, 0.0, 4); // 95% used
         let err = h.replication_decision(&over, &spawn).unwrap_err();
         assert!(err.contains("ceiling"), "expected ceiling refusal: {err}");
 

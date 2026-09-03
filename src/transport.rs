@@ -924,16 +924,16 @@ mod tests {
         use crate::resources::SATURATED_UNIT_COST_KB;
         let budget_192m: u64 = 192 * 1024;
         let budget_512m: u64 = 512 * 1024;
-        // 300 units on a 192 MiB budget commit 150 MiB ≈ 78% — over the
-        // 75% admission cutoff. This is the soak boot state: overcommitted
+        // 300 units on a 192 MiB budget commit ~99% — far over the 75%
+        // admission cutoff. This is the soak boot state: overcommitted
         // colonies must not trade units at all.
         assert!(!admission_committed_ok(300, budget_192m));
-        // A thinned node (200 units ≈ 52%) has real committed room.
+        // A famined-to-capacity node (200 units ≈ 66%) has committed room.
         assert!(admission_committed_ok(200, budget_192m));
-        // The cutoff sits at units × cost / budget == 0.75 → 288 units.
-        assert!(admission_committed_ok(287, budget_192m));
-        assert!(!admission_committed_ok(288, budget_192m));
-        // The same 300 units on a 512 MiB budget commit ~29% — permissive,
+        // The cutoff sits at units × cost / budget == 0.75 → 226 units.
+        assert!(admission_committed_ok(226, budget_192m));
+        assert!(!admission_committed_ok(227, budget_192m));
+        // The same 300 units on a 512 MiB budget commit ~37% — permissive,
         // as the homeostasis soak (which never needed refusals) requires.
         assert!(admission_committed_ok(300, budget_512m));
         // Fail closed on an unmeasurable budget, like the measured gate.

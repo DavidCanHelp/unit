@@ -23,6 +23,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `units == expected + landed − released − starved`, with `:deaths` on
   the conservation line.
 
+### Habitat fullness (run-10 finding)
+
+- **Famine, abundance, and rebound now all read
+  `max(measured, committed)` utilization.** Run 10 was a total loss:
+  the committed admission gate refused all trading (as designed), boot-
+  overcommitted nodes kept their 300 units, and famine — still keyed to
+  the reactive measurement, duty-cycled by trim-induced oscillation
+  around the ceiling — landed zero deaths before the kernel killed all
+  three nodes. Priced on commitment, famine engages at tick 0 of an
+  overcommit and shrinks the population before memory approaches the
+  wall: the race against the OOM-killer stops being run at all.
+  `SATURATED_UNIT_COST_KB` is corrected to the measured 650 and shared
+  by admission and metabolism, so the two ends of the organism agree on
+  what a population costs.
+
 ### Committed-demand admission (run-9 finding)
 
 - **The admission gate now prices what the node has promised, not what
