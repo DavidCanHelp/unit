@@ -97,12 +97,44 @@ via `soak.sh report`:
   stale nodes, every one of 900 units accounted for
   (`347 == 900 + 140 − 140 − 553`), and `:verdict adaptive`.
 
-  Named open problem from that run: **post-crisis undershoot**. Freed
-  heap fragments in glibc arenas, so measured util stays high after
-  deaths and famine prunes well below true carrying capacity (a node
-  at 32 units still measured 66%); with no rebound mechanism (soak
-  nodes don't reproduce), a crisis-hit population stays small. Nature
-  recovers from famine by breeding back — Unit doesn't, yet.
+### The scarcity campaign (runs 4–12, 2026-09-01/03)
+
+Nine further scarcity runs (192 MiB/node, 900 units against ~720 of
+capacity) drove the full resource-ecology mechanism set, every piece
+forced by an observed death and pinned by a unit test plus a soak run:
+
+| Run | Change under test | Outcome |
+|-----|-------------------|---------|
+| 4 | famine | works (one node self-regulates), but avalanche mortality (102 deaths/s) and the sink race lost |
+| 5 | + foraging luck (per-unit tax jitter, distinct rng streams) | avalanche broken (max 26/s); sink race lost again |
+| 6 | + acute famine (util ≥ 96%: tax ×4, fuse ×6) | first colony-wide survival: zero OOM, sink survives its flood |
+| 7 | + rebound births | survival holds, but 3 births/3 h — famine survivors too poor to breed |
+| 8 | + abundance income | dead zone: bonus rounds to 0 near threshold; fragmentation parks util there |
+| 9 | + periodic trim, bonus floor | REGRESSION: honest measurement removed fragmentation's accidental early warning; sink OOMs a 4th time |
+| 10 | + committed-demand admission | TOTAL LOSS: trading refused (correct) but famine still reactive — all 3 nodes OOM at boot overcommit |
+| 11 | + habitat fullness = max(measured, committed) everywhere | first clean sheet: zero OOM, exact conservation, best evolution rate (680 kinds) |
+| 12 | + acute keyed to measurement only | second clean sheet; rebound accelerating (births 4→14→23/h, population climbing) |
+
+What the campaign established:
+
+- **The kernel race must not be run.** Reactive signals — however
+  honest — cannot gate demand that lands minutes after acceptance.
+  Admission and metabolism both price COMMITTED demand
+  (`SATURATED_UNIT_COST_KB` = 650, measured); an overcommitted node
+  enters famine at tick zero, while RSS is still small.
+- **Uniformity kills.** Identical energies, identical taxes, and
+  shared rng streams each independently resynchronized mortality into
+  avalanches; per-unit variance is load-bearing.
+- **Acute answers the measurement, chronic answers the commitment** —
+  the kernel acts on real memory, not promises.
+- **A thinned colony out-evolves a crammed one** (runs 11–12 posted the
+  campaign's best kinds rates at ~55% population).
+
+Still open, deliberately (rate tuning, not mechanism): boot-cohort
+overshoot (the uniform initial population enters the 30-tick fuse
+pipeline together, so famine lift arrives with deaths still in flight),
+and rebound pace (~10 units/h colony-wide at low abundance). Both
+self-correct; neither kills.
 
 ## The observability surfaces these assert against
 
