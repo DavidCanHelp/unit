@@ -20,7 +20,7 @@
 # units == 300 − deaths + births, checked against the chronicle.
 # Assertions read (node-status …) sexp lines only, per drill doctrine.
 #
-#   bash docker/season.sh          # full cycle, ~25 min
+#   bash docker/season.sh          # full cycle, ~70 min
 set -u
 cd "$(dirname "$0")"
 COMPOSE="docker compose -f compose.drill.yml --profile season"
@@ -127,7 +127,26 @@ GEN_MAX=$(nsf gen-max); GEN_MAX=${GEN_MAX:-0}
 [ "$GEN_MAX" -ge 1 ]
 check "spring: heredity depth — children of survivors (gen-max=$GEN_MAX)" $?
 
+echo "=== SEASON: summer (512 MiB held, 25 min) — turnover at capacity ==="
+# The 8 h homeostasis soak froze: zero deaths, zero turnover, generation
+# depth stalled the moment growth stopped. Senescence must keep the gene
+# pool moving in comfort: deaths of old age, slots refilled by rebound
+# from survivors' genomes, population steady, generation depth rising.
+sleep 1500
+SUMMER_UNITS=$(nsf units); SUMMER_BIRTHS=$(nsf births); SUMMER_DEATHS=$(nsf deaths); SUMMER_GEN=$(nsf gen-max)
+SUMMER_UNITS=${SUMMER_UNITS:-0}; SUMMER_BIRTHS=${SUMMER_BIRTHS:-0}; SUMMER_DEATHS=${SUMMER_DEATHS:-0}; SUMMER_GEN=${SUMMER_GEN:-0}
+T_DEATHS=$((SUMMER_DEATHS - SPRING_DEATHS)); T_BIRTHS=$((SUMMER_BIRTHS - SPRING_BIRTHS))
+[ "$T_DEATHS" -gt 0 ]; check "summer: death in comfort — turnover deaths at capacity ($T_DEATHS)" $?
+[ "$T_BIRTHS" -gt 0 ]; check "summer: vacated slots refilled by rebound ($T_BIRTHS births)" $?
+[ "$SUMMER_UNITS" -ge $(( SPRING_UNITS * 85 / 100 )) ]
+check "summer: population steady through turnover ($SPRING_UNITS → $SUMMER_UNITS)" $?
+[ "$SUMMER_GEN" -gt "$GEN_MAX" ]
+check "summer: generation depth still rising (gen-max $GEN_MAX → $SUMMER_GEN)" $?
+[ "$(oomk)" = "0" ]; check "summer: zero oom_kill" $?
+[ "$SUMMER_UNITS" -eq $((300 - SUMMER_DEATHS + SUMMER_BIRTHS)) ]
+check "season: conservation exact through summer (units == 300 − $SUMMER_DEATHS + $SUMMER_BIRTHS)" $?
+
 echo ""
-echo "(season-verdict :boot 300 :winter $WINTER_UNITS :spring $SPRING_UNITS :deaths $SPRING_DEATHS :births $SPRING_BIRTHS :gen-max $GEN_MAX :oom $(oomk) :passed $PASS :failed $FAIL)"
+echo "(season-verdict :boot 300 :winter $WINTER_UNITS :spring $SPRING_UNITS :summer $SUMMER_UNITS :deaths $SUMMER_DEATHS :births $SUMMER_BIRTHS :gen-max $SUMMER_GEN :oom $(oomk) :passed $PASS :failed $FAIL)"
 $COMPOSE down -t 3 >/dev/null 2>&1
 [ "$FAIL" -eq 0 ]

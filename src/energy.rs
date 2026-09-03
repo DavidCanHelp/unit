@@ -170,6 +170,20 @@ impl EnergyState {
         }
     }
 
+    /// Senescence drain: age's rising upkeep, taken from the metabolic
+    /// balance only and clamped at the hard floor. The reserve is spared —
+    /// an old unit may still breed until it dies — but nothing else is:
+    /// past its lifespan a unit's upkeep outruns its income, it pins at
+    /// the floor, and ordinary mortality takes it. Death in comfort.
+    pub fn senesce(&mut self, amount: i64) {
+        let drained = (self.energy - HARD_FLOOR).min(amount).max(0);
+        self.energy -= drained;
+        self.total_spent += drained as u64;
+        if self.energy <= STARVATION_THRESHOLD {
+            self.throttled = true;
+        }
+    }
+
     /// Deposit habitat income into the reproductive reserve, up to `cap`
     /// (the breeding price — no hoarding beyond one offspring's worth).
     pub fn deposit_reserve(&mut self, amount: i64, cap: i64) {
@@ -375,6 +389,18 @@ mod tests {
         assert_eq!(e.starving_ticks, 1);
         e.tick();
         assert_eq!(e.starving_ticks, 2);
+    }
+
+    #[test]
+    fn test_senescence_spares_the_reserve() {
+        let mut e = EnergyState::new();
+        e.energy = 10;
+        e.reserve = 700;
+        e.senesce(50);
+        assert_eq!(e.energy, -40, "upkeep comes from the balance");
+        assert_eq!(e.reserve, 700, "the old may still breed");
+        e.senesce(10_000);
+        assert_eq!(e.energy, -500, "clamped at the floor, never below");
     }
 
     #[test]

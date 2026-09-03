@@ -149,12 +149,17 @@ pub(crate) fn land_transported_unit(node: &mut crate::multi_unit::MultiUnitNode,
     vm.rng = crate::features::mutation::SimpleRng::new(
         0x9e37_79b9_7f4a_7c15 ^ node.host.spawned_total,
     );
+    // A landed immigrant is a new resident: its clock starts here (age is
+    // not carried in the transported self), with its own drawn lifespan.
+    let lifespan = crate::multi_unit::draw_lifespan(node.host.spawned_total);
     node.host.units.push(crate::multi_unit::UnitSlot {
         vm,
         busy: false,
         tasks_completed: 0,
         user_words: Vec::new(),
         starved_ticks: 0,
+        age_ticks: 0,
+        lifespan,
     });
 }
 
@@ -491,10 +496,12 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
         for d in &report.deaths {
             println!(
                 // (chronicle counted below)
-                "[{}] DIED gen={} fitness={} — starved (at floor {} ticks); bequeathed {} antibod{} to {} heir{} — now hosting {} units",
+                "[{}] DIED gen={} fitness={} age={} — {} (at floor {} ticks); bequeathed {} antibod{} to {} heir{} — now hosting {} units",
                 log_ts(),
                 d.generation,
                 d.fitness,
+                d.age_ticks,
+                if d.senescent { "old age" } else { "starved" },
                 crate::multi_unit::STARVED_TICKS_TO_DIE,
                 d.antibodies,
                 if d.antibodies == 1 { "y" } else { "ies" },

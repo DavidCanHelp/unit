@@ -38,6 +38,12 @@ pub struct UnitSlot {
     /// pins the floor (GP's gate pauses above it), so only unsustainable
     /// lifestyles — e.g. a runaway `LIVE` — accumulate here.
     pub starved_ticks: u32,
+    /// Ticks lived on this host. Senescence upkeep begins at `lifespan`
+    /// and ramps from there (see [`SENESCENCE_LIFESPAN_TICKS`]).
+    pub age_ticks: u64,
+    /// This unit's own lifespan, drawn at birth with ±25% variance so a
+    /// same-aged cohort dies over a season, not in one avalanche.
+    pub lifespan: u64,
 }
 
 /// Consecutive at-hard-floor ticks before a unit dies. At the node's 1s
@@ -75,6 +81,29 @@ pub const BIRTH_ENDOWMENT: i64 = 500;
 /// 25% util produced zero births in ten minutes: no unit ever HELD the
 /// price, however abundant the income.
 pub const RESERVE_TO_BREED: i64 = crate::energy::SPAWN_COST + BIRTH_ENDOWMENT;
+
+/// Mean lifespan in ticks (~40 min at the node's 1 s cadence). Past it,
+/// senescence upkeep starts at 1/tick and rises by 1 every
+/// [`SENESCENCE_RAMP_TICKS`]: income can no longer cover it, the unit
+/// pins at the hard floor, and ordinary mortality takes it — death in
+/// comfort. Without it a stable colony froze (the 8 h homeostasis soak:
+/// zero deaths, zero turnover, generation depth stalled the moment
+/// growth stopped) and selection had no throughput between crises.
+/// Rebound refills each vacated slot from a survivor's genome, so at
+/// carrying capacity the population turns over roughly once per
+/// lifespan and the gene pool keeps moving.
+pub const SENESCENCE_LIFESPAN_TICKS: u64 = 2400;
+/// Ticks per +1 of senescence upkeep after onset.
+pub const SENESCENCE_RAMP_TICKS: u64 = 30;
+
+/// A fresh unit's lifespan: the mean with ±25% variance, hashed from the
+/// host's lifetime spawn counter rather than drawn from the unit's rng —
+/// consuming a draw at birth would shift every later decision on that
+/// stream (the birth-mutation coin, famine luck) by one position.
+pub(crate) fn draw_lifespan(spawn_serial: u64) -> u64 {
+    let h = spawn_serial.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 33;
+    SENESCENCE_LIFESPAN_TICKS * (75 + h % 51) / 100
+}
 
 /// Result of dispatching one goal.
 pub struct GoalResult {
@@ -201,12 +230,15 @@ impl MultiUnitHost {
         self.spawned_total += 1;
         vm.rng =
             crate::features::mutation::SimpleRng::new(0x9e37_79b9_7f4a_7c15 ^ self.spawned_total);
+        let lifespan = draw_lifespan(self.spawned_total);
         self.units.push(UnitSlot {
             vm,
             busy: false,
             tasks_completed: 0,
             user_words: Vec::new(),
             starved_ticks: 0,
+            age_ticks: 0,
+            lifespan,
         });
         Some(idx)
     }
@@ -526,6 +558,10 @@ pub struct DispatchedRemoteMsg {
 /// One unit's death, reported so the run loop can log the obituary and
 /// tests can assert mortality without sockets.
 pub struct UnitDeath {
+    /// Ticks lived; `senescent` when the unit had outlived its lifespan
+    /// (death of old age via the ordinary starvation path).
+    pub age_ticks: u64,
+    pub senescent: bool,
     pub fitness: i64,
     pub generation: u32,
     /// Antibodies (SOL-* words) the unit bequeathed.
@@ -1048,6 +1084,12 @@ impl MultiUnitNode {
         };
         for slot in self.host.units.iter_mut() {
             slot.vm.energy.tick();
+            // Senescence: age's rising upkeep, from the balance only.
+            slot.age_ticks += 1;
+            if slot.age_ticks >= slot.lifespan {
+                let upkeep = 1 + ((slot.age_ticks - slot.lifespan) / SENESCENCE_RAMP_TICKS) as i64;
+                slot.vm.energy.senesce(upkeep);
+            }
         }
 
         // c. unworked units run their LIVE word — the dictionary-resident
@@ -1117,6 +1159,8 @@ impl MultiUnitNode {
                 let antibodies = harvest_antibodies(&slot.vm);
                 let fitness = slot.vm.fitness.score;
                 let generation = slot.vm.spawn_state.generation;
+                let age_ticks = slot.age_ticks;
+                let senescent = slot.age_ticks >= slot.lifespan;
                 let mut heirs = 0;
                 for s in self.host.units.iter_mut() {
                     if s.vm.absorb_antibodies(&antibodies) > 0 {
@@ -1130,6 +1174,8 @@ impl MultiUnitNode {
                     m.send_sexp(&cry.to_string());
                 }
                 deaths.push(UnitDeath {
+                    age_ticks,
+                    senescent,
                     fitness,
                     generation,
                     antibodies: antibodies.len(),
@@ -1953,6 +1999,44 @@ mod bridge_tests {
         c.host.units[0].vm.energy.energy = 100;
         let _ = c.tick(&near, never_transport);
         assert_eq!(c.host.units[0].vm.energy.reserve, 1, "floor of 1 under threshold");
+    }
+
+    #[test]
+    fn senescence_takes_the_old_and_spares_the_young() {
+        // In the metabolically neutral band (no famine, no abundance) a
+        // unit past its lifespan must pin at the floor and die through the
+        // ordinary path, while its younger sibling — identical otherwise —
+        // lives. Its reserve is untouched to the end: the old may breed.
+        let banded = crate::resources::HostResources::from_parts(1_024_000, 256_000, 0.0, 4);
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(2);
+        for slot in a.host.units.iter_mut() {
+            slot.vm.eval(": LIVE ;");
+            slot.vm.energy.energy = 200;
+            slot.vm.energy.reserve = 100;
+        }
+        a.host.units[0].age_ticks = a.host.units[0].lifespan + 300; // deep old age
+        let mut died_at = None;
+        for t in 0..120 {
+            let r = a.tick(&banded, never_transport);
+            if !r.deaths.is_empty() {
+                assert!(r.deaths[0].senescent, "obituary names old age");
+                died_at = Some(t);
+                break;
+            }
+        }
+        assert!(died_at.is_some(), "the old unit dies of age");
+        assert_eq!(a.host.len(), 1, "the young one lives");
+        assert!(a.host.units[0].age_ticks < a.host.units[0].lifespan);
+        // Lifespans vary per unit — no lockstep cohort death.
+        let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
+        b.spawn_n(4);
+        let spans: std::collections::HashSet<u64> = b.host.units.iter().map(|s| s.lifespan).collect();
+        assert!(spans.len() > 1, "lifespans are drawn with variance");
+        for s in &b.host.units {
+            assert!(s.lifespan >= SENESCENCE_LIFESPAN_TICKS * 75 / 100);
+            assert!(s.lifespan <= SENESCENCE_LIFESPAN_TICKS * 125 / 100);
+        }
     }
 
     #[test]

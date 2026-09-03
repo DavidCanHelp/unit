@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Senescence — death in comfort.** Every unit draws a lifespan at
+  birth (`SENESCENCE_LIFESPAN_TICKS` = 2400, ±25% variance so a cohort
+  dies over a season rather than in one avalanche); past it, upkeep
+  starts at 1/tick and rises every 30 ticks, taken from the metabolic
+  balance only — the reserve is spared, so the old may still breed —
+  until income can't cover it and ordinary mortality takes the unit.
+  Obituaries name the cause (`old age` vs `starved`) and age. Rebound
+  refills each vacated slot from a survivor's genome, so a colony at
+  carrying capacity turns over about once per lifespan and generation
+  depth keeps rising. Motivation on record: the 8 h homeostasis soak
+  froze (zero deaths, zero turnover) — selection had no throughput
+  between crises. The seasons drill gains a 25-minute **summer** phase
+  asserting turnover deaths, refills, a steady population, rising
+  gen-max, exact conservation.
+
 ### Fixed
 
 - **The memory footprint ratchets — measured, and the seasons drill now
