@@ -296,6 +296,10 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
             m.set_gossip_fanout(Some(k));
         }
     }
+    // Before the first unit is born: pin the allocator so that death
+    // returns memory (see mem_release::configure). Order matters — the
+    // buffers that must be mmap-backed are allocated by this spawn.
+    mem_release::configure();
     let spawned = node.spawn_n(n);
     let host_hex = node.host_id_hex().unwrap_or_default();
     let mesh_port = node.mesh_port().unwrap_or(0);
@@ -376,9 +380,6 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     };
 
     run_signals::install();
-    // Before the first unit is born: pin the allocator so that death
-    // returns memory (see mem_release::configure).
-    mem_release::configure();
     println!(
         "[{}] node up — ticking every {}ms (Ctrl-C / SIGTERM to stop)",
         log_ts(),
