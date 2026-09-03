@@ -54,8 +54,8 @@ echo "=== SEASON: drought (512 → 192 MiB, stepped) ==="
 LIMIT_KB=$((512 * 1024))
 TARGET_KB=$((192 * 1024))
 STEPS=0
-while [ "$LIMIT_KB" -gt "$TARGET_KB" ] && [ "$STEPS" -lt 12 ]; do
-    STEPS=$((STEPS+1))
+HOLDS=0
+while [ "$LIMIT_KB" -gt "$TARGET_KB" ] && [ "$STEPS" -lt 14 ] && [ "$HOLDS" -lt 10 ]; do
     # Next limit: 32 MiB down, but never below current RSS + 24 MiB guard
     # (memswap == mem, so a limit under residency is instant execution).
     RSS_KB=$($COMPOSE exec -T season cat /sys/fs/cgroup/memory.current 2>/dev/null | awk '{print int($1/1024)}')
@@ -65,10 +65,13 @@ while [ "$LIMIT_KB" -gt "$TARGET_KB" ] && [ "$STEPS" -lt 12 ]; do
     [ "$NEXT_KB" -lt "$FLOOR_KB" ] && NEXT_KB=$FLOOR_KB
     [ "$NEXT_KB" -lt "$TARGET_KB" ] && NEXT_KB=$TARGET_KB
     if [ "$NEXT_KB" -ge "$LIMIT_KB" ]; then
-        echo "    (holding at $((LIMIT_KB/1024)) MiB — waiting for shed below rss=$((RSS_KB/1024)) MiB)"
+        # A hold is the organism lagging the drought, not a drought step.
+        HOLDS=$((HOLDS+1))
+        echo "    (hold $HOLDS at $((LIMIT_KB/1024)) MiB — waiting for shed below rss=$((RSS_KB/1024)) MiB)"
         sleep 90
         continue
     fi
+    STEPS=$((STEPS+1))
     LIMIT_KB=$NEXT_KB
     echo "    (step $STEPS: budget → $((LIMIT_KB/1024)) MiB, rss=$((RSS_KB/1024)) MiB, units=$(nsf units))"
     docker update --memory "${LIMIT_KB}k" --memory-swap "${LIMIT_KB}k" docker-season-1 >/dev/null

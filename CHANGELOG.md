@@ -24,7 +24,9 @@
   breeding pays from the reserve alone (`RESERVE_TO_BREED` = SPAWN_COST
   + BIRTH_ENDOWMENT); famine drains the reserve FIRST (fat before
   muscle), so no one breeds during a famine and a starving unit's
-  savings go before its life.
+  savings go before its life. Rerun verdict 12/12: spring went from
+  zero births to 88 in ten minutes, population 59 → 147 and climbing,
+  conservation exact across the full cycle.
 
 
 All notable changes to this project are documented in this file.

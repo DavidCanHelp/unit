@@ -136,6 +136,46 @@ pipeline together, so famine lift arrives with deaths still in flight),
 and rebound pace (~10 units/h colony-wide at low abundance). Both
 self-correct; neither kills.
 
+## The seasons drill
+
+```
+bash docker/season.sh          # full cycle, ~25 min
+```
+
+Every soak runs against a fixed budget; nature's defining pressure is
+that carrying capacity moves. One peerless node boots comfortable
+(300 units, 512 MiB); the harness then moves `memory.max` LIVE
+(`docker update`) through a stepped drought to 192 MiB — each step
+floored at current RSS plus a guard, because with swap pinned a limit
+under residency is an execution, not a drought — a winter hold, and a
+spring back to 512 MiB. Twelve assertions on the chronicle: famine
+sheds on the way down, the kernel never fires, ticks never stall, the
+winter population sits at the small budget's capacity, spring births
+resume and the population regrows, and conservation stays exact
+(`units == 300 − deaths + births`; no peers, so migration cannot blur
+the ledger).
+
+First run (v0.40 binary): drought and winter passed; **spring failed
+absolutely** — ten minutes at 25% util, zero births. The structural
+cause: GP-EVOLVE's energy gate is anchored at the hard floor, so
+evolution spends every affordable coin to its gate each tick and no
+unit ever *holds* the breeding price, at any income. The fix is
+nature's: **protected reproductive investment** — abundance income
+deposits into a reserve invisible to discretionary spending, famine
+drains it first (fat before muscle), breeding pays from it alone.
+Rerun verdict, 12/12:
+
+```
+(season-verdict :boot 300 :winter 59 :spring 147
+                :deaths 241 :births 88 :oom 0 :passed 12 :failed 0)
+```
+
+Still open, deliberately: winter overshoot (the chronic fuse pipeline
+carries a wide cohort past capacity — 59 units against ~242; the boot
+population's uniform energy is the known cause) and spring's ceiling —
+the drill ends while growth is still climbing, so where the regrown
+population settles is unmeasured.
+
 ## The observability surfaces these assert against
 
 - `(node-status …)` — one line per measure cadence from a persistent
