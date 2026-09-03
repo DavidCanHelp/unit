@@ -5,7 +5,7 @@
 ### Added
 
 - **Senescence — death in comfort.** Every unit draws a lifespan at
-  birth (`SENESCENCE_LIFESPAN_TICKS` = 2400, ±25% variance so a cohort
+  birth (`SENESCENCE_LIFESPAN_TICKS` = 3600, ±25% variance so a cohort
   dies over a season rather than in one avalanche); past it, upkeep
   starts at 1/tick and rises every 30 ticks, taken from the metabolic
   balance only — the reserve is spared, so the old may still breed —
@@ -21,6 +21,16 @@
 
 ### Fixed
 
+- **Rebound and abundance ask the committed question too.** The first
+  four-season run proved senescence (summer: 33 old-age deaths, 225
+  refills, gen-max 3 → 10, every founder replaced by descendants) and
+  failed winter and spring for one reason: old-age deaths at a tight
+  budget were never refilled, because rebound read ghost RSS from the
+  dead as "full" — while the same drill had already shown births REUSE
+  that memory. Abundance income and rebound births now key to committed
+  demand, vetoed only by the acute (≥96% measured) kernel signal. Mean
+  lifespan raised to 60 min so a founding cohort's turnover lands in
+  summer, not spring.
 - **The memory footprint ratchets — measured, and the seasons drill now
   asserts the organism's real obligation.** With famine on committed
   demand the drill walked a live budget down and the population tracked

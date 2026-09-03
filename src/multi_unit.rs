@@ -82,7 +82,7 @@ pub const BIRTH_ENDOWMENT: i64 = 500;
 /// price, however abundant the income.
 pub const RESERVE_TO_BREED: i64 = crate::energy::SPAWN_COST + BIRTH_ENDOWMENT;
 
-/// Mean lifespan in ticks (~40 min at the node's 1 s cadence). Past it,
+/// Mean lifespan in ticks (~60 min at the node's 1 s cadence). Past it,
 /// senescence upkeep starts at 1/tick and rises by 1 every
 /// [`SENESCENCE_RAMP_TICKS`]: income can no longer cover it, the unit
 /// pins at the hard floor, and ordinary mortality takes it — death in
@@ -92,7 +92,7 @@ pub const RESERVE_TO_BREED: i64 = crate::energy::SPAWN_COST + BIRTH_ENDOWMENT;
 /// Rebound refills each vacated slot from a survivor's genome, so at
 /// carrying capacity the population turns over roughly once per
 /// lifespan and the gene pool keeps moving.
-pub const SENESCENCE_LIFESPAN_TICKS: u64 = 2400;
+pub const SENESCENCE_LIFESPAN_TICKS: u64 = 3600;
 /// Ticks per +1 of senescence upkeep after onset.
 pub const SENESCENCE_RAMP_TICKS: u64 = 30;
 
@@ -1002,7 +1002,6 @@ impl MultiUnitNode {
         } else {
             0.0
         };
-        let habitat_util = local.utilization.max(committed_fraction);
         // Famine has two arms with two different questions:
         //   CHRONIC — "can this budget feed this many units?" — answered by
         //   COMMITTED demand alone. Dead units' memory returns to the OS
@@ -1015,8 +1014,13 @@ impl MultiUnitNode {
         //   ACUTE — "is the kernel seconds away?" — answered by the
         //   MEASUREMENT alone, because the kernel acts on real memory,
         //   not promises. The measurement's whole job is that backstop.
-        // Abundance and rebound still read the worse of the two: never
-        // breed into a node whose memory is genuinely full.
+        // Abundance and rebound ask the committed question too — "can this
+        // budget feed more units?" — with the measurement keeping only its
+        // acute veto. The seasons drill proved births REUSE the corpses'
+        // memory (spring regrew 259 → 300 with RSS flat), and reading the
+        // ghost as "full" starved rebound at a tight budget while
+        // senescence kept killing: 124 units against a 270 capacity, no
+        // births, population still falling into spring.
         let measured_overshoot = ((local.utilization - crate::resources::CEILING_UTILIZATION)
             / (1.0 - crate::resources::CEILING_UTILIZATION))
             .clamp(0.0, 1.0);
@@ -1053,9 +1057,9 @@ impl MultiUnitNode {
             // expense side is the famine tax above. This is what funds
             // rebound births: without it, post-famine survivors hover at
             // poverty and the population never regrows.
-            if local.valid && habitat_util < REBOUND_UTILIZATION {
-                let fraction =
-                    ((REBOUND_UTILIZATION - habitat_util) / REBOUND_UTILIZATION).clamp(0.0, 1.0);
+            if local.valid && !famine_acute && committed_fraction < REBOUND_UTILIZATION {
+                let fraction = ((REBOUND_UTILIZATION - committed_fraction) / REBOUND_UTILIZATION)
+                    .clamp(0.0, 1.0);
                 // Floored at 1: any under-threshold habitat feeds at least
                 // a little. A pure linear fade rounds to zero just below
                 // the threshold, leaving a dead zone where a node is
@@ -1199,7 +1203,8 @@ impl MultiUnitNode {
         self.ticks_total = self.ticks_total.wrapping_add(1);
         let mut birth = None;
         if local.valid
-            && habitat_util < REBOUND_UTILIZATION
+            && !famine_acute
+            && committed_fraction < REBOUND_UTILIZATION
             && !self.host.is_full()
             && deaths.is_empty()
             && famine_tax == 0
@@ -1942,21 +1947,23 @@ mod bridge_tests {
 
     #[test]
     fn rebound_never_fires_over_threshold_or_without_surplus() {
-        // 75% util (over REBOUND_UTILIZATION, under the famine ceiling):
-        // the stable band — no births, no famine.
-        let banded = crate::resources::HostResources::from_parts(1_024_000, 256_000, 0.0, 4);
+        // Committed 75% (one unit on an 866 KiB budget — over
+        // REBOUND_UTILIZATION, under the famine ceiling): the stable band —
+        // no births, no famine.
+        let banded = crate::resources::HostResources::from_parts(866, 780, 0.0, 4);
         let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
         a.spawn_n(1);
         a.host.units[0].vm.eval(": LIVE ;");
         a.host.units[0].vm.energy.energy = 5000;
+        a.host.units[0].vm.energy.reserve = RESERVE_TO_BREED; // funded, yet still
         for _ in 0..(REBOUND_INTERVAL_TICKS * 3) {
             let r = a.tick(&banded, never_transport);
             assert!(r.birth.is_none(), "the [70%,80%) band must be still");
             assert_eq!(r.famine_tax, 0);
         }
         // Ample headroom, rich metabolic balance, EMPTY reserve: no birth
-        // until abundance deposits accumulate to the price. (At bonus 2 per
-        // tick the reserve reaches 700 only after ~350 ticks; 15 ticks in,
+        // until abundance deposits accumulate to the price. (At bonus 8 per
+        // tick the reserve reaches 700 only after ~88 ticks; 15 ticks in,
         // reproduction must still be waiting on its savings.)
         let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
         b.spawn_n(1);
@@ -1971,34 +1978,52 @@ mod bridge_tests {
 
     #[test]
     fn abundance_feeds_in_proportion_to_headroom() {
-        // 50% util: fraction (0.70−0.50)/0.70 ≈ 0.286 → bonus 2, plus the
-        // ordinary +1 regen. The income side of energy-tracks-habitat.
+        // Abundance is the COMMITTED question: one unit on a 1 GiB budget
+        // commits ~0.06%, fraction ≈ 1 → bonus 9 to the reserve, plus the
+        // ordinary +1 regen to the balance. The income side of
+        // energy-tracks-habitat.
         let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
         a.spawn_n(1);
         a.host.units[0].vm.eval(": LIVE ;");
         a.host.units[0].vm.energy.energy = 100;
         let _ = a.tick(&under_ceiling_reading(), never_transport);
         assert_eq!(a.host.units[0].vm.energy.energy, 101, "regen to the balance");
-        assert_eq!(a.host.units[0].vm.energy.reserve, 2, "abundance to the reserve");
-        // In the [70%, 80%) band there is no habitat income and no famine:
-        // just the bare +1 regen. The band is metabolically neutral.
-        let banded = crate::resources::HostResources::from_parts(1_024_000, 256_000, 0.0, 4);
+        assert_eq!(a.host.units[0].vm.energy.reserve, 8, "abundance to the reserve");
+        // In the committed [70%, 80%) band there is no habitat income and no
+        // famine: just the bare +1 regen. One unit committing 75% of an
+        // 866 KiB budget; the measurement (10%) is irrelevant to both.
+        let banded = crate::resources::HostResources::from_parts(866, 780, 0.0, 4);
         let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
         b.spawn_n(1);
         b.host.units[0].vm.eval(": LIVE ;");
         b.host.units[0].vm.energy.energy = 2000;
         let _ = b.tick(&banded, never_transport);
         assert_eq!(b.host.units[0].vm.energy.energy, 2001, "band is income-neutral");
-        // Just under the threshold (69% util) the linear bonus computes to
-        // zero but is floored at 1 — no dead zone where an "abundant" host
-        // pays nothing and recovery stalls asymptotically.
-        let near = crate::resources::HostResources::from_parts(1_024_000, 317_440, 0.0, 4);
+        assert_eq!(b.host.units[0].vm.energy.reserve, 0, "band banks nothing");
+        // Just under the threshold (one unit committing ~69% of 942 KiB) the
+        // linear bonus computes to zero but is floored at 1 — no dead zone
+        // where an "abundant" host pays nothing and recovery stalls.
+        let near = crate::resources::HostResources::from_parts(942, 850, 0.0, 4);
         let mut c = MultiUnitNode::new(8, None, vec![]).unwrap();
         c.spawn_n(1);
         c.host.units[0].vm.eval(": LIVE ;");
         c.host.units[0].vm.energy.energy = 100;
         let _ = c.tick(&near, never_transport);
         assert_eq!(c.host.units[0].vm.energy.reserve, 1, "floor of 1 under threshold");
+        // Ghost memory does not forbid income: a 95% MEASUREMENT with a
+        // negligible commitment still feeds (births reuse the corpses).
+        // Only the acute veto (≥96% measured) silences it.
+        let mut d = MultiUnitNode::new(8, None, vec![]).unwrap();
+        d.spawn_n(1);
+        d.host.units[0].vm.eval(": LIVE ;");
+        let _ = d.tick(&over_ceiling_reading(), never_transport);
+        assert_eq!(d.host.units[0].vm.energy.reserve, 8, "ghost RSS is not a famine of income");
+        let acute = crate::resources::HostResources::from_parts(1_024_000, 30_720, 0.0, 4);
+        let mut e = MultiUnitNode::new(8, None, vec![]).unwrap();
+        e.spawn_n(1);
+        e.host.units[0].vm.eval(": LIVE ;");
+        let _ = e.tick(&acute, never_transport);
+        assert_eq!(e.host.units[0].vm.energy.reserve, 0, "acute measurement vetoes income");
     }
 
     #[test]
@@ -2007,7 +2032,9 @@ mod bridge_tests {
         // unit past its lifespan must pin at the floor and die through the
         // ordinary path, while its younger sibling — identical otherwise —
         // lives. Its reserve is untouched to the end: the old may breed.
-        let banded = crate::resources::HostResources::from_parts(1_024_000, 256_000, 0.0, 4);
+        // Two units committing 75% of a 1733 KiB budget: the neutral band,
+        // where no habitat income can rescue the old from their upkeep.
+        let banded = crate::resources::HostResources::from_parts(1733, 1560, 0.0, 4);
         let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
         a.spawn_n(2);
         for slot in a.host.units.iter_mut() {
@@ -2205,7 +2232,7 @@ mod bridge_tests {
         // Sibling got the gift (+10) and passive regen (+1); the 50%-util
         // abundance bonus goes to its reserve, not the balance.
         assert_eq!(a.host.units[1].vm.energy.energy, 11, "gift arrived via the tick");
-        assert_eq!(a.host.units[1].vm.energy.reserve, 2, "abundance banked");
+        assert_eq!(a.host.units[1].vm.energy.reserve, 8, "abundance banked");
         // Donor: -11 for the gift+friction, +1 regen.
         assert_eq!(a.host.units[0].vm.energy.energy, 1000 - 11 + 1);
     }
