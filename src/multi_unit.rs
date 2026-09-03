@@ -131,6 +131,16 @@ impl MultiUnitHost {
     /// Kinds measure what the colony KNOWS; copies measure how widely the
     /// knowledge has spread (share/death-cry/inheritance). The divergence of
     /// the two over a long soak is one honest adaptation-vs-churn signal.
+    /// Highest generation among hosted units — the chronicle's heredity
+    /// depth. Founders are 0; each rebound birth is parent + 1.
+    pub fn max_generation(&self) -> u32 {
+        self.units
+            .iter()
+            .map(|s| s.vm.spawn_state.generation)
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn sol_stats(&self) -> (usize, usize) {
         let mut kinds = std::collections::HashSet::new();
         let mut copies = 0usize;
@@ -172,6 +182,11 @@ impl MultiUnitHost {
         vm.load_prelude();
         vm.output_buffer = None;
         vm.silent = false;
+        // Kernel + prelude is the species; everything defined after this
+        // line is the individual's heritable genome (snapshots, death-cries,
+        // and births all read from here). Spawned VMs never set this before,
+        // so their "user words" silently included the whole prelude.
+        vm.kernel_word_count = vm.dictionary.len();
         let idx = self.units.len();
         // Stamp a per-unit synthesized id so SAY! signals carry distinct
         // sender attribution between siblings. The 0xC0FE prefix marks
@@ -536,10 +551,21 @@ pub struct TickReport {
     pub mislocated: bool,
     /// Per-unit famine tax applied this tick (0 = host under ceiling).
     pub famine_tax: i64,
-    /// A rebound birth happened this tick: (child generation, child energy).
-    pub birth: Option<(u32, i64)>,
+    /// A rebound birth happened this tick.
+    pub birth: Option<Birth>,
     /// The placement outcome, present only if the local rule fired.
     pub transport: Option<TickTransport>,
+}
+
+/// A rebound birth: who the child is and what it inherited.
+#[derive(Clone, Debug)]
+pub struct Birth {
+    pub generation: u32,
+    pub endowment: i64,
+    /// Words inherited from the parent's genome.
+    pub inherited: usize,
+    /// Inherited words that received a birth mutation (usually 0 or 1).
+    pub mutated: Vec<String>,
 }
 
 /// The placement outcome within a single tick.
@@ -599,6 +625,72 @@ pub const LIVE_TICK_BUDGET_MS: u64 = 250;
 /// Harvest a unit's immune memory: its `SOL-*` antibody words (name +
 /// re-evaluable decompiled source), the inheritance a dying unit leaves
 /// behind. Bounded by [`crate::sexp::DEATH_CRY_MAX_ANTIBODIES`].
+/// Mutations applied to an inherited genome at birth. One per genome per
+/// generation is biology's classic order of magnitude: enough variation
+/// for selection to act on, rare enough that most children work.
+pub const HEREDITY_MUTATIONS_PER_BIRTH: usize = 1;
+
+/// The heritable genome: every visible word the unit defined beyond the
+/// kernel+prelude, decompiled to re-evaluable source in definition order
+/// (so later words can reference earlier ones when the child re-evaluates
+/// them). Antibodies, evolved strategies, a redefined LIVE — all of it.
+/// Contrast [`harvest_antibodies`], which bequeaths SOL-* knowledge only.
+pub fn harvest_genome(vm: &VM) -> Vec<(String, String)> {
+    vm.dictionary[vm.kernel_word_count..]
+        .iter()
+        .filter(|e| !e.hidden)
+        .map(|e| {
+            let source = crate::snapshot::decompile_word(e, &vm.dictionary, &vm.primitive_names);
+            (e.name.clone(), source)
+        })
+        .collect()
+}
+
+/// Install an inherited genome into a fresh child VM, then apply the
+/// birth mutations. Returns (words installed, names of words mutated).
+/// Evaluation is silent: a genome is code, and the child re-compiles it
+/// exactly as a transported self or a shared word is re-compiled.
+pub fn inherit_genome(child: &mut VM, genome: &[(String, String)]) -> (usize, Vec<String>) {
+    let saved_silent = child.silent;
+    let saved_buf = child.output_buffer.take();
+    child.silent = true;
+    child.output_buffer = Some(String::new());
+    let mut installed = 0;
+    for (name, source) in genome {
+        child.eval(source);
+        if child.find_word(name).is_some() {
+            installed += 1;
+        }
+    }
+    child.output_buffer = saved_buf;
+    child.silent = saved_silent;
+
+    // Variation: mutate HEREDITY_MUTATIONS_PER_BIRTH random inherited words
+    // with the same engine GP uses. A mutation that fails to apply is
+    // simply a faithful copy — most births are.
+    let mut mutated = Vec::new();
+    let start = child.kernel_word_count;
+    let len = child.dictionary.len();
+    if len > start {
+        for _ in 0..HEREDITY_MUTATIONS_PER_BIRTH {
+            let i = start + child.rng.next_usize(len - start);
+            if !crate::features::mutation::is_mutable(&child.dictionary[i]) {
+                continue;
+            }
+            let record = {
+                let (entry, rng) = (&mut child.dictionary[i], &mut child.rng);
+                crate::features::mutation::mutate_entry(entry, rng, len)
+            };
+            if let Some(mut r) = record {
+                r.word_index = i;
+                mutated.push(r.word_name.clone());
+                child.mutation_history.push(r);
+            }
+        }
+    }
+    (installed, mutated)
+}
+
 pub fn harvest_antibodies(vm: &VM) -> Vec<(String, String)> {
     vm.dictionary[vm.kernel_word_count..]
         .iter()
@@ -1064,15 +1156,27 @@ impl MultiUnitNode {
             if let Some(pi) = parent {
                 let paid = self.host.units[pi].vm.energy.spend_reserve(RESERVE_TO_BREED);
                 if paid {
-                    let antibodies = harvest_antibodies(&self.host.units[pi].vm);
+                    // Heredity: the child is a mutated copy of its parent's
+                    // genome, not a blank prelude baby. This is the keystone
+                    // the rest of the ecology was missing — famine and
+                    // abundance select who dies and who breeds, and without
+                    // heredity those choices changed nothing: every child
+                    // was genetically identical to every other. Variation
+                    // (mutation), heredity (this), selection (the habitat).
+                    let genome = harvest_genome(&self.host.units[pi].vm);
                     let child_gen = self.host.units[pi].vm.spawn_state.generation + 1;
                     if let Some(ci) = self.host.spawn() {
                         let child = &mut self.host.units[ci].vm;
                         child.energy.energy = BIRTH_ENDOWMENT;
                         child.spawn_state.generation = child_gen;
-                        child.absorb_antibodies(&antibodies);
+                        let (inherited, mutated) = inherit_genome(child, &genome);
                         self.last_birth_tick = self.ticks_total;
-                        birth = Some((child_gen, BIRTH_ENDOWMENT));
+                        birth = Some(Birth {
+                            generation: child_gen,
+                            endowment: BIRTH_ENDOWMENT,
+                            inherited,
+                            mutated,
+                        });
                     }
                 }
             }
@@ -1870,6 +1974,81 @@ mod bridge_tests {
         }
         assert!(died, "chronic famine sheds the overcommit before the wall");
         assert_eq!(a.host.len(), 2, "population shrank toward what the budget feeds");
+    }
+
+    #[test]
+    fn heredity_child_is_a_copy_of_the_parent_genome() {
+        // The Darwinian keystone: the child inherits the parent's WHOLE
+        // heritable dictionary — evolved words, a redefined LIVE, antibodies
+        // — not a blank prelude plus SOL-* knowledge. Selection acting on
+        // famine survivors and abundance breeders means nothing unless
+        // what made them survive is what their children carry.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(1);
+        let p = &mut a.host.units[0].vm;
+        p.eval(": LIVE ;");
+        p.eval(": SQUARE DUP * ;");
+        p.eval(": STRATEGY 41 1 + ;");
+        p.energy.reserve = RESERVE_TO_BREED;
+        let parent_genome_len = harvest_genome(p).len();
+        assert!(parent_genome_len >= 3, "prelude is species, not genome");
+
+        let mut birth = None;
+        for _ in 0..(REBOUND_INTERVAL_TICKS + 1) {
+            if let Some(b) = a.tick(&under_ceiling_reading(), never_transport).birth {
+                birth = Some(b);
+                break;
+            }
+        }
+        let b = birth.expect("a funded parent under headroom breeds");
+        assert_eq!(b.generation, 1);
+        assert_eq!(b.inherited, parent_genome_len, "every heritable word crossed");
+        let species_boundary = a.host.units[0].vm.kernel_word_count;
+        let child = &mut a.host.units[1].vm;
+        assert_eq!(child.spawn_state.generation, 1);
+        assert_eq!(
+            child.kernel_word_count, species_boundary,
+            "child and parent share the species boundary"
+        );
+        // Unless the single birth mutation happened to strike SQUARE, the
+        // child computes with its parent's word. Check the unmutated one.
+        let target = if b.mutated.iter().any(|w| w == "SQUARE") { "STRATEGY" } else { "SQUARE" };
+        child.eval(if target == "SQUARE" { "7 SQUARE" } else { "STRATEGY" });
+        let expect = if target == "SQUARE" { 49 } else { 42 };
+        assert_eq!(child.stack.last().copied(), Some(expect), "inherited {} executes", target);
+        assert!(b.mutated.len() <= HEREDITY_MUTATIONS_PER_BIRTH);
+    }
+
+    #[test]
+    fn heredity_introduces_variation_across_births() {
+        // Across several births from one parent, at least one child must
+        // carry a mutation (the engine's constant-tweak always applies to a
+        // word with a literal). Variation is what selection needs; a
+        // faithful-copy-only heredity would be cloning, not evolution.
+        let mut a = MultiUnitNode::new(32, None, vec![]).unwrap();
+        a.spawn_n(1);
+        a.host.units[0].vm.eval(": LIVE ;");
+        a.host.units[0].vm.eval(": BIG 100 + ;");
+        a.host.units[0].vm.eval(": SMALL 3 * ;");
+        let mut mutated_births = 0;
+        let mut births = 0;
+        for _ in 0..(REBOUND_INTERVAL_TICKS * 12) {
+            a.host.units[0].vm.energy.reserve = RESERVE_TO_BREED; // keep the founder funded
+            if let Some(b) = a.tick(&under_ceiling_reading(), never_transport).birth {
+                births += 1;
+                if !b.mutated.is_empty() {
+                    mutated_births += 1;
+                }
+            }
+        }
+        assert!(births >= 8, "steady births from a funded founder (got {})", births);
+        assert!(mutated_births >= 1, "heredity must introduce variation");
+        assert!(mutated_births < births, "and most copies must still be faithful");
+        // A mutated child carries the record of its divergence from the
+        // founder (the founder itself was never mutated).
+        assert!(a.host.units[0].vm.mutation_history.is_empty());
+        let diverged = a.host.units[1..].iter().filter(|s| !s.vm.mutation_history.is_empty()).count();
+        assert_eq!(diverged, mutated_births, "each birth mutation lives in exactly one child");
     }
 
     #[test]

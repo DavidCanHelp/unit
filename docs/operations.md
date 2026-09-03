@@ -140,6 +140,7 @@ change; these shapes may not). Parse them with any sexp reader.
 | `:out` / `:in` | cumulative confirmed transports out / landed in |
 | `:deaths` | cumulative starvation deaths |
 | `:births` | cumulative rebound births (population regrowth into headroom) |
+| `:gen-max` | highest generation hosted (founders 0; each birth is parent + 1 — heredity depth) |
 | `:fit` | best fitness across ACTIVE evolutions (reads low while climbing) |
 | `:sol-kinds` / `:sol-copies` | distinct antibodies known / copies installed |
 

@@ -43,7 +43,7 @@ report)
     function num(s) { return s + 0 }
     /\(node-status / {
         # extract fields from the flat sexp line
-        id=""; b=0; for (i=1;i<=NF;i++) {
+        id=""; b=0; g=0; for (i=1;i<=NF;i++) {
             if ($i==":id")        { gsub(/"/,"",$(i+1)); id=$(i+1) }
             if ($i==":tick")      t=num($(i+1))
             if ($i==":units")     u=num($(i+1))
@@ -52,6 +52,7 @@ report)
             if ($i==":in")        n=num($(i+1))
             if ($i==":deaths")    d=num($(i+1))
         if ($i==":births")    b=num($(i+1))
+            if ($i==":gen-max")   g=num($(i+1))
             if ($i==":fit")       f=num($(i+1))
             if ($i==":sol-kinds") k=num($(i+1))
             if ($i==":sol-copies") c=num($(i+1))
@@ -62,7 +63,7 @@ report)
             first_pf[id]=f
         }
         last_t[id]=t; last_f[id]=f; last_k[id]=k; last_c[id]=c
-        last_u[id]=u; last_o[id]=o; last_n[id]=n; last_d[id]=d; last_b[id]=b; last_ut[id]=ut
+        last_u[id]=u; last_o[id]=o; last_n[id]=n; last_d[id]=d; last_b[id]=b; last_g[id]=g; last_ut[id]=ut
         if (f>peak_f[id]) peak_f[id]=f
     }
     END {
@@ -86,8 +87,8 @@ report)
             # CURRENT fitness reads low precisely when it is climbing.
             fpk += first_pf[id]; lpk += peak_f[id]
             fc += first_c[id]; lc += last_c[id]
-            printf "(soak-node :id \"%s\" :ticks %d :units %d :util %d :fit %d :peak-fit %d :sol-kinds %d :sol-copies %d :out %d :in %d :deaths %d :births %d :stale %s)\n", \
-                id, last_t[id], last_u[id], last_ut[id], last_f[id], peak_f[id], last_k[id], last_c[id], last_o[id], last_n[id], last_d[id], last_b[id], (is_stale[id] ? "yes" : "no")
+            printf "(soak-node :id \"%s\" :ticks %d :units %d :util %d :fit %d :peak-fit %d :sol-kinds %d :sol-copies %d :out %d :in %d :deaths %d :births %d :gen-max %d :stale %s)\n", \
+                id, last_t[id], last_u[id], last_ut[id], last_f[id], peak_f[id], last_k[id], last_c[id], last_o[id], last_n[id], last_d[id], last_b[id], last_g[id], (is_stale[id] ? "yes" : "no")
         }
         # verdict by the stated evidence rules; a stale node overrides them
         # all — evolution gains mean nothing next to a dead third of the

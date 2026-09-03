@@ -135,6 +135,9 @@ pub(crate) fn land_transported_unit(node: &mut crate::multi_unit::MultiUnitNode,
     vm.load_prelude();
     vm.output_buffer = None;
     vm.silent = false;
+    // Kernel boundary BEFORE restore: the restored words are the immigrant's
+    // heritable genome, the prelude is the species.
+    vm.kernel_word_count = vm.dictionary.len();
     let idx = node.host.units.len();
     vm.node_id_cache = Some([0xC0, 0xFE, 0, 0, 0, 0, 0, idx as u8]);
     vm.restore_snapshot(snap);
@@ -461,13 +464,15 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
 
         // Births. A rebound birth is a real colony event and always logs:
         // population is regrowing into measured headroom.
-        if let Some((gen, endowment)) = report.birth {
+        if let Some(b) = &report.birth {
             chron_births += 1;
             println!(
-                "[{}] BORN gen={} endowment={} — rebound into headroom, now hosting {} units",
+                "[{}] BORN gen={} endowment={} inherited={} words mutated={} — rebound into headroom, now hosting {} units",
                 log_ts(),
-                gen,
-                endowment,
+                b.generation,
+                b.endowment,
+                b.inherited,
+                if b.mutated.is_empty() { "none".to_string() } else { b.mutated.join(",") },
                 node.host.len()
             );
         }
@@ -590,7 +595,7 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                 // freely). Counters are cumulative since node start.
                 let (sol_kinds, sol_copies) = node.host.sol_stats();
                 println!(
-                    "(node-status :id \"{}\" :tick {} :units {} :util {} :headroom {} :out {} :in {} :deaths {} :births {} :fit {} :sol-kinds {} :sol-copies {})",
+                    "(node-status :id \"{}\" :tick {} :units {} :util {} :headroom {} :out {} :in {} :deaths {} :births {} :fit {} :sol-kinds {} :sol-copies {} :gen-max {})",
                     host_hex,
                     tick_n,
                     node.host.len(),
@@ -602,7 +607,8 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
                     chron_births,
                     report.best_fitness,
                     sol_kinds,
-                    sol_copies
+                    sol_copies,
+                    node.host.max_generation()
                 );
             } else {
                 println!(

@@ -170,6 +170,10 @@ Rerun verdict, 12/12:
                 :deaths 241 :births 88 :oom 0 :passed 12 :failed 0)
 ```
 
+The drill also asserts heredity depth: after spring, `:gen-max ≥ 1` —
+the regrown population descends from winter's survivors rather than
+from the prelude, each child a mutated copy of its parent's genome.
+
 Still open, deliberately: winter overshoot (the chronic fuse pipeline
 carries a wide cohort past capacity — 59 units against ~242; the boot
 population's uniform energy is the known cause) and spring's ceiling —

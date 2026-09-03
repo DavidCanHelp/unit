@@ -107,8 +107,13 @@ check "spring: population regrowing into restored budget ($WINTER_UNITS → $SPR
 [ "$(oomk)" = "0" ]; check "spring: zero oom_kill across the whole cycle" $?
 [ "$SPRING_UNITS" -eq $((300 - SPRING_DEATHS + SPRING_BIRTHS)) ]
 check "season: conservation exact across the full cycle (units == 300 − $SPRING_DEATHS + $SPRING_BIRTHS)" $?
+# Heredity: the regrown population descends from winter's survivors, not
+# from the prelude. Generation depth is the chronicle's honest surface.
+GEN_MAX=$(nsf gen-max); GEN_MAX=${GEN_MAX:-0}
+[ "$GEN_MAX" -ge 1 ]
+check "spring: heredity depth — children of survivors (gen-max=$GEN_MAX)" $?
 
 echo ""
-echo "(season-verdict :boot 300 :winter $WINTER_UNITS :spring $SPRING_UNITS :deaths $SPRING_DEATHS :births $SPRING_BIRTHS :oom $(oomk) :passed $PASS :failed $FAIL)"
+echo "(season-verdict :boot 300 :winter $WINTER_UNITS :spring $SPRING_UNITS :deaths $SPRING_DEATHS :births $SPRING_BIRTHS :gen-max $GEN_MAX :oom $(oomk) :passed $PASS :failed $FAIL)"
 $COMPOSE down -t 3 >/dev/null 2>&1
 [ "$FAIL" -eq 0 ]

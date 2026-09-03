@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Heredity at birth — the Darwinian keystone.** A rebound child was a
+  blank prelude baby plus the parent's SOL-* antibodies; famine and
+  abundance selected who died and who bred, and the choices changed
+  nothing because every child was genetically identical to every other
+  (Lamarckian knowledge transfer, no germ line). The child is now a
+  mutated copy of its parent's whole heritable dictionary — evolved
+  words, a redefined `LIVE`, antibodies — re-compiled from decompiled
+  source in definition order, with `HEREDITY_MUTATIONS_PER_BIRTH` (= 1)
+  random birth mutations from the same engine GP uses. Variation,
+  heredity, selection: all three legs now meet at the birth site.
+- `(node-status …)` gains `:gen-max` (heredity depth: founders 0, each
+  birth parent + 1); `BORN` lines report words inherited and mutated;
+  the soak report carries `:gen-max` per node.
+- Fixed: VMs spawned in a multi-unit host never set the kernel/prelude
+  boundary, so their "user words" silently included the whole prelude
+  (snapshots, death-cries, and genome harvest all read from there).
+
 - **The seasons drill** (`docker/season.sh` + a peerless `season`
   service): carrying capacity under a MOVING budget. One node boots
   comfortable at 512 MiB; the harness walks `memory.max` down live
