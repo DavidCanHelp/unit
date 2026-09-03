@@ -174,11 +174,16 @@ The drill also asserts heredity depth: after spring, `:gen-max ≥ 1` —
 the regrown population descends from winter's survivors rather than
 from the prelude, each child a mutated copy of its parent's genome.
 
-Still open, deliberately: winter overshoot (the chronic fuse pipeline
-carries a wide cohort past capacity — 59 units against ~242; the boot
-population's uniform energy is the known cause) and spring's ceiling —
-the drill ends while growth is still climbing, so where the regrown
-population settles is unmeasured.
+The heredity run (gen-max 6, 125 births, 12/13) failed winter hard —
+11 units against ~242 — and the forensics overturned the earlier
+"uniform cohort" diagnosis: famine lifted at 82 units, then re-engaged
+on ghost RSS from the dead (170 MB resident, minutes from being
+returned) and kept killing a population already below capacity.
+Chronic famine now keys to committed demand alone; the measurement
+drives only the acute (≥96%) backstop. Still open: spring's ceiling —
+the drill ends while growth is climbing — and the fragmentation ghost
+itself, which still blocks abundance (the worse-of-two rule) until
+periodic trims return the memory.
 
 ## The observability surfaces these assert against
 

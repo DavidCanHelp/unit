@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chronic famine keys to committed demand alone; the measurement
+  drives acute only.** The seasons drill with heredity (12/13) caught
+  the winter overshoot red-handed: famine lifted at 82 units, then
+  re-engaged on 170 MB of ghost RSS from the dead (glibc arenas return
+  memory minutes later) and killed down to 11 against a ~242-unit
+  budget. Killing cannot free ghost memory. Chronic famine now asks
+  only "can this budget feed this many units?" (committed cost); the
+  measurement keeps its one honest job — the ≥96% acute backstop the
+  kernel actually enforces. Abundance and rebound still read the worse
+  of the two, so nobody breeds into genuinely full memory.
+- **Eat before you save.** Redirecting abundance income to the reserve
+  left famine's in-flight victims starving under plenty (+1 regen never
+  clears the floor zone). A unit at the death floor now spends habitat
+  income on living; everyone healthier banks it.
+
 ### Added
 
 - **Heredity at birth — the Darwinian keystone.** A rebound child was a

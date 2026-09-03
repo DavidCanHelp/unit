@@ -967,25 +967,32 @@ impl MultiUnitNode {
             0.0
         };
         let habitat_util = local.utilization.max(committed_fraction);
-        let mut famine_acute = false;
+        // Famine has two arms with two different questions:
+        //   CHRONIC — "can this budget feed this many units?" — answered by
+        //   COMMITTED demand alone. Dead units' memory returns to the OS
+        //   minutes after they die (glibc arenas, partial trims), so a
+        //   measurement-driven chronic famine keeps killing a population
+        //   that has already shrunk to capacity: the seasons drill saw
+        //   famine lift at 82 units, re-engage on 170 MB of ghost RSS, and
+        //   kill down to 11 against a ~242-unit budget. Killing cannot
+        //   free ghost memory; only time can.
+        //   ACUTE — "is the kernel seconds away?" — answered by the
+        //   MEASUREMENT alone, because the kernel acts on real memory,
+        //   not promises. The measurement's whole job is that backstop.
+        // Abundance and rebound still read the worse of the two: never
+        // breed into a node whose memory is genuinely full.
+        let measured_overshoot = ((local.utilization - crate::resources::CEILING_UTILIZATION)
+            / (1.0 - crate::resources::CEILING_UTILIZATION))
+            .clamp(0.0, 1.0);
+        let famine_acute =
+            local.valid && measured_overshoot >= crate::energy::FAMINE_ACUTE_OVERSHOOT;
+        let famine_util = if famine_acute { local.utilization } else { committed_fraction };
         let famine_tax = if local.valid
-            && habitat_util >= crate::resources::CEILING_UTILIZATION
+            && famine_util >= crate::resources::CEILING_UTILIZATION
         {
-            let overshoot = ((habitat_util - crate::resources::CEILING_UTILIZATION)
+            let overshoot = ((famine_util - crate::resources::CEILING_UTILIZATION)
                 / (1.0 - crate::resources::CEILING_UTILIZATION))
                 .clamp(0.0, 1.0);
-            // Acute famine answers the MEASUREMENT, never the commitment:
-            // it exists because the kernel is seconds away, and the kernel
-            // acts on real memory, not on promises. A boot-overcommitted
-            // node with tiny RSS is in CHRONIC famine — its population
-            // must shrink, but by staggered starvation, not the emergency
-            // fuse (run 11: acute-on-commitment over-killed ~65 units per
-            // node past carrying capacity before famine lifted).
-            let measured_overshoot = ((local.utilization
-                - crate::resources::CEILING_UTILIZATION)
-                / (1.0 - crate::resources::CEILING_UTILIZATION))
-                .clamp(0.0, 1.0);
-            famine_acute = measured_overshoot >= crate::energy::FAMINE_ACUTE_OVERSHOOT;
             let mut tax = 1 + (overshoot * (crate::energy::FAMINE_TAX_MAX - 1) as f64) as i64;
             if famine_acute {
                 tax *= crate::energy::FAMINE_ACUTE_MULTIPLIER;
@@ -1022,12 +1029,19 @@ impl MultiUnitNode {
                 let bonus =
                     ((fraction * crate::energy::ABUNDANCE_REGEN_MAX as f64) as i64).max(1);
                 for slot in self.host.units.iter_mut() {
-                    // Habitat income is reproductive investment, deposited
-                    // into the reserve the soma cannot spend. Routed to the
-                    // metabolic balance it evaporates: GP burns every
-                    // affordable coin to its gate each tick, and no unit
-                    // ever holds the breeding price.
-                    slot.vm.energy.deposit_reserve(bonus, RESERVE_TO_BREED);
+                    // Eat before you save. A unit at the death floor puts
+                    // habitat income into staying alive (three points lift
+                    // it out of the floor zone; the starvation fuse resets);
+                    // everyone else banks it as reproductive investment in
+                    // the reserve the soma cannot spend. Routed to the
+                    // metabolic balance for the healthy it evaporates: GP
+                    // burns every affordable coin to its gate each tick, and
+                    // no unit ever holds the breeding price.
+                    if slot.vm.energy.at_hard_floor() {
+                        slot.vm.energy.earn(bonus, "abundance-rescue");
+                    } else {
+                        slot.vm.energy.deposit_reserve(bonus, RESERVE_TO_BREED);
+                    }
                 }
             }
             0
@@ -1545,6 +1559,13 @@ mod bridge_tests {
     fn over_ceiling_reading() -> crate::resources::HostResources {
         crate::resources::HostResources::from_parts(1_024_000, 51_200, 0.0, 4)
     }
+    // A budget two units OVERCOMMIT at saturated cost (2 × 650 KiB against
+    // 1500 KiB ≈ 87%) while the measurement reads only 10%: chronic famine
+    // territory — the population is too big for the budget, whatever the
+    // RSS says right now.
+    fn overcommitted_reading() -> crate::resources::HostResources {
+        crate::resources::HostResources::from_parts(1500, 1350, 0.0, 4)
+    }
     // A transport stub that must never run (asserts the rule didn't fire).
     fn never_transport(
         _d: &RemoteProcess,
@@ -1738,19 +1759,29 @@ mod bridge_tests {
         // (abundance deposits to the reserve); no famine.
         let _ = a.tick(&under_ceiling_reading(), never_transport);
         assert_eq!(a.host.units[0].vm.energy.energy, 1001, "no famine under ceiling");
-        // Over the ceiling at 95% util: overshoot 0.75 of the post-ceiling
-        // range, base tax 1 + 0.75×49 = 37, drawn per unit at 50–150%
-        // foraging luck (18..=55), minus the regen the tick pays back.
+        // A 95% MEASUREMENT with a negligible commitment is not chronic
+        // famine (ghost memory from the dead cannot be freed by killing
+        // more) and not yet acute (below 96%): no tax at all.
         let _ = a.tick(&over_ceiling_reading(), never_transport);
-        let taxed = 1001 + 1 - a.host.units[0].vm.energy.energy;
+        assert_eq!(a.host.units[0].vm.energy.energy, 1002, "measurement alone below acute: no tax");
+        // Two units overcommitting a 1500 KiB budget (~87% committed):
+        // overshoot ≈ 0.33 of the post-ceiling range, base tax 1 + 0.33×49
+        // = 17, drawn per unit at 50–150% foraging luck (8..=25), minus the
+        // regen the tick pays back.
+        // The first tick banked abundance income in the reserve; famine
+        // drains that first (fat before muscle), so count both accounts.
+        let r0 = a.host.units[0].vm.energy.reserve;
+        let r1 = a.host.units[1].vm.energy.reserve;
+        let _ = a.tick(&overcommitted_reading(), never_transport);
+        let taxed = 1002 + 1 - a.host.units[0].vm.energy.energy + (r0 - a.host.units[0].vm.energy.reserve);
         assert!(
-            (18..=55).contains(&taxed),
-            "famine taxes in proportion to overshoot with per-unit luck (got {})",
+            (8..=25).contains(&taxed),
+            "famine taxes in proportion to committed overshoot with per-unit luck (got {})",
             taxed
         );
         // Sibling units must NOT be taxed in lockstep — identical rng
         // streams would resynchronize starvation into avalanche mortality.
-        let taxed1 = 1001 + 1 - a.host.units[1].vm.energy.energy;
+        let taxed1 = 1002 + 1 - a.host.units[1].vm.energy.energy + (r1 - a.host.units[1].vm.energy.reserve);
         assert_ne!(taxed, taxed1, "per-unit foraging luck diverges between siblings");
     }
 
@@ -1770,8 +1801,8 @@ mod bridge_tests {
         a.host.units[0].vm.energy.energy = 5000; // rich
         a.host.units[1].vm.energy.energy = -400; // already scraping bottom
         let mut first_death_tick = None;
-        for t in 0..100 {
-            let report = a.tick(&over_ceiling_reading(), never_transport);
+        for t in 0..160 {
+            let report = a.tick(&overcommitted_reading(), never_transport);
             if !report.deaths.is_empty() {
                 first_death_tick = Some(t);
                 break;
@@ -1810,15 +1841,17 @@ mod bridge_tests {
             "acute famine must kill within ~25 ticks (got {:?})",
             died_at
         );
-        // Ordinary famine (95% util, below the acute threshold) must NOT
+        // Chronic famine (committed overcommit, measurement low) must NOT
         // move this fast: same setup survives those same 25 ticks.
         let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
-        b.spawn_n(1);
-        b.host.units[0].vm.eval(": LIVE ;");
-        b.host.units[0].vm.energy.energy = 1000;
+        b.spawn_n(2);
+        for slot in b.host.units.iter_mut() {
+            slot.vm.eval(": LIVE ;");
+            slot.vm.energy.energy = 1000;
+        }
         for _ in 0..25 {
-            let report = b.tick(&over_ceiling_reading(), never_transport);
-            assert!(report.deaths.is_empty(), "ordinary famine stays gradual");
+            let report = b.tick(&overcommitted_reading(), never_transport);
+            assert!(report.deaths.is_empty(), "chronic famine stays gradual");
         }
     }
 
@@ -1920,6 +1953,27 @@ mod bridge_tests {
         c.host.units[0].vm.energy.energy = 100;
         let _ = c.tick(&near, never_transport);
         assert_eq!(c.host.units[0].vm.energy.reserve, 1, "floor of 1 under threshold");
+    }
+
+    #[test]
+    fn abundance_rescues_the_starving_before_it_saves() {
+        // Post-famine, a survivor pinned at the death floor must use habitat
+        // income to live (the fuse resets once it leaves the floor zone),
+        // and only then bank it. Otherwise the reserve redirect would let
+        // famine's in-flight victims starve under plenty.
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(1);
+        a.host.units[0].vm.eval(": LIVE ;");
+        a.host.units[0].vm.energy.energy = -500;
+        a.host.units[0].starved_ticks = STARVED_TICKS_TO_DIE - 2;
+        let r = a.tick(&under_ceiling_reading(), never_transport);
+        assert!(r.deaths.is_empty(), "rescued");
+        let e = &a.host.units[0].vm.energy;
+        assert!(!e.at_hard_floor(), "income lifted it out of the floor zone");
+        assert_eq!(e.reserve, 0, "nothing banked while starving");
+        assert_eq!(a.host.units[0].starved_ticks, 0, "the fuse reset");
+        let _ = a.tick(&under_ceiling_reading(), never_transport);
+        assert!(a.host.units[0].vm.energy.reserve > 0, "healthy now: it saves");
     }
 
     #[test]
