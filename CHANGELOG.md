@@ -1,5 +1,32 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **The seasons drill** (`docker/season.sh` + a peerless `season`
+  service): carrying capacity under a MOVING budget. One node boots
+  comfortable at 512 MiB; the harness walks `memory.max` down live
+  through a gradual drought to 192 MiB (each step floored at current
+  RSS + guard — a drought faster than the organism can shed is an
+  execution, not a test), holds winter, then restores spring. Asserts
+  on the chronicle: famine tracks the falling budget, zero `oom_kill`
+  across the cycle, ticks never stall, and conservation stays exact
+  (`units == 300 − deaths + births`; no peers, so migration cannot blur
+  the ledger).
+- **Reproductive reserve — the germ line the soma cannot spend.** The
+  drill's first run passed drought and winter and failed spring
+  absolutely: ten minutes at 25% util, zero births. Structural cause:
+  GP-EVOLVE's energy gate is anchored at the hard floor, so evolution
+  spends every affordable coin every tick and no unit ever HOLDS the
+  breeding price, however abundant the income. Abundance now deposits
+  into `EnergyState::reserve`, which `spend`/`can_afford` cannot see;
+  breeding pays from the reserve alone (`RESERVE_TO_BREED` = SPAWN_COST
+  + BIRTH_ENDOWMENT); famine drains the reserve FIRST (fat before
+  muscle), so no one breeds during a famine and a starving unit's
+  savings go before its life.
+
+
 All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 

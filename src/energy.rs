@@ -100,6 +100,15 @@ const HARD_FLOOR: i64 = -500;
 #[derive(Clone, Debug)]
 pub struct EnergyState {
     pub energy: i64,
+    /// Reproductive reserve — the germ line the soma cannot spend.
+    /// Abundance income deposits here (capped at the breeding price);
+    /// `spend`/`can_afford` never see it, so discretionary metabolism
+    /// (GP burns to its gate every tick) cannot cannibalize the fund
+    /// that pays for offspring. Famine drains it FIRST — fat before
+    /// muscle — so a starving unit's savings go before its life, and
+    /// no one breeds during a famine. Not carried in snapshots yet:
+    /// a migrating unit arrives with an empty reserve.
+    pub reserve: i64,
     pub max_energy: i64,
     pub total_earned: u64,
     pub total_spent: u64,
@@ -119,6 +128,7 @@ impl EnergyState {
     pub fn new() -> Self {
         EnergyState {
             energy: INITIAL_ENERGY,
+            reserve: 0,
             max_energy: MAX_ENERGY,
             total_earned: 0,
             total_spent: 0,
@@ -148,12 +158,35 @@ impl EnergyState {
     /// earns meanwhile (task rewards, gifts) lifts it back out, so the
     /// well-fed outlast the weak by exactly their metabolic surplus.
     pub fn famine(&mut self, amount: i64) {
-        let drained = (self.energy - HARD_FLOOR).min(amount).max(0);
+        // Fat before muscle: the reproductive reserve goes first.
+        let from_reserve = self.reserve.min(amount).max(0);
+        self.reserve -= from_reserve;
+        let remainder = amount - from_reserve;
+        let drained = (self.energy - HARD_FLOOR).min(remainder).max(0);
         self.energy -= drained;
-        self.total_spent += drained as u64;
+        self.total_spent += (from_reserve + drained) as u64;
         if self.energy <= STARVATION_THRESHOLD {
             self.throttled = true;
         }
+    }
+
+    /// Deposit habitat income into the reproductive reserve, up to `cap`
+    /// (the breeding price — no hoarding beyond one offspring's worth).
+    pub fn deposit_reserve(&mut self, amount: i64, cap: i64) {
+        let taken = (cap - self.reserve).clamp(0, amount);
+        self.reserve += taken;
+        self.total_earned += taken as u64;
+    }
+
+    /// Pay a cost from the reserve alone. Refuses rather than borrowing
+    /// from the metabolic balance — breeding is funded or it isn't.
+    pub fn spend_reserve(&mut self, amount: i64) -> bool {
+        if self.reserve < amount {
+            return false;
+        }
+        self.reserve -= amount;
+        self.total_spent += amount as u64;
+        true
     }
 
     /// Earn energy, capped at max_energy.
@@ -342,6 +375,36 @@ mod tests {
         assert_eq!(e.starving_ticks, 1);
         e.tick();
         assert_eq!(e.starving_ticks, 2);
+    }
+
+    #[test]
+    fn test_famine_drains_reserve_before_energy() {
+        let mut e = EnergyState::new();
+        e.energy = 100;
+        e.reserve = 30;
+        e.famine(50);
+        assert_eq!(e.reserve, 0, "fat goes first");
+        assert_eq!(e.energy, 80, "then muscle");
+    }
+
+    #[test]
+    fn test_reserve_is_invisible_to_spend() {
+        let mut e = EnergyState::new();
+        e.energy = 10;
+        e.reserve = 700;
+        // Discretionary spending can only see the metabolic balance.
+        assert!(e.can_afford(500));
+        e.spend(500, "gp");
+        assert_eq!(e.reserve, 700, "the soma cannot spend the germ line");
+        assert_eq!(e.energy, -490);
+        // Reserve payment refuses rather than borrowing.
+        assert!(!e.spend_reserve(701));
+        assert!(e.spend_reserve(700));
+        assert_eq!(e.reserve, 0);
+        // Deposits cap at the asked ceiling.
+        e.deposit_reserve(400, 700);
+        e.deposit_reserve(400, 700);
+        assert_eq!(e.reserve, 700, "no hoarding past the cap");
     }
 
     #[test]

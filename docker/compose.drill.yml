@@ -181,6 +181,25 @@ services:
       DRILL_NAME: e5
       DRILL_ARGS: --multi-unit 20 --port 4200 --peers e1:4200 --gossip-k 8
 
+  # --- Season: one node under a MOVING budget (docker/season.sh) ----------
+  # Nature's defining pressure is that carrying capacity changes. This
+  # service boots comfortable; the harness then moves memory.max live
+  # (docker update) through drought -> winter -> spring and asserts the
+  # population tracks it: famine sheds on the way down, abundance-funded
+  # rebound regrows on the way up, the kernel never fires. No peers on
+  # purpose: with migration off the table, conservation is pure
+  # units == 300 - deaths + births.
+  season:
+    <<: *node
+    hostname: season
+    profiles: [season]
+    mem_limit: ${SEASON_MEM:-512m}
+    memswap_limit: ${SEASON_MEM:-512m}
+    environment:
+      <<: *node-env
+      DRILL_NAME: season
+      DRILL_ARGS: --multi-unit 300 --port 4200
+
   # --- Soak: long-lived evolution colony (docker/soak.sh) -----------------
   # Three balanced nodes with mild pressure (~50% at boot): room for GP
   # state to grow, occasional pressure-driven migration, and hours of

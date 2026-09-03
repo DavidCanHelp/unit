@@ -64,13 +64,17 @@ pub const REBOUND_UTILIZATION: f64 = 0.70;
 /// before the next birth decision reads it.
 pub const REBOUND_INTERVAL_TICKS: u64 = 5;
 /// Energy a parent endows its child at birth, on top of the SPAWN_COST
-/// the reproduction itself burns. Only a unit still holding
-/// [`REBOUND_PARENT_MIN`] after both can breed: reproduction is a
-/// surplus behavior, and the endowment keeps the newborn out of famine's
-/// immediate reach without minting energy from nothing.
+/// the reproduction itself burns. The endowment keeps the newborn out
+/// of famine's immediate reach without minting energy from nothing.
 pub const BIRTH_ENDOWMENT: i64 = 500;
-/// Post-birth energy a parent must retain to qualify for breeding.
-pub const REBOUND_PARENT_MIN: i64 = 300;
+/// The breeding price, paid entirely from the reproductive RESERVE
+/// (never the metabolic balance): reproduction is funded by protected
+/// savings, not by out-bidding metabolism for the same wallet. The
+/// seasons drill proved the wallet war unwinnable — GP spends every
+/// affordable coin down to its gate each tick, so a spring habitat at
+/// 25% util produced zero births in ten minutes: no unit ever HELD the
+/// price, however abundant the income.
+pub const RESERVE_TO_BREED: i64 = crate::energy::SPAWN_COST + BIRTH_ENDOWMENT;
 
 /// Result of dispatching one goal.
 pub struct GoalResult {
@@ -926,7 +930,12 @@ impl MultiUnitNode {
                 let bonus =
                     ((fraction * crate::energy::ABUNDANCE_REGEN_MAX as f64) as i64).max(1);
                 for slot in self.host.units.iter_mut() {
-                    slot.vm.energy.earn(bonus, "abundance");
+                    // Habitat income is reproductive investment, deposited
+                    // into the reserve the soma cannot spend. Routed to the
+                    // metabolic balance it evaporates: GP burns every
+                    // affordable coin to its gate each tick, and no unit
+                    // ever holds the breeding price.
+                    slot.vm.energy.deposit_reserve(bonus, RESERVE_TO_BREED);
                 }
             }
             0
@@ -1044,21 +1053,16 @@ impl MultiUnitNode {
             && famine_tax == 0
             && self.ticks_total.wrapping_sub(self.last_birth_tick) >= REBOUND_INTERVAL_TICKS
         {
-            let full_price =
-                crate::energy::SPAWN_COST + BIRTH_ENDOWMENT + REBOUND_PARENT_MIN;
             let parent = self
                 .host
                 .units
                 .iter()
                 .enumerate()
-                .filter(|(_, sl)| sl.vm.energy.energy >= full_price)
-                .max_by_key(|(_, sl)| sl.vm.energy.energy)
+                .filter(|(_, sl)| sl.vm.energy.reserve >= RESERVE_TO_BREED)
+                .max_by_key(|(_, sl)| sl.vm.energy.reserve)
                 .map(|(i, _)| i);
             if let Some(pi) = parent {
-                let paid = self.host.units[pi]
-                    .vm
-                    .energy
-                    .spend(crate::energy::SPAWN_COST + BIRTH_ENDOWMENT, "rebound-birth");
+                let paid = self.host.units[pi].vm.energy.spend_reserve(RESERVE_TO_BREED);
                 if paid {
                     let antibodies = harvest_antibodies(&self.host.units[pi].vm);
                     let child_gen = self.host.units[pi].vm.spawn_state.generation + 1;
@@ -1626,15 +1630,15 @@ mod bridge_tests {
             slot.vm.eval(": LIVE ;");
             slot.vm.energy.energy = 1000;
         }
-        // Under the ceiling: passive regen plus the abundance bonus
-        // (50% util → +2); no famine.
+        // Under the ceiling: passive regen only on the metabolic balance
+        // (abundance deposits to the reserve); no famine.
         let _ = a.tick(&under_ceiling_reading(), never_transport);
-        assert_eq!(a.host.units[0].vm.energy.energy, 1003, "no famine under ceiling");
+        assert_eq!(a.host.units[0].vm.energy.energy, 1001, "no famine under ceiling");
         // Over the ceiling at 95% util: overshoot 0.75 of the post-ceiling
         // range, base tax 1 + 0.75×49 = 37, drawn per unit at 50–150%
         // foraging luck (18..=55), minus the regen the tick pays back.
         let _ = a.tick(&over_ceiling_reading(), never_transport);
-        let taxed = 1003 + 1 - a.host.units[0].vm.energy.energy;
+        let taxed = 1001 + 1 - a.host.units[0].vm.energy.energy;
         assert!(
             (18..=55).contains(&taxed),
             "famine taxes in proportion to overshoot with per-unit luck (got {})",
@@ -1642,7 +1646,7 @@ mod bridge_tests {
         );
         // Sibling units must NOT be taxed in lockstep — identical rng
         // streams would resynchronize starvation into avalanche mortality.
-        let taxed1 = 1003 + 1 - a.host.units[1].vm.energy.energy;
+        let taxed1 = 1001 + 1 - a.host.units[1].vm.energy.energy;
         assert_ne!(taxed, taxed1, "per-unit foraging luck diverges between siblings");
     }
 
@@ -1726,8 +1730,9 @@ mod bridge_tests {
             slot.vm.eval(": LIVE ;");
         }
         a.host.units[0].vm.eval(": SOL-HERITAGE 7 ;");
-        a.host.units[0].vm.energy.energy = 5000; // the qualifying parent
-        a.host.units[1].vm.energy.energy = 100; // too poor to breed
+        a.host.units[0].vm.energy.reserve = RESERVE_TO_BREED; // funded germ line
+        a.host.units[0].vm.energy.energy = 100;
+        a.host.units[1].vm.energy.energy = 5000; // rich soma, empty reserve: cannot breed
 
         // Tick 1..=REBOUND_INTERVAL_TICKS-1: interval not yet elapsed.
         for _ in 0..(REBOUND_INTERVAL_TICKS - 1) {
@@ -1743,12 +1748,12 @@ mod bridge_tests {
         assert_eq!(child.spawn_state.generation, 1, "child is next generation");
         child.eval("SOL-HERITAGE");
         assert_eq!(child.stack.last().copied(), Some(7), "child inherited the antibody");
-        // Parent paid the full price from its own reserves.
+        // The price came from the reserve alone; the metabolic balance
+        // only ever gained (regen + abundance never touched by breeding).
+        assert_eq!(a.host.units[0].vm.energy.reserve, 0, "reserve spent on the birth");
         assert!(
-            a.host.units[0].vm.energy.energy
-                < 5000 - crate::energy::SPAWN_COST - BIRTH_ENDOWMENT
-                + REBOUND_INTERVAL_TICKS as i64 + 2,
-            "parent paid SPAWN_COST + BIRTH_ENDOWMENT"
+            a.host.units[0].vm.energy.energy >= 100,
+            "breeding never taxes the metabolic balance"
         );
     }
 
@@ -1766,14 +1771,17 @@ mod bridge_tests {
             assert!(r.birth.is_none(), "the [70%,80%) band must be still");
             assert_eq!(r.famine_tax, 0);
         }
-        // Ample headroom but no unit can afford reproduction: no birth.
+        // Ample headroom, rich metabolic balance, EMPTY reserve: no birth
+        // until abundance deposits accumulate to the price. (At bonus 2 per
+        // tick the reserve reaches 700 only after ~350 ticks; 15 ticks in,
+        // reproduction must still be waiting on its savings.)
         let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
         b.spawn_n(1);
         b.host.units[0].vm.eval(": LIVE ;");
-        b.host.units[0].vm.energy.energy = 500; // below the full price
+        b.host.units[0].vm.energy.energy = 5000;
         for _ in 0..(REBOUND_INTERVAL_TICKS * 3) {
             let r = b.tick(&under_ceiling_reading(), never_transport);
-            assert!(r.birth.is_none(), "reproduction is a surplus behavior");
+            assert!(r.birth.is_none(), "breeding is funded by the reserve alone");
         }
         assert_eq!(b.host.len(), 1);
     }
@@ -1787,7 +1795,8 @@ mod bridge_tests {
         a.host.units[0].vm.eval(": LIVE ;");
         a.host.units[0].vm.energy.energy = 100;
         let _ = a.tick(&under_ceiling_reading(), never_transport);
-        assert_eq!(a.host.units[0].vm.energy.energy, 103, "abundance bonus + regen");
+        assert_eq!(a.host.units[0].vm.energy.energy, 101, "regen to the balance");
+        assert_eq!(a.host.units[0].vm.energy.reserve, 2, "abundance to the reserve");
         // In the [70%, 80%) band there is no habitat income and no famine:
         // just the bare +1 regen. The band is metabolically neutral.
         let banded = crate::resources::HostResources::from_parts(1_024_000, 256_000, 0.0, 4);
@@ -1806,7 +1815,7 @@ mod bridge_tests {
         c.host.units[0].vm.eval(": LIVE ;");
         c.host.units[0].vm.energy.energy = 100;
         let _ = c.tick(&near, never_transport);
-        assert_eq!(c.host.units[0].vm.energy.energy, 102, "floor of 1 under threshold");
+        assert_eq!(c.host.units[0].vm.energy.reserve, 1, "floor of 1 under threshold");
     }
 
     #[test]
@@ -1876,11 +1885,12 @@ mod bridge_tests {
 
         let _ = a.tick(&under_ceiling_reading(), never_transport);
 
-        // Sibling got the gift (+10), passive regen (+1), and the 50%-util
-        // abundance bonus (+2).
-        assert_eq!(a.host.units[1].vm.energy.energy, 13, "gift arrived via the tick");
-        // Donor: -11 for the gift+friction, +1 regen, +2 abundance.
-        assert_eq!(a.host.units[0].vm.energy.energy, 1000 - 11 + 1 + 2);
+        // Sibling got the gift (+10) and passive regen (+1); the 50%-util
+        // abundance bonus goes to its reserve, not the balance.
+        assert_eq!(a.host.units[1].vm.energy.energy, 11, "gift arrived via the tick");
+        assert_eq!(a.host.units[1].vm.energy.reserve, 2, "abundance banked");
+        // Donor: -11 for the gift+friction, +1 regen.
+        assert_eq!(a.host.units[0].vm.energy.energy, 1000 - 11 + 1);
     }
 }
 
