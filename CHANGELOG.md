@@ -23,6 +23,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `units == expected + landed − released − starved`, with `:deaths` on
   the conservation line.
 
+### Committed-demand admission (run-9 finding)
+
+- **The admission gate now prices what the node has promised, not what
+  it measures.** Run 9's periodic trim made measurement honest — and
+  that honesty removed fragmentation's accidental early warning: the
+  immigration sink read util 91% while its 444 admitted units had
+  already committed ~289 MiB against a 192 MiB budget, and it was
+  OOM-killed before famine landed a single death (the fourth sink loss).
+  Measured utilization is reactive; a flood's cost is committed but not
+  yet measured. The listener now also refuses when (hosted units +
+  pending admits) × `SATURATED_UNIT_COST_KB` (512, anchored by the
+  512 MiB soak's measured ~650 KiB/unit) would cross the 75% admission
+  cutoff — a deliberate constant, since a post-crisis fragmented ratio
+  would poison any self-calibrated estimate. This ships the inbound half
+  of committed-work accounting that the listener comment had deferred.
+
 ### Recovery unblocked (run-8 findings)
 
 - **Periodic malloc_trim on the measure cadence.** The event-based trim

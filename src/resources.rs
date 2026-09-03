@@ -60,6 +60,17 @@ pub const CEILING_UTILIZATION: f64 = 0.80;
 /// mislocation decisions still use the full ceiling via [`HostResources::has_headroom`].
 pub const ADMISSION_MARGIN: f64 = 0.05;
 
+/// Assumed saturated memory footprint of one hosted unit, in KiB, for the
+/// admission gate's COMMITTED-demand check. Measured, not guessed: the
+/// 512 MiB soak (docs/validation.md) showed 300 units settling at
+/// ~190 MiB ≈ 650 KiB/unit including amortized host overhead; 512 keeps
+/// large-budget colonies permissive while the admission margin absorbs
+/// the difference. A constant rather than self-calibration on purpose:
+/// a post-crisis fragmented reading (44 units measuring 129 MiB ≈
+/// 2.9 MiB/unit) would poison any learned maximum and block admissions
+/// on a recovered node forever.
+pub const SATURATED_UNIT_COST_KB: u64 = 512;
+
 /// Swap-used share of the combined RAM+swap budget above which the host is
 /// judged to be MEANINGFULLY leaning on swap (actively swapping, not just
 /// holding a few incidentally-paged-out inactive pages).

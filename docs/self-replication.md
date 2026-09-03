@@ -87,7 +87,7 @@ The protocol:
 origin                                   destination
   | capture self (USAV)                     |
   | -- UTPT frame (len-prefixed USAV) -->   |
-  |                                         | validate, admission gate?  (margin + rate window; fail closed)
+  |                                         | validate, admission gate?  (margin + rate window + committed demand; fail closed)
   |                                         | deserialize the complete self
   |   <------ UTPC confirm (accept|refuse) -|
   | release ONLY on Accepted                |

@@ -320,7 +320,16 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     // mesh port + TRANSPORT_PORT_OFFSET on 0.0.0.0 and runs its own accept
     // thread; we drain its channel each tick to instantiate received units.
     let transport_port = mesh_port.wrapping_add(TRANSPORT_PORT_OFFSET);
-    let transport_rx = match crate::transport::start_transport_listener(transport_port) {
+    // Shared with the listener thread for the committed-demand admission
+    // check: how many units this node already feeds (updated each tick) and
+    // how many accepted admits are still in the channel awaiting landing.
+    let hosted_units = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let pending_admits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let transport_rx = match crate::transport::start_transport_listener(
+        transport_port,
+        hosted_units.clone(),
+        pending_admits.clone(),
+    ) {
         Ok(rx) => {
             println!(
                 "[{}] transport listener up on 0.0.0.0:{} (mesh port + {})",
@@ -374,6 +383,9 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
             break;
         }
 
+        // Publish the population for the listener's committed-demand check.
+        hosted_units.store(node.host.len(), std::sync::atomic::Ordering::Relaxed);
+
         // Always heartbeat so peers keep seeing us.
         if let Some(ref m) = node.mesh {
             m.force_heartbeat();
@@ -382,6 +394,7 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
         // Service the transport listener: land any inbound transported units.
         if let Some(ref rx) = transport_rx {
             while let Ok(snap) = rx.try_recv() {
+                pending_admits.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 land_transported_unit(&mut node, snap);
                 chron_in += 1;
                 println!(

@@ -264,6 +264,26 @@ impl HandleResult {
 /// self deserializes, `Refused` (no snapshot) otherwise. Confirm-before-release
 /// is unchanged: a refused inbound still echoes the node_id with `Refused`, so
 /// the sender gets `Err` and keeps its unit.
+/// COMMITTED-demand admission check: does the population this node has
+/// already committed to feed — hosted units plus admits accepted but not
+/// yet instantiated — leave room for one more at saturated cost? Measured
+/// utilization is REACTIVE: a landed unit's memory demand materializes
+/// over the following minutes (~4× its arrival size), so during an
+/// immigration flood the fresh measure() reads far below what the node
+/// has already promised. Three scarcity-soak sinks died of exactly this
+/// (runs 3–5 pre-famine, run 9 after periodic trim removed
+/// fragmentation's accidental early warning): flooded to 430+ units on a
+/// ~240-unit budget while measuring under 92%. Fails closed on an
+/// unmeasurable budget, like the measured-headroom gate.
+pub fn admission_committed_ok(units_plus_pending: usize, mem_total_kb: u64) -> bool {
+    if mem_total_kb == 0 {
+        return false;
+    }
+    let committed_kb = units_plus_pending as u64 * crate::resources::SATURATED_UNIT_COST_KB;
+    (committed_kb as f64 / mem_total_kb as f64)
+        < (crate::resources::CEILING_UTILIZATION - crate::resources::ADMISSION_MARGIN)
+}
+
 /// Windowed admission cap — "digest before swallowing more". The admission
 /// measure is honest at decision time, but the LOAD axis is a trailing
 /// average: landing a unit costs real CPU (fresh VM + prelude eval), so a
@@ -571,6 +591,8 @@ fn io_to_transport_err(e: &std::io::Error) -> TransportError {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn start_transport_listener(
     port: u16,
+    hosted_units: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pending_admits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) -> Result<std::sync::mpsc::Receiver<crate::persist::VmSnapshot>, TransportError> {
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -616,33 +638,25 @@ pub fn start_transport_listener(
             frame.extend_from_slice(&header);
             frame.extend_from_slice(&payload);
 
-            // Measure at accept time so the admission decision is current. The
-            // admission margin (see `handle_transport_frame` /
-            // `ADMISSION_MARGIN`) absorbs the burst: accepted snapshots sit in
-            // the channel until the main loop instantiates them, so a rapid
-            // burst's units aren't yet reflected in this fresh measure(). The
-            // margin's slack covers that gap.
-            //
-            // Committed-work accounting is half-done by design. The OUTBOUND
-            // side landed in v0.32 (run_parallel's per-call recruit tally) and
-            // was hardware-validated: under burst on swap-backed boxes the
-            // tally correctly declined overflow work. Still deferred is the
-            // INBOUND side: counting work this node has admitted but not yet
-            // instantiated — e.g. an AtomicUsize "pending admits" shared
-            // between this listener and the main loop (incremented here,
-            // decremented after each landing), with an estimated per-unit
-            // util added to the reading before the check. It needs the
-            // per-unit-footprint estimate (total_mem / per-unit size) that is
-            // easy to get wrong; until then the margin's slack carries the
-            // accept-to-instantiate gap alone. Kept simple and zero-dep here.
+            // Measure at accept time so the admission decision is current —
+            // and gate on COMMITTED demand as well: hosted units plus admits
+            // still in the channel, priced at saturated cost (see
+            // `admission_committed_ok`). The measured reading alone is
+            // reactive; the committed check is what stops an immigration
+            // flood before the population outgrows the budget it will
+            // demand minutes later. The rate window still paces bursts.
             let res = crate::resources::HostResources::measure();
             let now_ms = listener_epoch.elapsed().as_millis() as u64;
-            let admission_open = admission_window.try_admit(now_ms);
+            let committed = hosted_units.load(std::sync::atomic::Ordering::Relaxed)
+                + pending_admits.load(std::sync::atomic::Ordering::Relaxed);
+            let admission_open = admission_window.try_admit(now_ms)
+                && admission_committed_ok(committed + 1, res.mem_total_kb);
             if let Ok(result) = handle_transport_frame(&frame, &res, admission_open) {
                 // Confirm first (the origin is waiting on it before releasing)...
                 let _ = stream.write_all(&result.confirm_frame);
                 // ...then hand an accepted self to the caller to instantiate.
                 if let Some(snap) = result.snapshot {
+                    pending_admits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let _ = tx.send(snap);
                 }
             }
@@ -665,7 +679,11 @@ pub fn send_transport(_addr: &str, _payload: &[u8]) -> Result<ConfirmOutcome, Tr
 
 /// wasm32: there is no listener to start.
 #[cfg(target_arch = "wasm32")]
-pub fn start_transport_listener(_port: u16) -> Result<(), TransportError> {
+pub fn start_transport_listener(
+    _port: u16,
+    _hosted_units: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    _pending_admits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> Result<(), TransportError> {
     Err(TransportError::Unavailable)
 }
 
@@ -899,6 +917,28 @@ mod tests {
         let (id, status) = decode_confirm_frame(&result.confirm_frame).unwrap();
         assert_eq!(id, [1, 2, 3, 4, 5, 6, 7, 8], "still echoes the node_id");
         assert_eq!(status, ConfirmStatus::Refused);
+    }
+
+    #[test]
+    fn committed_demand_gates_admission_before_measurement_can() {
+        use crate::resources::SATURATED_UNIT_COST_KB;
+        let budget_192m: u64 = 192 * 1024;
+        let budget_512m: u64 = 512 * 1024;
+        // 300 units on a 192 MiB budget commit 150 MiB ≈ 78% — over the
+        // 75% admission cutoff. This is the soak boot state: overcommitted
+        // colonies must not trade units at all.
+        assert!(!admission_committed_ok(300, budget_192m));
+        // A thinned node (200 units ≈ 52%) has real committed room.
+        assert!(admission_committed_ok(200, budget_192m));
+        // The cutoff sits at units × cost / budget == 0.75 → 288 units.
+        assert!(admission_committed_ok(287, budget_192m));
+        assert!(!admission_committed_ok(288, budget_192m));
+        // The same 300 units on a 512 MiB budget commit ~29% — permissive,
+        // as the homeostasis soak (which never needed refusals) requires.
+        assert!(admission_committed_ok(300, budget_512m));
+        // Fail closed on an unmeasurable budget, like the measured gate.
+        assert!(!admission_committed_ok(1, 0));
+        let _ = SATURATED_UNIT_COST_KB;
     }
 
     #[test]
