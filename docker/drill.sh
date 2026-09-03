@@ -450,7 +450,19 @@ fi
 U1=$(nsf e1 units); U2=$(nsf e2 units); U3=$(nsf e3 units); U4=$(nsf e4 units)
 SUM=$(( ${U1:-0} + ${U2:-0} + ${U3:-0} + ${U4:-0} ))
 COLONY_TOTAL=$(( SUM + E5_UNITS ))
-echo "        (survivors=$SUM blackholed=$E5_UNITS total=$COLONY_TOTAL of 1600)"
+# Metabolic ledger: famine mortality and rebound births are real colony
+# events since the energy-tracks-habitat ecology (boot-overcommitted 520-unit
+# senders now shrink toward carrying capacity by starvation, not just by
+# shedding). Both are chronicled per node; conservation is checked against
+# the event-adjusted expectation, with the same transport loss/duplication
+# window around it.
+DSUM=0; BSUM=0
+for n in e1 e2 e3 e4 e5; do
+    D=$(nsf $n deaths); B=$(nsf $n births)
+    DSUM=$(( DSUM + ${D:-0} )); BSUM=$(( BSUM + ${B:-0} ))
+done
+EXPECTED=$(( 1600 - DSUM + BSUM ))
+echo "        (survivors=$SUM blackholed=$E5_UNITS total=$COLONY_TOTAL; deaths=$DSUM births=$BSUM -> expected $EXPECTED)"
 # Loss bound: at most the in-flight window swallowed by the blackhole (6).
 # DUPLICATION bound: same window on the other side — a landing whose confirm
 # died in the partition keeps BOTH copies (documented fail-toward-
@@ -462,8 +474,8 @@ echo "        (survivors=$SUM blackholed=$E5_UNITS total=$COLONY_TOTAL of 1600)"
 L4=$(nsf e4 in); L4=${L4:-0}
 DUP_BOUND=$(( 6 + (L4 + ${E5_IN:-0}) / 50 + 1 ))
 echo "        (duplication bound: $DUP_BOUND from $(( L4 + ${E5_IN:-0} )) landings)"
-[ "$COLONY_TOTAL" -le $(( 1600 + DUP_BOUND )) ] && [ "$COLONY_TOTAL" -ge 1590 ]
-check "S8 conservation: documented loss/duplication only (1600 -10/+$DUP_BOUND)" $?
+[ "$COLONY_TOTAL" -le $(( EXPECTED + DUP_BOUND )) ] && [ "$COLONY_TOTAL" -ge $(( EXPECTED - 10 )) ]
+check "S8 conservation: metabolic ledger + documented loss/duplication only ($EXPECTED -10/+$DUP_BOUND)" $?
 snap_logs S8
 down
 }
