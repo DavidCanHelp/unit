@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- **Death now physically frees habitat** (`mallopt` at node start, glibc
+  only, no dependency). The seasons rerun after the famine split was
+  the organism's best yet — winter settled at 236 units against a
+  ~242 budget, spring regrew to exactly 300 with 64 births for 64
+  deaths, gen-max 2 — and the drill still could not walk the budget
+  below 218 MiB: RSS held at 195 MB, exactly 236 × 650 KB *plus every
+  corpse*. glibc's dynamic mmap threshold ramps up after the first
+  large free, so per-VM buffers stop being mmap-backed and freed heap
+  interiors become unreturnable. Pinning `M_MMAP_THRESHOLD` (64 KiB)
+  and `M_TRIM_THRESHOLD` disables the ramp; a dying unit's buffers go
+  back to the OS at once. `season.sh` now prints a `(season-ghost …)`
+  line — resident KB per living unit — so the corpse load is visible.
+
 - **Chronic famine keys to committed demand alone; the measurement
   drives acute only.** The seasons drill with heredity (12/13) caught
   the winter overshoot red-handed: famine lifted at 82 units, then

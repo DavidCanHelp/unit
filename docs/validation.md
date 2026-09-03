@@ -180,10 +180,15 @@ The heredity run (gen-max 6, 125 births, 12/13) failed winter hard —
 on ghost RSS from the dead (170 MB resident, minutes from being
 returned) and kept killing a population already below capacity.
 Chronic famine now keys to committed demand alone; the measurement
-drives only the acute (≥96%) backstop. Still open: spring's ceiling —
-the drill ends while growth is climbing — and the fragmentation ghost
-itself, which still blocks abundance (the worse-of-two rule) until
-periodic trims return the memory.
+drives only the acute (≥96%) backstop. With that split the rerun was
+the organism's cleanest: winter settled at 236 units, spring regrew to
+exactly 300 (64 births for 64 deaths, gen-max 2) — and the drill
+exposed the last physical lie: RSS stayed at 195 MB, 236 living units
+plus every corpse, because glibc's dynamic mmap threshold had turned
+per-VM buffers into unreturnable heap. `mallopt` at node start pins the
+threshold so death frees habitat; `(season-ghost …)` reports resident
+KB per living unit. Still open: spring's ceiling — the drill ends while
+growth is climbing.
 
 ## The observability surfaces these assert against
 

@@ -91,6 +91,12 @@ WINTER_UNITS=${WINTER_UNITS:-0}; WINTER_DEATHS=${WINTER_DEATHS:-0}; WINTER_BIRTH
 # overshoots below that, never above it.
 [ "$WINTER_UNITS" -lt 250 ] && [ "$WINTER_UNITS" -gt 50 ]
 check "winter: population at small-budget capacity (units=$WINTER_UNITS)" $?
+# Ghost check: does death physically free habitat? Resident KB per LIVING
+# unit should sit near the saturated cost (~650 KiB); every corpse whose
+# memory the allocator kept shows up here as excess.
+W_RSS_KB=$($COMPOSE exec -T season cat /sys/fs/cgroup/memory.current 2>/dev/null | awk '{print int($1/1024)}')
+W_RSS_KB=${W_RSS_KB:-0}
+[ "$WINTER_UNITS" -gt 0 ] && echo "        (season-ghost :rss-mb $((W_RSS_KB/1024)) :units $WINTER_UNITS :kb-per-unit $((W_RSS_KB / WINTER_UNITS)) :budget-mb $((LIMIT_KB/1024)))"
 [ "$(oomk)" = "0" ]; check "winter: still zero oom_kill" $?
 [ "$WINTER_UNITS" -eq $((300 - WINTER_DEATHS + WINTER_BIRTHS)) ]
 check "winter: conservation exact (units == 300 − $WINTER_DEATHS + $WINTER_BIRTHS)" $?
