@@ -201,7 +201,28 @@ never above — and passes 13/13:
                 :deaths 48 :births 48 :gen-max 2 :oom 0 :passed 13 :failed 0)
 ```
 
-Still open: spring's ceiling — the drill ends while growth is climbing.
+**Senescence — death in comfort.** The 8 h homeostasis soak had
+frozen (zero deaths, zero turnover), so with heredity in place
+generation depth stalled the moment growth stopped. Every unit now
+draws a lifespan (mean 3600 ticks, ±25%); past it, rising upkeep from
+the metabolic balance — the reserve is spared, so the old may still
+breed — pins it at the floor and ordinary mortality takes it, and
+rebound refills the slot from a survivor's genome. The drill gained a
+25-minute **summer**: held at the restored budget, turnover deaths,
+refills, a steady population, rising gen-max, exact conservation. Its
+first run also found that rebound read ghost RSS from the dead as
+"full" while births demonstrably reuse that memory, so abundance and
+rebound now ask the committed question too (measurement keeps only the
+acute veto). Four-season verdict, 19/19:
+
+```
+(season-verdict :boot 300 :winter 258 :spring 299 :summer 299
+                :deaths 267 :births 266 :gen-max 11 :oom 0 :passed 19 :failed 0)
+```
+
+Summer alone: 201 deaths of old age, 201 refills, population 299 → 299
+through a two-thirds turnover, generation depth 3 → 11. Still open:
+spring's ceiling — the drill ends while growth is climbing.
 
 ## The observability surfaces these assert against
 

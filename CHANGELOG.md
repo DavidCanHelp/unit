@@ -17,7 +17,9 @@
   froze (zero deaths, zero turnover) — selection had no throughput
   between crises. The seasons drill gains a 25-minute **summer** phase
   asserting turnover deaths, refills, a steady population, rising
-  gen-max, exact conservation.
+  gen-max, exact conservation. Four-season verdict 19/19: summer alone
+  saw 201 deaths of old age, 201 refills, population steady at 299
+  through a two-thirds turnover, generation depth 3 → 11.
 
 ### Fixed
 
