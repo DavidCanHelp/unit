@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **`season.sh` verifies every budget change against the cgroup.** A
+  run whose spring restore silently failed left the node on the
+  drought's 369 MiB while the harness believed 512 — and its four
+  "failures" (zero spring births, a summer acute famine, 130 starved)
+  were the organism behaving exactly right for the budget it actually
+  had. Budget updates now read back `memory.max`, retry, and the
+  verified value drives all capacity and ceiling math.
 - **Births scale with the population.** With the cap lifted, the drill
   measured the next limit: summer births at 10.8/min against the
   per-host interval's 12/min cap, senescence turnover eating 239 of

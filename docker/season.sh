@@ -24,7 +24,7 @@
 # units == 300 − deaths + births, checked against the chronicle.
 # Assertions read (node-status …) sexp lines only, per drill doctrine.
 #
-#   bash docker/season.sh          # full cycle, ~70 min
+#   bash docker/season.sh          # full cycle, ~80 min
 set -u
 cd "$(dirname "$0")"
 COMPOSE="docker compose -f compose.drill.yml --profile season"
@@ -40,6 +40,25 @@ oomk() { $COMPOSE exec -T season cat /sys/fs/cgroup/memory.events 2>/dev/null | 
 ticking() { # ticks advanced over 20s?
     local a b; a=$(nsf tick); sleep 20; b=$(nsf tick)
     [ -n "$a" ] && [ -n "$b" ] && [ "$b" -gt "$a" ]
+}
+# Apply a budget and VERIFY it landed in the cgroup, retrying. One run's
+# spring restore silently failed (docker update exit ignored): the node
+# spent spring and summer on the drought's 369 MiB while the harness
+# believed 512 — and every "failure" that followed was the organism
+# behaving correctly for the budget it actually had. The verified value
+# is what all capacity math must use.
+cgroup_max_kb() { $COMPOSE exec -T season cat /sys/fs/cgroup/memory.max 2>/dev/null | awk '{print int($1/1024)}'; }
+set_budget_kb() {
+    local want_kb=$1 got attempt
+    for attempt in 1 2 3; do
+        docker update --memory "${want_kb}k" --memory-swap "${want_kb}k" docker-season-1 >/dev/null 2>&1
+        sleep 2
+        got=$(cgroup_max_kb); got=${got:-0}
+        [ "$got" -eq "$want_kb" ] && return 0
+        echo "    (budget update attempt $attempt: wanted $((want_kb/1024)) MiB, cgroup reads $((got/1024)) MiB — retrying)"
+        sleep 5
+    done
+    return 1
 }
 
 echo "=== SEASON: boot (512 MiB, 300 units) ==="
@@ -78,7 +97,7 @@ while [ "$LIMIT_KB" -gt "$TARGET_KB" ] && [ "$STEPS" -lt 14 ] && [ "$HOLDS" -lt 
     STEPS=$((STEPS+1))
     LIMIT_KB=$NEXT_KB
     echo "    (step $STEPS: budget → $((LIMIT_KB/1024)) MiB, rss=$((RSS_KB/1024)) MiB, units=$(nsf units))"
-    docker update --memory "${LIMIT_KB}k" --memory-swap "${LIMIT_KB}k" docker-season-1 >/dev/null
+    set_budget_kb "$LIMIT_KB" || { echo "    (budget update FAILED; using cgroup's actual value)"; LIMIT_KB=$(cgroup_max_kb); }
     sleep 90
 done
 # The walk stops where physics stops it: the harness never sets a budget
@@ -114,9 +133,13 @@ W_RSS_KB=${W_RSS_KB:-0}
 [ "$WINTER_UNITS" -eq $((300 - WINTER_DEATHS + WINTER_BIRTHS)) ]
 check "winter: conservation exact (units == 300 − $WINTER_DEATHS + $WINTER_BIRTHS)" $?
 
-echo "=== SEASON: spring (192 → 512 MiB, 10 min) ==="
-docker update --memory 512m --memory-swap 512m docker-season-1 >/dev/null
-sleep 600
+echo "=== SEASON: spring (192 → 512 MiB, 15 min) ==="
+# Fifteen minutes, not ten: near the 70% line abundance income fades to
+# its floor of 1/tick, so a famine-drained reserve needs ~700 ticks to
+# refill before a parent can breed again. Spring must outlast that tail.
+set_budget_kb $((512 * 1024)); check "spring: budget restored to 512 MiB (cgroup verified: $(( $(cgroup_max_kb) / 1024 )) MiB)" $?
+SPRING_KB=$(cgroup_max_kb); SPRING_KB=${SPRING_KB:-$((512 * 1024))}
+sleep 900
 SPRING_UNITS=$(nsf units); SPRING_BIRTHS=$(nsf births); SPRING_DEATHS=$(nsf deaths)
 SPRING_UNITS=${SPRING_UNITS:-0}; SPRING_BIRTHS=${SPRING_BIRTHS:-0}; SPRING_DEATHS=${SPRING_DEATHS:-0}
 [ "$SPRING_BIRTHS" -gt "$WINTER_BIRTHS" ]
@@ -152,11 +175,19 @@ check "summer: generation depth still rising (gen-max $GEN_MAX → $SUMMER_GEN)"
 # starts at 80%. At 512 MiB that band is [564, 645) units. The
 # population must reach at least 80% of the 70% line within the run and
 # never cross into famine — every summer death is old age, none starved.
-BAND_LO=$(( 512 * 1024 * 7 / 10 / 650 )); BAND_HI=$(( 512 * 1024 * 8 / 10 / 650 ))
+BAND_LO=$(( SPRING_KB * 7 / 10 / 650 )); BAND_HI=$(( SPRING_KB * 8 / 10 / 650 ))
 STARVED=$(grep -c 'DIED.*— starved' "$LOG" 2>/dev/null); STARVED=${STARVED:-0}
-echo "        (season-ceiling :units $SUMMER_UNITS :band-lo $BAND_LO :band-hi $BAND_HI :starved-total $STARVED)"
-[ "$SUMMER_UNITS" -ge $(( BAND_LO * 8 / 10 )) ] && [ "$SUMMER_UNITS" -lt "$BAND_HI" ]
-check "summer: regrowth found the ecology's ceiling ($SUMMER_UNITS in reach of [$BAND_LO, $BAND_HI))" $?
+# The ceiling is wherever the population first touched it — with births
+# unthrottled that can be the boot phase — so the claim has two halves:
+# the run's PEAK population reached the 70% line and never crossed into
+# famine's 80%, and at summer's end the population still sits in reach
+# of the line (turnover refilled, nothing starved it down).
+PEAK_UNITS=$(grep '(node-status ' "$LOG" | grep -oE ':units [0-9]+' | awk '{print $2}' | sort -n | tail -1); PEAK_UNITS=${PEAK_UNITS:-0}
+echo "        (season-ceiling :peak $PEAK_UNITS :summer $SUMMER_UNITS :band-lo $BAND_LO :band-hi $BAND_HI :starved-total $STARVED)"
+[ "$PEAK_UNITS" -ge "$BAND_LO" ] && [ "$PEAK_UNITS" -lt "$BAND_HI" ]
+check "ceiling: peak population reached the 70% line and never crossed 80% (peak $PEAK_UNITS in [$BAND_LO, $BAND_HI))" $?
+[ "$SUMMER_UNITS" -ge $(( BAND_LO * 85 / 100 )) ] && [ "$SUMMER_UNITS" -lt "$BAND_HI" ]
+check "summer: population holds in reach of the ceiling through turnover ($SUMMER_UNITS vs [$BAND_LO, $BAND_HI))" $?
 [ "$STARVED" -eq "$DROUGHT_STARVED" ]
 check "summer: no starvation past the drought — every later death is old age (starved $DROUGHT_STARVED → $STARVED)" $?
 [ "$(oomk)" = "0" ]; check "summer: zero oom_kill" $?
@@ -164,6 +195,6 @@ check "summer: no starvation past the drought — every later death is old age (
 check "season: conservation exact through summer (units == 300 − $SUMMER_DEATHS + $SUMMER_BIRTHS)" $?
 
 echo ""
-echo "(season-verdict :boot 300 :winter $WINTER_UNITS :spring $SPRING_UNITS :summer $SUMMER_UNITS :ceiling-band \"[$BAND_LO,$BAND_HI)\" :deaths $SUMMER_DEATHS :births $SUMMER_BIRTHS :gen-max $SUMMER_GEN :oom $(oomk) :passed $PASS :failed $FAIL)"
+echo "(season-verdict :boot 300 :winter $WINTER_UNITS :spring $SPRING_UNITS :summer $SUMMER_UNITS :peak $PEAK_UNITS :ceiling-band \"[$BAND_LO,$BAND_HI)\" :deaths $SUMMER_DEATHS :births $SUMMER_BIRTHS :gen-max $SUMMER_GEN :oom $(oomk) :passed $PASS :failed $FAIL)"
 $COMPOSE down -t 3 >/dev/null 2>&1
 [ "$FAIL" -eq 0 ]
