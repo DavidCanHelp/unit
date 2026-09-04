@@ -1828,16 +1828,23 @@ mod bridge_tests {
         a.host.units[5].vm.eval(": SOL-ESTATE 42 ;");
         a.host.units[5].vm.energy.energy = -500;
         a.host.units[5].starved_ticks = STARVED_TICKS_TO_DIE;
-        let banded = crate::resources::HostResources::from_parts(1_024_000, 256_000, 0.0, 4);
+        // Twenty units committing 75% of a 17333 KiB budget: the neutral
+        // band, where no abundance income can rescue the doomed unit.
+        let banded = crate::resources::HostResources::from_parts(17_333, 15_600, 0.0, 4);
         let report = a.tick(&banded, never_transport);
         assert_eq!(report.deaths.len(), 1);
         assert!(report.deaths[0].heirs >= 1 && report.deaths[0].heirs <= BEQUEST_HEIRS);
-        let holders = a
-            .host
-            .units
-            .iter()
-            .filter(|s| s.vm.find_word("SOL-ESTATE").is_some())
-            .count();
+        // An inherited antibody is real when it EXECUTES on the heir (the
+        // absorb path may install lazily; the dictionary probe is not the
+        // contract, the word's behavior is).
+        let mut holders = 0;
+        for s in a.host.units.iter_mut() {
+            s.vm.stack.clear();
+            s.vm.eval("SOL-ESTATE");
+            if s.vm.stack.last().copied() == Some(42) {
+                holders += 1;
+            }
+        }
         assert_eq!(holders, report.deaths[0].heirs, "exactly the heirs inherited");
         assert!(holders < 19, "the estate did not go to the whole species");
     }
