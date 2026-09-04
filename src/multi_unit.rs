@@ -65,10 +65,18 @@ pub const FAMINE_ACUTE_FUSE: u32 = 6;
 /// signal: whatever heap fragmentation makes of freed memory, births
 /// stop when the measurement says the room is spent.
 pub const REBOUND_UTILIZATION: f64 = 0.70;
-/// Ticks between births during a rebound: refill is deliberate, not a
-/// spawn flood — the newborns' own memory demand must land in measure()
-/// before the next birth decision reads it.
-pub const REBOUND_INTERVAL_TICKS: u64 = 5;
+/// Births per tick scale with the population: one, plus one per this
+/// many hosted units. The per-host interval it replaces (one birth per
+/// five ticks, "so the newborn's memory lands in the measurement first")
+/// lost its premise when committed pricing began counting a newborn the
+/// instant it exists — and a population does not breed one at a time:
+/// every funded adult can. The seasons drill measured the interval as
+/// the ceiling's real limit (summer births at 10.8/min against a 12/min
+/// cap, senescence eating 239 of 271, regrowth stalling at 430 against
+/// a [564, 645) band). The reserve economy bounds births naturally —
+/// each parent must bank the full price first — and committed pricing
+/// stops them at the 70% line within a tick.
+pub const REBOUND_UNITS_PER_BIRTH: usize = 100;
 /// Energy a parent endows its child at birth, on top of the SPAWN_COST
 /// the reproduction itself burns. The endowment keeps the newborn out
 /// of famine's immediate reach without minting energy from nothing.
@@ -602,7 +610,7 @@ pub struct TickReport {
     /// Per-unit famine tax applied this tick (0 = host under ceiling).
     pub famine_tax: i64,
     /// A rebound birth happened this tick.
-    pub birth: Option<Birth>,
+    pub births: Vec<Birth>,
     /// The placement outcome, present only if the local rule fired.
     pub transport: Option<TickTransport>,
 }
@@ -645,10 +653,6 @@ pub struct MultiUnitNode {
     /// Round-robin cursor for the per-tick LIVE budget (see
     /// [`LIVE_BUDGET_PER_TICK`]).
     live_cursor: usize,
-    /// Monotonic tick counter for rate-limited rules (rebound interval).
-    ticks_total: u64,
-    /// Tick of the most recent rebound birth.
-    last_birth_tick: u64,
 }
 
 /// How many idle units run their LIVE word per tick. Unbudgeted, every idle
@@ -784,8 +788,6 @@ impl MultiUnitNode {
             rng: crate::features::mutation::SimpleRng::new(rng_seed),
             scavenged_last_drain: 0,
             live_cursor: 0,
-            ticks_total: 0,
-            last_birth_tick: 0,
         })
     }
 
@@ -1203,61 +1205,64 @@ impl MultiUnitNode {
                 i += 1;
             }
         }
-        // c3. rebound: births into measured headroom. Famine's demographic
+        // c3. rebound: births into committed headroom. Famine's demographic
         //     other half — after deaths or emigration have thinned a host,
         //     nothing else regrows the population, and post-crisis colonies
         //     stayed at a fraction of carrying capacity (soak run 6: a
         //     ~240-capacity node held 32 units for two hours). The rule is
-        //     local and surplus-driven: comfortably under the ceiling, at
-        //     most one birth per interval, and only a unit still rich after
-        //     paying reproduction's full price may breed. The child gets
-        //     the parent's endowment (no energy minted) and inherits its
-        //     antibodies — birth passes immune knowledge down the way death
-        //     bequeaths it sideways.
-        self.ticks_total = self.ticks_total.wrapping_add(1);
-        let mut birth = None;
-        if local.valid
-            && !famine_acute
-            && committed_fraction < REBOUND_UTILIZATION
-            && !self.host.is_full()
-            && deaths.is_empty()
-            && famine_tax == 0
-            && self.ticks_total.wrapping_sub(self.last_birth_tick) >= REBOUND_INTERVAL_TICKS
-        {
-            let parent = self
-                .host
-                .units
-                .iter()
-                .enumerate()
-                .filter(|(_, sl)| sl.vm.energy.reserve >= RESERVE_TO_BREED)
-                .max_by_key(|(_, sl)| sl.vm.energy.reserve)
-                .map(|(i, _)| i);
-            if let Some(pi) = parent {
-                let paid = self.host.units[pi].vm.energy.spend_reserve(RESERVE_TO_BREED);
-                if paid {
-                    // Heredity: the child is a mutated copy of its parent's
-                    // genome, not a blank prelude baby. This is the keystone
-                    // the rest of the ecology was missing — famine and
-                    // abundance select who dies and who breeds, and without
-                    // heredity those choices changed nothing: every child
-                    // was genetically identical to every other. Variation
-                    // (mutation), heredity (this), selection (the habitat).
-                    let genome = harvest_genome(&self.host.units[pi].vm);
-                    let child_gen = self.host.units[pi].vm.spawn_state.generation + 1;
-                    if let Some(ci) = self.host.spawn() {
-                        let child = &mut self.host.units[ci].vm;
-                        child.energy.energy = BIRTH_ENDOWMENT;
-                        child.spawn_state.generation = child_gen;
-                        let (inherited, mutated) = inherit_genome(child, &genome);
-                        self.last_birth_tick = self.ticks_total;
-                        birth = Some(Birth {
-                            generation: child_gen,
-                            endowment: BIRTH_ENDOWMENT,
-                            inherited,
-                            mutated,
-                        });
-                    }
+        //     local and surplus-driven: under the 70% committed line, up to
+        //     1 + units/REBOUND_UNITS_PER_BIRTH births per tick, each paid
+        //     in full from a parent's reproductive reserve. The child gets
+        //     the parent's endowment (no energy minted) and a mutated copy
+        //     of its genome — birth passes heredity down the way death
+        //     bequeaths antibodies sideways. The commitment is recomputed
+        //     per birth so the population stops AT the line, not past it.
+        let mut births = Vec::new();
+        if local.valid && !famine_acute && deaths.is_empty() && famine_tax == 0 {
+            let allowed = 1 + self.host.units.len() / REBOUND_UNITS_PER_BIRTH;
+            for _ in 0..allowed {
+                let committed_now = if local.mem_total_kb > 0 {
+                    (self.host.units.len() as u64 * crate::resources::SATURATED_UNIT_COST_KB)
+                        as f64
+                        / local.mem_total_kb as f64
+                } else {
+                    0.0
+                };
+                if committed_now >= REBOUND_UTILIZATION || self.host.is_full() {
+                    break;
                 }
+                let parent = self
+                    .host
+                    .units
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, sl)| sl.vm.energy.reserve >= RESERVE_TO_BREED)
+                    .max_by_key(|(_, sl)| sl.vm.energy.reserve)
+                    .map(|(i, _)| i);
+                let Some(pi) = parent else { break };
+                if !self.host.units[pi].vm.energy.spend_reserve(RESERVE_TO_BREED) {
+                    break;
+                }
+                // Heredity: the child is a mutated copy of its parent's
+                // genome, not a blank prelude baby. This is the keystone
+                // the rest of the ecology was missing — famine and
+                // abundance select who dies and who breeds, and without
+                // heredity those choices changed nothing: every child
+                // was genetically identical to every other. Variation
+                // (mutation), heredity (this), selection (the habitat).
+                let genome = harvest_genome(&self.host.units[pi].vm);
+                let child_gen = self.host.units[pi].vm.spawn_state.generation + 1;
+                let Some(ci) = self.host.spawn() else { break };
+                let child = &mut self.host.units[ci].vm;
+                child.energy.energy = BIRTH_ENDOWMENT;
+                child.spawn_state.generation = child_gen;
+                let (inherited, mutated) = inherit_genome(child, &genome);
+                births.push(Birth {
+                    generation: child_gen,
+                    endowment: BIRTH_ENDOWMENT,
+                    inherited,
+                    mutated,
+                });
             }
         }
 
@@ -1308,7 +1313,7 @@ impl MultiUnitNode {
             best_fitness,
             mislocated,
             famine_tax,
-            birth,
+            births,
             transport: transport_outcome,
         }
     }
@@ -1936,13 +1941,8 @@ mod bridge_tests {
         a.host.units[0].vm.energy.energy = 100;
         a.host.units[1].vm.energy.energy = 5000; // rich soma, empty reserve: cannot breed
 
-        // Tick 1..=REBOUND_INTERVAL_TICKS-1: interval not yet elapsed.
-        for _ in 0..(REBOUND_INTERVAL_TICKS - 1) {
-            let r = a.tick(&under_ceiling_reading(), never_transport);
-            assert!(r.birth.is_none(), "no birth before the interval elapses");
-        }
         let r = a.tick(&under_ceiling_reading(), never_transport);
-        assert!(r.birth.is_some(), "interval elapsed + headroom + surplus → birth");
+        assert_eq!(r.births.len(), 1, "headroom + a funded reserve → one birth (2 units allow one per tick)");
         assert_eq!(a.host.len(), 3, "population grew by one");
         let child = &mut a.host.units[2].vm;
         // Born after this tick's regen pass: exactly the endowment.
@@ -1970,9 +1970,9 @@ mod bridge_tests {
         a.host.units[0].vm.eval(": LIVE ;");
         a.host.units[0].vm.energy.energy = 5000;
         a.host.units[0].vm.energy.reserve = RESERVE_TO_BREED; // funded, yet still
-        for _ in 0..(REBOUND_INTERVAL_TICKS * 3) {
+        for _ in 0..15 {
             let r = a.tick(&banded, never_transport);
-            assert!(r.birth.is_none(), "the [70%,80%) band must be still");
+            assert!(r.births.is_empty(), "the [70%,80%) band must be still");
             assert_eq!(r.famine_tax, 0);
         }
         // Ample headroom, rich metabolic balance, EMPTY reserve: no birth
@@ -1983,9 +1983,9 @@ mod bridge_tests {
         b.spawn_n(1);
         b.host.units[0].vm.eval(": LIVE ;");
         b.host.units[0].vm.energy.energy = 5000;
-        for _ in 0..(REBOUND_INTERVAL_TICKS * 3) {
+        for _ in 0..15 {
             let r = b.tick(&under_ceiling_reading(), never_transport);
-            assert!(r.birth.is_none(), "breeding is funded by the reserve alone");
+            assert!(r.births.is_empty(), "breeding is funded by the reserve alone");
         }
         assert_eq!(b.host.len(), 1);
     }
@@ -2130,7 +2130,7 @@ mod bridge_tests {
         let mut births = 0;
         for _ in 0..400 {
             let r = a.tick(&empty, never_transport);
-            if r.birth.is_some() {
+            if !r.births.is_empty() {
                 births += 1;
             }
         }
@@ -2186,8 +2186,8 @@ mod bridge_tests {
         assert!(parent_genome_len >= 3, "prelude is species, not genome");
 
         let mut birth = None;
-        for _ in 0..(REBOUND_INTERVAL_TICKS + 1) {
-            if let Some(b) = a.tick(&under_ceiling_reading(), never_transport).birth {
+        for _ in 0..6 {
+            for b in a.tick(&under_ceiling_reading(), never_transport).births {
                 birth = Some(b);
                 break;
             }
@@ -2224,9 +2224,9 @@ mod bridge_tests {
         a.host.units[0].vm.eval(": SMALL 3 * ;");
         let mut mutated_births = 0;
         let mut births = 0;
-        for _ in 0..(REBOUND_INTERVAL_TICKS * 12) {
+        for _ in 0..60 {
             a.host.units[0].vm.energy.reserve = RESERVE_TO_BREED; // keep the founder funded
-            if let Some(b) = a.tick(&under_ceiling_reading(), never_transport).birth {
+            for b in a.tick(&under_ceiling_reading(), never_transport).births {
                 births += 1;
                 if !b.mutated.is_empty() {
                     mutated_births += 1;

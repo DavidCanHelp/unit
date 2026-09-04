@@ -483,7 +483,7 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
 
         // Births. A rebound birth is a real colony event and always logs:
         // population is regrowing into measured headroom.
-        if let Some(b) = &report.birth {
+        for b in &report.births {
             chron_births += 1;
             println!(
                 "[{}] BORN gen={} endowment={} inherited={} words mutated={} — rebound into headroom, now hosting {} units",

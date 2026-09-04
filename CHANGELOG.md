@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **Births scale with the population.** With the cap lifted, the drill
+  measured the next limit: summer births at 10.8/min against the
+  per-host interval's 12/min cap, senescence turnover eating 239 of
+  271, regrowth stalling at 430 against a [564, 645) band. The interval
+  ("let the newborn's memory land in the measurement first") lost its
+  premise when committed pricing began counting a newborn instantly.
+  Rebound now allows 1 + units/100 births per tick, each paid in full
+  from a parent's reserve, with the commitment recomputed per birth so
+  the population stops at the 70% line, not past it. The chronicle
+  reports every birth.
 - **The host cap is the physical guard, not the ceiling.** `--multi-unit
   N` capped the persistent node at N, so a regrown population could
   never find its own ceiling — the seasons drill's spring stalled at
