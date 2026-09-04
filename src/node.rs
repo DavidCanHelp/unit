@@ -274,7 +274,13 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     println!("=== unit --multi-unit {} --port {} ===", n, port);
     println!("(persistent resource-aware node; seeds = {:?})", seed_peers);
 
-    let mut node = match MultiUnitNode::new(n.max(1), Some(port), seed_peers) {
+    // The host cap is the physical guard (what the budget holds at
+    // saturated cost), never below N: the ecology sets the real ceiling.
+    let cap = crate::multi_unit::physical_cap(
+        n,
+        crate::resources::HostResources::measure().mem_total_kb,
+    );
+    let mut node = match MultiUnitNode::new(cap, Some(port), seed_peers) {
         Ok(node) => node,
         Err(e) => {
             eprintln!("multi-unit: failed to start mesh: {}", e);

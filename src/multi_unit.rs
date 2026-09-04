@@ -96,6 +96,20 @@ pub const SENESCENCE_LIFESPAN_TICKS: u64 = 3600;
 /// Ticks per +1 of senescence upkeep after onset.
 pub const SENESCENCE_RAMP_TICKS: u64 = 30;
 
+/// The persistent node's host cap: the PHYSICAL guard, not an ecological
+/// one. `--multi-unit N` used to cap the host at N, so a regrown
+/// population could never find its own ceiling — the seasons drill's
+/// spring stalled at 299 against a 512 MiB budget that feeds ~560 at
+/// the ecology's 70% line. The ecology bounds population itself now
+/// (abundance stops at 70% committed, famine engages at 80%), so the
+/// cap only has to stop what the ecology cannot: it is what the budget
+/// holds at saturated cost, never below the requested N. With no
+/// budget reading, N stands.
+pub fn physical_cap(n: usize, mem_total_kb: u64) -> usize {
+    let by_budget = (mem_total_kb / crate::resources::SATURATED_UNIT_COST_KB) as usize;
+    n.max(1).max(by_budget)
+}
+
 /// A fresh unit's lifespan: the mean with ±25% variance, hashed from the
 /// host's lifetime spawn counter rather than drawn from the unit's rng —
 /// consuming a draw at birth would shift every later decision on that
@@ -2024,6 +2038,19 @@ mod bridge_tests {
         e.host.units[0].vm.eval(": LIVE ;");
         let _ = e.tick(&acute, never_transport);
         assert_eq!(e.host.units[0].vm.energy.reserve, 0, "acute measurement vetoes income");
+    }
+
+    #[test]
+    fn physical_cap_is_the_budget_not_the_request() {
+        // 512 MiB at 650 KiB/unit holds ~806 units: the request of 300 is
+        // a floor, the budget the ceiling the ecology may grow into.
+        assert_eq!(physical_cap(300, 512 * 1024), 806);
+        // A budget smaller than the request never caps below the request
+        // (famine, not the cap, resolves an overcommit).
+        assert_eq!(physical_cap(300, 128 * 1024), 300);
+        // No reading: the request stands.
+        assert_eq!(physical_cap(300, 0), 300);
+        assert_eq!(physical_cap(0, 0), 1);
     }
 
     #[test]

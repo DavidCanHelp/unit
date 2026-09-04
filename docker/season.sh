@@ -15,6 +15,10 @@
 #   WINTER   population stabilizes at the small budget's capacity.
 #   SPRING   abundance-funded rebound births regrow the population into
 #            the restored budget (births > winter's, units rising).
+#   SUMMER   turnover at capacity (senescence + rebound), and the
+#            ceiling: regrowth settles in the ecology's [70%, 80%) band
+#            with no starvation — the host cap is the physical guard,
+#            not the limit.
 #
 # One node, no peers: with migration off the table, conservation is pure
 # units == 300 − deaths + births, checked against the chronicle.
@@ -86,6 +90,7 @@ REACHED_MB=$((LIMIT_KB/1024))
 [ "$LIMIT_KB" -lt $((512 * 1024)) ]; check "drought: a real drought happened (budget $REACHED_MB MiB in $STEPS steps, $HOLDS holds)" $?
 DROUGHT_DEATHS=$(nsf deaths); DROUGHT_DEATHS=${DROUGHT_DEATHS:-0}
 [ "$DROUGHT_DEATHS" -gt 0 ]; check "drought: famine shed units (deaths=$DROUGHT_DEATHS)" $?
+DROUGHT_STARVED=$(grep -c 'DIED.*— starved' "$LOG" 2>/dev/null); DROUGHT_STARVED=${DROUGHT_STARVED:-0}
 [ "$(oomk)" = "0" ]; check "drought: the kernel never fired (oom_kill 0)" $?
 ticking; check "drought: node kept ticking throughout" $?
 
@@ -142,11 +147,23 @@ T_DEATHS=$((SUMMER_DEATHS - SPRING_DEATHS)); T_BIRTHS=$((SUMMER_BIRTHS - SPRING_
 check "summer: population steady through turnover ($SPRING_UNITS → $SUMMER_UNITS)" $?
 [ "$SUMMER_GEN" -gt "$GEN_MAX" ]
 check "summer: generation depth still rising (gen-max $GEN_MAX → $SUMMER_GEN)" $?
+# The ceiling. With the host cap now the physical guard, regrowth must
+# find the ECOLOGY's ceiling: abundance stops at 70% committed, famine
+# starts at 80%. At 512 MiB that band is [564, 645) units. The
+# population must reach at least 80% of the 70% line within the run and
+# never cross into famine — every summer death is old age, none starved.
+BAND_LO=$(( 512 * 1024 * 7 / 10 / 650 )); BAND_HI=$(( 512 * 1024 * 8 / 10 / 650 ))
+STARVED=$(grep -c 'DIED.*— starved' "$LOG" 2>/dev/null); STARVED=${STARVED:-0}
+echo "        (season-ceiling :units $SUMMER_UNITS :band-lo $BAND_LO :band-hi $BAND_HI :starved-total $STARVED)"
+[ "$SUMMER_UNITS" -ge $(( BAND_LO * 8 / 10 )) ] && [ "$SUMMER_UNITS" -lt "$BAND_HI" ]
+check "summer: regrowth found the ecology's ceiling ($SUMMER_UNITS in reach of [$BAND_LO, $BAND_HI))" $?
+[ "$STARVED" -eq "$DROUGHT_STARVED" ]
+check "summer: no starvation past the drought — every later death is old age (starved $DROUGHT_STARVED → $STARVED)" $?
 [ "$(oomk)" = "0" ]; check "summer: zero oom_kill" $?
 [ "$SUMMER_UNITS" -eq $((300 - SUMMER_DEATHS + SUMMER_BIRTHS)) ]
 check "season: conservation exact through summer (units == 300 − $SUMMER_DEATHS + $SUMMER_BIRTHS)" $?
 
 echo ""
-echo "(season-verdict :boot 300 :winter $WINTER_UNITS :spring $SPRING_UNITS :summer $SUMMER_UNITS :deaths $SUMMER_DEATHS :births $SUMMER_BIRTHS :gen-max $SUMMER_GEN :oom $(oomk) :passed $PASS :failed $FAIL)"
+echo "(season-verdict :boot 300 :winter $WINTER_UNITS :spring $SPRING_UNITS :summer $SUMMER_UNITS :ceiling-band \"[$BAND_LO,$BAND_HI)\" :deaths $SUMMER_DEATHS :births $SUMMER_BIRTHS :gen-max $SUMMER_GEN :oom $(oomk) :passed $PASS :failed $FAIL)"
 $COMPOSE down -t 3 >/dev/null 2>&1
 [ "$FAIL" -eq 0 ]

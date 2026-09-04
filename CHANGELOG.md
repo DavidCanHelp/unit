@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **The host cap is the physical guard, not the ceiling.** `--multi-unit
+  N` capped the persistent node at N, so a regrown population could
+  never find its own ceiling — the seasons drill's spring stalled at
+  299 against a 512 MiB budget that feeds ~560 at the ecology's 70%
+  line. The cap is now what the budget holds at saturated cost (never
+  below N); abundance and famine bound the population. The drill's
+  summer asserts the ceiling: regrowth reaches the [70%, 80%) committed
+  band with no starvation past the drought — every later death is old
+  age.
+
+
 ## [0.41.0] - 2026-09-04
 
 ### Added
