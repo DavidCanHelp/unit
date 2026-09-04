@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **Bequests go to bounded kin, not the species.** A dying unit's
+  antibodies now reach at most `BEQUEST_HEIRS` (8) nearest siblings in
+  slot order. Bequeathing to every sibling made each obituary O(units):
+  an acute famine wave (380 deaths in one minute on a 520-unit host)
+  became ~190k absorptions in a burst and starved the tick loop on
+  CI's 2-CPU runner — the S8 liveness bound failed twice. Knowledge
+  still travels by death-cry, SHARE, and heredity.
 - **`season.sh` verifies every budget change against the cgroup.** A
   run whose spring restore silently failed left the node on the
   drought's 369 MiB while the harness believed 512 — and its four

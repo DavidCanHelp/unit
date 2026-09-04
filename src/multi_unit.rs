@@ -77,6 +77,17 @@ pub const REBOUND_UTILIZATION: f64 = 0.70;
 /// each parent must bank the full price first — and committed pricing
 /// stops them at the 70% line within a tick.
 pub const REBOUND_UNITS_PER_BIRTH: usize = 100;
+
+/// Heirs of a dying unit's antibodies: its nearest siblings in slot
+/// order (kin — spawn order and births keep relatives adjacent), at most
+/// this many. Bequeathing to EVERY sibling made obituaries O(units) each:
+/// an acute famine wave took 380 deaths in one minute on a 520-unit
+/// host — ~190k absorptions in a burst — and starved the tick loop on
+/// CI's 2-CPU runner (10 ticks in 40 s against a 15-tick liveness
+/// bound, twice). Knowledge still travels: the death-cry reaches the
+/// mesh, SHARE spreads words, and heredity carries antibodies to every
+/// child. Nature hands an estate to a few heirs, not the species.
+pub const BEQUEST_HEIRS: usize = 8;
 /// Energy a parent endows its child at birth, on top of the SPAWN_COST
 /// the reproduction itself burns. The endowment keeps the newborn out
 /// of famine's immediate reach without minting energy from nothing.
@@ -1182,9 +1193,15 @@ impl MultiUnitNode {
                 let age_ticks = slot.age_ticks;
                 let senescent = slot.age_ticks >= slot.lifespan;
                 let mut heirs = 0;
-                for s in self.host.units.iter_mut() {
-                    if s.vm.absorb_antibodies(&antibodies) > 0 {
-                        heirs += 1;
+                if !antibodies.is_empty() && !self.host.units.is_empty() {
+                    // Nearest kin in slot order, wrapping: the removed index
+                    // now points at the next sibling.
+                    let n = self.host.units.len();
+                    for k in 0..BEQUEST_HEIRS.min(n) {
+                        let j = (i + k) % n;
+                        if self.host.units[j].vm.absorb_antibodies(&antibodies) > 0 {
+                            heirs += 1;
+                        }
                     }
                 }
                 if let Some(ref m) = self.mesh {
@@ -1797,6 +1814,32 @@ mod bridge_tests {
             vm.stack.last().copied()
         };
         assert_eq!(out_top, Some(99), "inherited antibody executes");
+    }
+
+    #[test]
+    fn bequest_goes_to_bounded_kin_not_the_species() {
+        // Twenty siblings; a death with an antibody reaches at most
+        // BEQUEST_HEIRS of them (its nearest in slot order), never all.
+        let mut a = MultiUnitNode::new(64, None, vec![]).unwrap();
+        a.spawn_n(20);
+        for slot in a.host.units.iter_mut() {
+            slot.vm.eval(": LIVE ;");
+        }
+        a.host.units[5].vm.eval(": SOL-ESTATE 42 ;");
+        a.host.units[5].vm.energy.energy = -500;
+        a.host.units[5].starved_ticks = STARVED_TICKS_TO_DIE;
+        let banded = crate::resources::HostResources::from_parts(1_024_000, 256_000, 0.0, 4);
+        let report = a.tick(&banded, never_transport);
+        assert_eq!(report.deaths.len(), 1);
+        assert!(report.deaths[0].heirs >= 1 && report.deaths[0].heirs <= BEQUEST_HEIRS);
+        let holders = a
+            .host
+            .units
+            .iter()
+            .filter(|s| s.vm.find_word("SOL-ESTATE").is_some())
+            .count();
+        assert_eq!(holders, report.deaths[0].heirs, "exactly the heirs inherited");
+        assert!(holders < 19, "the estate did not go to the whole species");
     }
 
     #[test]
