@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- **Occupancy is what the kernel cannot reclaim.** The cgroup memory
+  axis read `memory.current − inactive_file`; `memory.current` also
+  charges the tails of transparent huge pages left partially unmapped by
+  freed allocations (the deferred-split queue), which the kernel
+  reclaims under pressure long before OOM. The seasons drill's sampler
+  caught it: at the first famine deaths `anon` fell 66 MB while
+  `memory.current` fell 9, and the ghost reached 168 MB by summer — a
+  91% reading over 59% real occupancy, enough to trip acute famine on a
+  node two-fifths empty. Used is now `anon + kernel + shmem` from
+  `memory.stat` (fallback to the old composition when `anon` is
+  absent). `season.sh` keeps a per-minute `(season-mem …)` breakdown.
+- **Income continues on the birth line.** Abundance and births shared
+  the 70% line, so a population parked exactly there lost its income
+  the instant each death was refilled; reserves never rebuilt and
+  senescence outran births (565 → 441 through one summer). Abundance
+  now feeds below 75% (`ABUNDANCE_UTILIZATION`); births below 70%. The
+  neutral band is [75%, 80%).
 - **Bequests go to bounded kin, not the species.** A dying unit's
   antibodies now reach at most `BEQUEST_HEIRS` (8) nearest siblings in
   slot order. Bequeathing to every sibling made each obituary O(units):

@@ -57,14 +57,19 @@ pub const STARVED_TICKS_TO_DIE: u32 = 30;
 /// util ≥ 96% is the kernel OOM-killing every resident at once.
 pub const FAMINE_ACUTE_FUSE: u32 = 6;
 
-/// Utilization below which a host REBOUNDS: population regrows into
-/// measured headroom after famine or emigration has thinned it. Kept a
-/// full 10 points under the 80% famine ceiling so births and deaths
-/// never churn at a shared boundary — the [70%, 80%) band is stable in
-/// both directions. Measured util (not unit count) is deliberately the
-/// signal: whatever heap fragmentation makes of freed memory, births
-/// stop when the measurement says the room is spent.
+/// Committed utilization below which a host REBOUNDS: births refill
+/// the population after famine, emigration, or old age has thinned it.
+/// Kept a full 10 points under the 80% famine ceiling so births and
+/// deaths never churn at a shared boundary.
 pub const REBOUND_UTILIZATION: f64 = 0.70;
+/// Committed utilization below which the habitat FEEDS (abundance
+/// income to the reserve). Deliberately ABOVE the birth line: when the
+/// two coincided, a population parked exactly on the birth line saw its
+/// income switch off the instant each death was refilled, reserves
+/// never rebuilt, and senescence outran births (seasons drill: 565 →
+/// 441 through one summer). Organisms at carrying capacity keep eating;
+/// what stops growth is room, not food. The [75%, 80%) band is neutral.
+pub const ABUNDANCE_UTILIZATION: f64 = 0.75;
 /// Births per tick scale with the population: one, plus one per this
 /// many hosted units. The per-host interval it replaces (one birth per
 /// five ticks, "so the newborn's memory lands in the measurement first")
@@ -1084,8 +1089,9 @@ impl MultiUnitNode {
             // expense side is the famine tax above. This is what funds
             // rebound births: without it, post-famine survivors hover at
             // poverty and the population never regrows.
-            if local.valid && !famine_acute && committed_fraction < REBOUND_UTILIZATION {
-                let fraction = ((REBOUND_UTILIZATION - committed_fraction) / REBOUND_UTILIZATION)
+            if local.valid && !famine_acute && committed_fraction < ABUNDANCE_UTILIZATION {
+                let fraction = ((ABUNDANCE_UTILIZATION - committed_fraction)
+                    / ABUNDANCE_UTILIZATION)
                     .clamp(0.0, 1.0);
                 // Floored at 1: any under-threshold habitat feeds at least
                 // a little. A pure linear fade rounds to zero just below
@@ -2141,6 +2147,31 @@ mod bridge_tests {
             assert!(s.lifespan >= SENESCENCE_LIFESPAN_TICKS * 75 / 100);
             assert!(s.lifespan <= SENESCENCE_LIFESPAN_TICKS * 125 / 100);
         }
+    }
+
+    #[test]
+    fn income_continues_on_the_birth_line() {
+        // One unit committing ~72% of a 903 KiB budget: above the birth
+        // line, below the income line. The habitat still feeds (reserve
+        // grows) but no birth fires — room, not food, stops growth.
+        let between = crate::resources::HostResources::from_parts(903, 810, 0.0, 4);
+        let mut a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        a.spawn_n(1);
+        a.host.units[0].vm.eval(": LIVE ;");
+        a.host.units[0].vm.energy.reserve = RESERVE_TO_BREED; // funded, yet no room
+        let r = a.tick(&between, never_transport);
+        assert!(r.births.is_empty(), "no births above the birth line");
+        assert_eq!(r.famine_tax, 0);
+        assert!(
+            a.host.units[0].vm.energy.reserve >= RESERVE_TO_BREED,
+            "income still flows between the lines"
+        );
+        let mut b = MultiUnitNode::new(8, None, vec![]).unwrap();
+        b.spawn_n(1);
+        b.host.units[0].vm.eval(": LIVE ;");
+        b.host.units[0].vm.energy.reserve = 100;
+        let _ = b.tick(&between, never_transport);
+        assert!(b.host.units[0].vm.energy.reserve > 100, "reserve rebuilds on the line");
     }
 
     #[test]

@@ -63,6 +63,19 @@ set_budget_kb() {
 
 echo "=== SEASON: boot (512 MiB, 300 units) ==="
 mkdir -p drill-logs; : > "$LOG"
+# Memory-breakdown sampler: one (season-mem …) sexp per minute — the
+# cgroup's charge (memory.current) against its own accounting (anon,
+# file, kernel, slab, sock) and the process's RSS. When util and RSS
+# diverge, this says which bucket the difference lives in.
+MEMLOG="drill-logs/season-mem.log"; : > "$MEMLOG"
+(
+  while true; do
+    sleep 60
+    S=$($COMPOSE exec -T season sh -c 'c=$(cat /sys/fs/cgroup/memory.current); m=$(cat /sys/fs/cgroup/memory.max); r=$(awk "/VmRSS/{print \$2}" /proc/$(pidof unit | cut -d" " -f1)/status 2>/dev/null); awk -v c=$c -v m=$m -v r=${r:-0} "BEGIN{cur=c/1048576; mx=m/1048576} /^(anon|file|kernel|slab|sock|shmem|inactive_file|active_file|anon_thp|swapcached) /{v[\$1]=\$2/1048576} END{printf \"(season-mem :current-mb %.0f :max-mb %.0f :rss-mb %.0f :anon %.0f :file %.0f :kernel %.0f :slab %.1f :sock %.1f :shmem %.1f :inactive-file %.1f :anon-thp %.0f)\", cur, mx, r/1024, v[\"anon\"], v[\"file\"], v[\"kernel\"], v[\"slab\"], v[\"sock\"], v[\"shmem\"], v[\"inactive_file\"], v[\"anon_thp\"]}" /sys/fs/cgroup/memory.stat' 2>/dev/null)
+    [ -n "$S" ] && echo "[$(date -u '+%H:%M:%S')] $S" >> "$MEMLOG"
+  done
+) &
+MEMPID=$!
 SEASON_MEM=512m $COMPOSE up -d season >/dev/null 2>&1
 for i in $(seq 1 60); do
     [ "$(nsf units)" = "300" ] && break
@@ -196,5 +209,7 @@ check "season: conservation exact through summer (units == 300 − $SUMMER_DEATH
 
 echo ""
 echo "(season-verdict :boot 300 :winter $WINTER_UNITS :spring $SPRING_UNITS :summer $SUMMER_UNITS :peak $PEAK_UNITS :ceiling-band \"[$BAND_LO,$BAND_HI)\" :deaths $SUMMER_DEATHS :births $SUMMER_BIRTHS :gen-max $SUMMER_GEN :oom $(oomk) :passed $PASS :failed $FAIL)"
+kill $MEMPID 2>/dev/null
+echo "--- memory breakdown (last 12 samples; full log: $MEMLOG) ---"; tail -12 "$MEMLOG"
 $COMPOSE down -t 3 >/dev/null 2>&1
 [ "$FAIL" -eq 0 ]

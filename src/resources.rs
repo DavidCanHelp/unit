@@ -392,8 +392,20 @@ fn from_proc_text(meminfo: &str, loadavg: &str, cpuinfo: &str, stat: &str) -> Ho
 // against the cgroup budget instead:
 //
 //   total = memory.max
-//   used  = memory.current - inactive_file   (reclaimable page cache is not
-//           pressure; the same convention `docker stats` uses)
+//   used  = anon + kernel + shmem            (memory.stat: what the kernel
+//           cannot reclaim without killing something). Falls back to
+//           memory.current - inactive_file when memory.stat lacks `anon`.
+//
+// Why not memory.current: it charges everything the cgroup holds,
+// including what the kernel will reclaim long before it OOM-kills — page
+// cache, and the tails of transparent huge pages that a freed allocation
+// left partially unmapped (the deferred-split queue). The seasons drill
+// measured that second kind: at the first famine deaths anon fell 66 MB
+// while memory.current fell 9, and the ghost grew to 168 MB by summer —
+// a 91% "utilization" over 59% real occupancy, enough to trip acute
+// famine on a node that was two-fifths empty. anon + kernel + shmem is
+// the honest occupancy: mapped anonymous memory, kernel structures, and
+// tmpfs, none of which reclaim.
 //   swap  = memory.swap.max / memory.swap.current ("max" -> no swap budget:
 //           the RAM limit is what binds)
 //
@@ -415,16 +427,30 @@ fn parse_cgv2_bytes(text: &str) -> Option<u64> {
     t.parse::<u64>().ok()
 }
 
+/// Parses one `key value` line (bytes) from a cgroup v2 `memory.stat`
+/// blob. `None` when the key is absent.
+fn parse_cgv2_stat(stat: &str, key: &str) -> Option<u64> {
+    let prefix = format!("{} ", key);
+    stat.lines()
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .and_then(|rest| rest.trim().parse().ok())
+}
+
 /// Parses `inactive_file` (bytes) from a cgroup v2 `memory.stat` blob.
 /// Returns 0 when absent — used-memory then composes conservatively (page
 /// cache counts as pressure rather than being credited back).
 fn parse_cgv2_inactive_file(stat: &str) -> u64 {
-    for line in stat.lines() {
-        if let Some(rest) = line.strip_prefix("inactive_file ") {
-            return rest.trim().parse().unwrap_or(0);
-        }
-    }
-    0
+    parse_cgv2_stat(stat, "inactive_file").unwrap_or(0)
+}
+
+/// Unreclaimable occupancy from `memory.stat`: anon + kernel + shmem.
+/// `None` when the blob lacks `anon` (older kernels, or no stat file) —
+/// the caller then falls back to memory.current − inactive_file.
+fn parse_cgv2_unreclaimable(stat: &str) -> Option<u64> {
+    let anon = parse_cgv2_stat(stat, "anon")?;
+    let kernel = parse_cgv2_stat(stat, "kernel").unwrap_or(0);
+    let shmem = parse_cgv2_stat(stat, "shmem").unwrap_or(0);
+    Some(anon + kernel + shmem)
 }
 
 /// Composes the cgroup v2 memory reading, in kB:
@@ -443,8 +469,12 @@ fn cgv2_memory_parts(
         return None;
     }
     let current_b = parse_cgv2_bytes(memory_current).unwrap_or(0);
-    let inactive_b = parse_cgv2_inactive_file(memory_stat);
-    let mut used_b = current_b.saturating_sub(inactive_b);
+    let mut used_b = match parse_cgv2_unreclaimable(memory_stat) {
+        // What the kernel cannot reclaim: the honest occupancy.
+        Some(u) => u.min(current_b.max(u)),
+        // No `anon` in memory.stat: the older convention.
+        None => current_b.saturating_sub(parse_cgv2_inactive_file(memory_stat)),
+    };
     let swap_current_b = parse_cgv2_bytes(swap_current).unwrap_or(0);
     let (swap_total_b, swap_used_b) = match parse_cgv2_bytes(swap_max) {
         // A real swap budget: compose it as its own axis of the combined
@@ -700,6 +730,25 @@ intr 12345
         )
         .unwrap();
         assert_eq!(parts, (307_200, 143_360, 65_536, 49_152));
+    }
+
+    #[test]
+    fn test_cgv2_used_is_unreclaimable_not_charged() {
+        // 512 MiB limit. memory.current charges 468 MiB, but memory.stat
+        // says only 300 MiB anon + 3 MiB kernel is unreclaimable — the
+        // rest is deferred-split THP tails from freed allocations (the
+        // seasons drill's ghost). Used must be 303 MiB, not 468.
+        let stat = "anon 314572800\nfile 0\nkernel 3145728\nshmem 0\n\
+                    inactive_file 0\nanon_thp 159383552\n";
+        let (total, avail, _, _) =
+            cgv2_memory_parts("536870912\n", "490733568\n", stat, "0\n", "0\n").unwrap();
+        assert_eq!(total, 524_288);
+        assert_eq!(avail, 524_288 - (307_200 + 3_072));
+        // Without `anon` the older composition stands.
+        let (_, avail_old, _, _) =
+            cgv2_memory_parts("536870912\n", "490733568\n", "inactive_file 0\n", "0\n", "0\n")
+                .unwrap();
+        assert_eq!(avail_old, 524_288 - 479_232);
     }
 
     #[test]
