@@ -221,8 +221,32 @@ acute veto). Four-season verdict, 19/19:
 ```
 
 Summer alone: 201 deaths of old age, 201 refills, population 299 → 299
-through a two-thirds turnover, generation depth 3 → 11. Still open:
-spring's ceiling — the drill ends while growth is climbing.
+through a two-thirds turnover, generation depth 3 → 11.
+
+**The ceiling, measured.** That run's population stopped at 299
+because `--multi-unit N` capped the host at N. The cap is now the
+physical guard (what the budget holds at saturated cost) and births
+scale with the population (1 + units/100 per tick, each paid in full
+from a parent's reserve, the commitment recomputed per birth), so
+regrowth finds the ecology's own ceiling: abundance stops at 70%
+committed, famine starts at 80%. Direct measurement at the line —
+565 units on 512 MiB, `memory.current` = `anon` = RSS = 368 MB, util
+70.5% — confirmed the accounting exact. One 17/21 run along the way
+was the harness lying to itself (a silently failed spring budget
+restore left the node on the drought's 369 MiB; every "failure" was
+correct behavior for that budget), so every budget change is now read
+back from the cgroup and the verified value drives all capacity math.
+Verdict, 23/23:
+
+```
+(season-verdict :boot 300 :winter 450 :spring 565 :summer 565 :peak 565
+                :ceiling-band "[564,645)" :deaths 503 :births 768
+                :gen-max 3 :oom 0 :passed 23 :failed 0)
+```
+
+Summer: 342 deaths of old age, 342 refills, population 565 → 565 —
+parked on the 70% line through a 60% turnover, with no death past the
+drought that was not old age. Nothing about the seasons is open.
 
 ## The observability surfaces these assert against
 

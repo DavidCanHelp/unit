@@ -10,7 +10,10 @@
   "failures" (zero spring births, a summer acute famine, 130 starved)
   were the organism behaving exactly right for the budget it actually
   had. Budget updates now read back `memory.max`, retry, and the
-  verified value drives all capacity and ceiling math.
+  verified value drives all capacity and ceiling math. Four-season
+  verdict 23/23: peak 565 against a 70% line at 564, summer parked at
+  565 through 342 old-age deaths and 342 births, zero starvation past
+  the drought, conservation exact.
 - **Births scale with the population.** With the cap lifted, the drill
   measured the next limit: summer births at 10.8/min against the
   per-host interval's 12/min cap, senescence turnover eating 239 of
