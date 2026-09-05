@@ -15,6 +15,8 @@
   node two-fifths empty. Used is now `anon + kernel + shmem` from
   `memory.stat` (fallback to the old composition when `anon` is
   absent). `season.sh` keeps a per-minute `(season-mem …)` breakdown.
+  Four-season verdict on the shipped binary 23/23, with the cgroup
+  charging 96–98% through summer while the node correctly read 71%.
 - **Income continues on the birth line.** Abundance and births shared
   the 70% line, so a population parked exactly there lost its income
   the instant each death was refilled; reserves never rebuilt and

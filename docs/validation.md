@@ -246,7 +246,38 @@ Verdict, 23/23:
 
 Summer: 342 deaths of old age, 342 refills, population 565 → 565 —
 parked on the 70% line through a 60% turnover, with no death past the
-drought that was not old age. Nothing about the seasons is open.
+drought that was not old age.
+
+Two more organism-side findings closed the seasons for good, both
+caught by the drill's per-minute `(season-mem …)` sampler:
+
+- **Occupancy is what the kernel cannot reclaim.** The cgroup axis read
+  `memory.current − inactive_file`, and `memory.current` also charges
+  the tails of transparent huge pages left partially unmapped when
+  units die (the deferred-split queue) — reclaimable under pressure,
+  invisible to `anon`. At the first famine deaths `anon` fell 66 MB
+  while `memory.current` fell 9; by summer the ghost reached 168 MB and
+  a 91% reading over 59% real occupancy tripped acute famine (159 dead
+  in five seconds) on a node two-fifths empty. Used is now
+  `anon + kernel + shmem` from `memory.stat`.
+- **Income continues on the birth line.** Abundance and births shared
+  the 70% line, so a population parked exactly there lost its income
+  the instant each death was refilled; reserves never rebuilt and
+  senescence outran births (565 → 441 in one summer). Income now flows
+  below 75%, births below 70%; the neutral band is [75%, 80%).
+
+Final verdict on the shipped binary, 23/23 — with the cgroup charging
+490–501 MB (96–98%) through summer while `anon` sat at 370 MB and the
+node correctly read util 71.2%:
+
+```
+(season-verdict :boot 300 :winter 390 :spring 565 :summer 565 :peak 565
+                :ceiling-band "[564,645)" :deaths 475 :births 740
+                :gen-max 4 :oom 0 :passed 23 :failed 0)
+```
+
+Summer: 289 deaths of old age, 289 refills, 565 → 565, generation depth
+2 → 4. Nothing about the seasons is open.
 
 ## The observability surfaces these assert against
 
