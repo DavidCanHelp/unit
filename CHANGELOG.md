@@ -31,6 +31,10 @@
   runs to it). Unresolved names are now retried on every heartbeat,
   with DNS done outside the mesh lock, and join the seed targets and
   peer table exactly as a boot-time seed would.
+- The native compute lane contributed by ChatGPT Astra 6 was rebased,
+  verified (579 tests, all drills green), and **kept on its branch** —
+  see `docs/design/native-lane-decision.md` for the evidence and the
+  doctrine that decided it.
 - Signed division uses wrapping arithmetic (`MIN / -1` no longer panics
   the worker), matching the policy addition and multiplication already
   follow.
