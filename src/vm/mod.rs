@@ -323,6 +323,9 @@ pub(crate) const P_ALERT_THRESHOLD_RT: usize = 112;
 pub enum Fault {
     StackUnderflow,
     ReturnStackUnderflow,
+    UnknownWord,
+    DivisionByZero,
+    InvalidAddress,
 }
 
 impl Fault {
@@ -331,6 +334,9 @@ impl Fault {
         match self {
             Fault::StackUnderflow => "stack underflow",
             Fault::ReturnStackUnderflow => "return stack underflow",
+            Fault::UnknownWord => "unknown word",
+            Fault::DivisionByZero => "division by zero",
+            Fault::InvalidAddress => "invalid address",
         }
     }
 }
@@ -959,6 +965,11 @@ impl VM {
             self.stack.push(n);
             return;
         }
+        // Dictionary drift must not masquerade as success: an unknown word
+        // is a fault, so a sandboxed evaluation reports it instead of
+        // echoing the input as a result ((MISSING-KERNEL 123) once returned
+        // success with value 123).
+        self.fault.get_or_insert(Fault::UnknownWord);
         if !self.silent {
             self.emit_str(&format!("error: unknown word '{}'\n", word));
         }
@@ -979,6 +990,7 @@ impl VM {
             }
             return;
         }
+        self.fault.get_or_insert(Fault::UnknownWord);
         self.emit_str(&format!("error: unknown word '{}'\n", word));
         self.compiling = false;
         self.current_def = None;

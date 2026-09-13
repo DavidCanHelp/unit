@@ -13,6 +13,7 @@ impl super::VM {
         if let Some(&val) = self.stack.last() {
             self.stack.push(val);
         } else {
+            self.fault.get_or_insert(super::Fault::StackUnderflow);
             if !self.silent {
                 eprintln!("stack underflow");
             }
@@ -26,6 +27,7 @@ impl super::VM {
     pub(crate) fn prim_swap(&mut self) {
         let len = self.stack.len();
         if len < 2 {
+            self.fault.get_or_insert(super::Fault::StackUnderflow);
             if !self.silent {
                 eprintln!("stack underflow");
             }
@@ -37,6 +39,7 @@ impl super::VM {
     pub(crate) fn prim_over(&mut self) {
         let len = self.stack.len();
         if len < 2 {
+            self.fault.get_or_insert(super::Fault::StackUnderflow);
             if !self.silent {
                 eprintln!("stack underflow");
             }
@@ -48,6 +51,7 @@ impl super::VM {
     pub(crate) fn prim_rot(&mut self) {
         let len = self.stack.len();
         if len < 3 {
+            self.fault.get_or_insert(super::Fault::StackUnderflow);
             if !self.silent {
                 eprintln!("stack underflow");
             }
@@ -66,6 +70,7 @@ impl super::VM {
         if addr < self.memory.len() {
             self.stack.push(self.memory[addr]);
         } else {
+            self.fault.get_or_insert(super::Fault::InvalidAddress);
             eprintln!("invalid address: {}", addr);
             self.stack.push(0);
         }
@@ -77,6 +82,7 @@ impl super::VM {
         if addr < self.memory.len() {
             self.memory[addr] = val;
         } else {
+            self.fault.get_or_insert(super::Fault::InvalidAddress);
             eprintln!("invalid address: {}", addr);
         }
     }
@@ -107,10 +113,11 @@ impl super::VM {
         let b = self.pop();
         let a = self.pop();
         if b == 0 {
+            self.fault.get_or_insert(super::Fault::DivisionByZero);
             self.emit_str("error: division by zero\n");
             self.stack.push(0);
         } else {
-            self.stack.push(a / b);
+            self.stack.push(a.wrapping_div(b));
         }
     }
 
@@ -118,10 +125,11 @@ impl super::VM {
         let b = self.pop();
         let a = self.pop();
         if b == 0 {
+            self.fault.get_or_insert(super::Fault::DivisionByZero);
             self.emit_str("error: division by zero\n");
             self.stack.push(0);
         } else {
-            self.stack.push(a % b);
+            self.stack.push(a.wrapping_rem(b));
         }
     }
 

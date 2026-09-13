@@ -2792,3 +2792,33 @@ fn test_share_word_transmits_real_source() {
     let out = eval(&mut receiver, "3 CUBE .");
     assert!(out.contains("27"), "shared source must carry the body: {out}");
 }
+
+#[test]
+fn missing_worker_code_is_a_failure_not_the_input_echoed_as_success() {
+    let mut vm = test_vm();
+    let result = crate::sexp::eval_sexp(&mut vm, "(MISSING-KERNEL 123)");
+    assert!(matches!(crate::sexp::read_result(&result),
+        Some(crate::sexp::ResultView::Err { .. })), "{result}");
+    let compiled = vm.execute_sandbox(": BROKEN MISSING-KERNEL ; 123");
+    assert!(!compiled.success);
+    let good = crate::sexp::eval_sexp(&mut vm, "(+ 2 3)");
+    assert!(matches!(crate::sexp::read_result(&good),
+        Some(crate::sexp::ResultView::Ok { value, .. }) if value == vec![5]));
+}
+
+#[test]
+fn compute_primitive_faults_are_structured_failures() {
+    let mut vm = test_vm();
+    for code in ["DUP", "SWAP", "OVER", "ROT", "1 0 /", "1 0 MOD", "-1 @", "1 -1 !"] {
+        let result = vm.execute_sandbox(code);
+        assert!(!result.success, "{code} reported success");
+        assert!(result.error.is_some());
+    }
+    // Match the VM's wrapping integer arithmetic without crashing a worker.
+    let result = vm.execute_sandbox("-9223372036854775808 -1 /");
+    assert!(result.success);
+    assert_eq!(result.stack_snapshot, vec![i64::MIN]);
+    let result = vm.execute_sandbox("-9223372036854775808 -1 MOD");
+    assert!(result.success);
+    assert_eq!(result.stack_snapshot, vec![0]);
+}

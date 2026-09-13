@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **Silent failures now record faults.** An unknown word, a stack
+  underflow in `DUP`/`SWAP`/`OVER`/`ROT`, division by zero, and an
+  out-of-range memory address each set a structured `Fault`, so a
+  sandboxed evaluation reports the failure instead of echoing its input
+  as a result — `(MISSING-KERNEL 123)` used to return success with
+  value 123. Found by ChatGPT Astra 6 during its useful-computation
+  investigation; landed here on its own.
+- Signed division uses wrapping arithmetic (`MIN / -1` no longer panics
+  the worker), matching the policy addition and multiplication already
+  follow.
+
+
+## [Unreleased]
+
+### Fixed
+
 - **Occupancy is what the kernel cannot reclaim.** The cgroup memory
   axis read `memory.current − inactive_file`; `memory.current` also
   charges the tails of transparent huge pages left partially unmapped by
