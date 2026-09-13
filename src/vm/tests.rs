@@ -2793,6 +2793,205 @@ fn test_share_word_transmits_real_source() {
     assert!(out.contains("27"), "shared source must carry the body: {out}");
 }
 
+/// Run explicitly: cargo test --release compute_mesh_experiment -- --ignored --nocapture
+/// Real UDP mesh and independently executing VMs; threads share a physical host.
+#[test]
+#[ignore]
+fn compute_mesh_experiment() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
+    use std::time::{Duration, Instant};
+    struct Workers(Arc<AtomicBool>, Vec<std::thread::JoinHandle<()>>);
+    impl Drop for Workers {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+            for t in self.1.drain(..) { t.join().unwrap(); }
+        }
+    }
+    fn kernel_vm() -> VM {
+        let mut vm = test_vm();
+        eval(&mut vm, ": SUMSQ 0 SWAP 0 DO I I * + LOOP ;");
+        eval(&mut vm, include_str!("../../experiments/compute/prime-count.fs"));
+        vm
+    }
+    let mut root = kernel_vm();
+    let mesh = crate::mesh::MeshNode::start(0, vec![]).unwrap();
+    let addr = format!("127.0.0.1:{}", mesh.local_port()).parse().unwrap();
+    root.node_id_cache = Some(*mesh.id());
+    root.mesh = Some(mesh);
+    let mut workers = Workers(Arc::new(AtomicBool::new(false)), vec![]);
+    let (tx, rx) = mpsc::channel();
+    let drop_next = Arc::new(AtomicBool::new(false));
+    for index in 0..3 {
+        let stop = workers.0.clone();
+        let drop_next = drop_next.clone();
+        let tx = tx.clone();
+        let root_id = root.mesh.as_ref().unwrap().id_hex().to_string();
+        workers.1.push(std::thread::spawn(move || {
+            let mut vm = kernel_vm();
+            let mesh = crate::mesh::MeshNode::start(0, vec![addr]).unwrap();
+            mesh.set_headroom(90);
+            vm.node_id_cache = Some(*mesh.id());
+            vm.mesh = Some(mesh);
+            // Ensure the worker knows its return route before accepting work.
+            let start = Instant::now();
+            while !vm.mesh.as_ref().unwrap().peer_details().iter().any(|(id, _, _)| id == &root_id) {
+                assert!(start.elapsed() < Duration::from_secs(10));
+                vm.mesh.as_ref().unwrap().force_heartbeat();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            tx.send(index).unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                let msgs = vm.mesh.as_ref().unwrap().recv_sexp_messages();
+                for msg in msgs {
+                    if msg.starts_with("(recruit ") && drop_next.swap(false, Ordering::Relaxed) {
+                        continue; // Deliberately lose one request while heartbeats stay live.
+                    }
+                    vm.process_chatter_msg(&msg);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            vm.mesh.as_ref().unwrap().shutdown();
+        }));
+    }
+    for _ in 0..3 { rx.recv_timeout(Duration::from_secs(10)).unwrap(); }
+    let start = Instant::now();
+    while root.mesh.as_ref().unwrap().peer_count() != 3 {
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    println!("mode,iterations,parts,repeat,elapsed_ms,remote,correct");
+    for iterations in [100_i64, 10_000, 200_000] {
+        for count in [4, 16] {
+            let parts = (0..count).map(|i| crate::sexp::parse(
+                &format!("(SUMSQ {})", iterations + i as i64)).unwrap()).collect::<Vec<_>>();
+            for repeat in 0..3 {
+                for (mode, scatter, refill) in [("parallel", false, false),
+                    ("scatter-once", true, false), ("scatter", true, true)] {
+                    let before = root.recruit_ledger.len();
+                    let start = Instant::now();
+                    let gid = root.run_parallel_policy(&parts, &mut under_ceiling, 0, scatter, refill);
+                    while !root.parallel_jobs[&gid].is_complete() {
+                        assert!(start.elapsed() < Duration::from_secs(30), "job timed out");
+                        let msgs = root.mesh.as_ref().unwrap().recv_sexp_messages();
+                        for msg in msgs { root.process_chatter_msg(&msg); }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                    let (ok, views) = read_parallel(&root.parallel_result(gid).unwrap());
+                    assert_eq!(ok, 1);
+                    let expected = (0..count).map(|i| {
+                        let n = iterations + i as i64;
+                        vec![n * (n - 1) * (2 * n - 1) / 6]
+                    }).collect::<Vec<_>>();
+                    assert_eq!(ok_values(&views), expected);
+                    println!("{},{iterations},{count},{repeat},{elapsed:.3},{},true",
+                        mode, root.recruit_ledger.len() - before);
+                    root.parallel_jobs.remove(&gid);
+                }
+            }
+        }
+    }
+    // A real partitioned search: count primes in [0, 20000). Validate each
+    // shard with an independent native trial-division implementation.
+    for count in [4, 16] {
+        let width = 20_000 / count;
+        let parts = (0..count).map(|i| crate::sexp::parse(
+            &format!("(COUNT-PRIMES {} {})", i * width, (i + 1) * width)).unwrap()).collect::<Vec<_>>();
+        let oracle_start = Instant::now();
+        let expected = (0..count).map(|i| vec![(i * width..(i + 1) * width)
+            .filter(|&n| n >= 2 && !(2..).take_while(|d| d * d <= n).any(|d| n % d == 0))
+            .count() as i64]).collect::<Vec<_>>();
+        let native_ms = oracle_start.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(expected.iter().map(|v| v[0]).sum::<i64>(), 2262);
+        for repeat in 0..3 {
+            for scatter in [false, true] {
+                let before = root.recruit_ledger.len();
+                let start = Instant::now();
+                let gid = root.run_parallel_mode(&parts, &mut under_ceiling, 0, scatter);
+                while !root.parallel_jobs[&gid].is_complete() {
+                    assert!(start.elapsed() < Duration::from_secs(30));
+                    for msg in root.mesh.as_ref().unwrap().recv_sexp_messages() {
+                        root.process_chatter_msg(&msg);
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                let (ok, views) = read_parallel(&root.parallel_result(gid).unwrap());
+                assert_eq!(ok, 1);
+                assert_eq!(ok_values(&views), expected);
+                println!("prime-{},20000,{count},{repeat},{elapsed:.3},{},true",
+                    if scatter { "scatter" } else { "parallel" }, root.recruit_ledger.len() - before);
+                root.parallel_jobs.remove(&gid);
+            }
+        }
+        println!("prime-native,{native_ms:.3}");
+    }
+    // Exercise the live-but-silent path over UDP with an injected short clock.
+    drop_next.store(true, Ordering::Relaxed);
+    let parts = parse_parts("(scatter (+ 1 2) (* 4 5) (+ 8 9) (* 6 7))");
+    let start = Instant::now();
+    let gid = root.run_parallel_mode(&parts, &mut under_ceiling, 0, true);
+    while !root.parallel_jobs[&gid].is_complete() {
+        assert!(start.elapsed() < Duration::from_secs(5));
+        for msg in root.mesh.as_ref().unwrap().recv_sexp_messages() {
+            root.process_chatter_msg(&msg);
+        }
+        let peers = root.mesh.as_ref().unwrap().peer_resource_view().into_iter()
+            .map(|(id, _, h, addr)| (crate::mesh::id_to_hex(&id), h, addr)).collect::<Vec<_>>();
+        root.supervise(&peers, Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let (ok, views) = read_parallel(&root.parallel_result(gid).unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![3], vec![20], vec![17], vec![42]]);
+    assert!((0..4).any(|seq| root.recruit_ledger.attempts(gid, seq) > 0));
+    let original = root.parallel_result(gid).unwrap();
+    let bogus_late = crate::sexp::eval_sexp(&mut root, "999");
+    root.process_chatter_msg(&crate::distgoal::sexp_recruit_result(gid, 0, "late-worker", &bogus_late));
+    assert_eq!(root.parallel_result(gid).unwrap(), original);
+    println!("recovery_ms={:.3}; dropped_request=true; correct=true; late_duplicate_ignored=true",
+        start.elapsed().as_secs_f64() * 1000.0);
+    root.mesh.as_ref().unwrap().shutdown();
+}
+
+#[test]
+fn scatter_without_peers_preserves_order_and_errors() {
+    let mut vm = test_vm();
+    let parts = parse_parts("(scatter (+ 1 2) (drop) (* 4 5))");
+    let gid = vm.run_parallel_mode(&parts, &mut under_ceiling, 0, true);
+    let (ok, views) = read_parallel(&vm.parallel_result(gid).unwrap());
+    assert_eq!(ok, 0);
+    assert_eq!(ok_values(&[views[0].clone(), views[2].clone()]), vec![vec![3], vec![20]]);
+    assert!(matches!(&views[1], crate::sexp::ResultView::Err { .. }));
+    assert!(vm.recruit_ledger.is_empty());
+}
+
+#[test]
+fn scatter_saturated_without_peers_remains_supervised() {
+    let mut vm = test_vm();
+    let parts = parse_parts("(scatter (+ 1 2) (* 4 5))");
+    let gid = vm.run_parallel_mode(&parts, &mut over_ceiling, 0, true);
+    assert!(!vm.parallel_jobs[&gid].is_complete());
+    assert_eq!(vm.recruit_ledger.len(), 2);
+    for _ in 0..=crate::distgoal::MAX_SLOT_ATTEMPTS {
+        vm.supervise(&[], std::time::Duration::ZERO);
+    }
+    assert!(vm.parallel_jobs[&gid].is_complete());
+    assert_eq!(read_parallel(&vm.parallel_result(gid).unwrap()).0, 0);
+}
+
+#[test]
+fn scatter_recruit_routes_through_structured_collection() {
+    let mut vm = test_vm();
+    let reply = reply_of(vm.handle_recruit(42, 3,
+        "(scatter (+ 1 2) (* 4 5))", "caller", &mut under_ceiling));
+    let reply = crate::sexp::parse(&reply).unwrap();
+    assert_eq!(reply.get_key(":id").unwrap().as_number(), Some(42));
+    let (ok, views) = read_parallel(reply.get_key(":result").unwrap());
+    assert_eq!(ok, 1);
+    assert_eq!(ok_values(&views), vec![vec![3], vec![20]]);
+}
+
 #[test]
 fn missing_worker_code_is_a_failure_not_the_input_echoed_as_success() {
     let mut vm = test_vm();
@@ -2805,6 +3004,32 @@ fn missing_worker_code_is_a_failure_not_the_input_echoed_as_success() {
     assert!(matches!(crate::sexp::read_result(&good),
         Some(crate::sexp::ResultView::Ok { value, .. }) if value == vec![5]));
 }
+
+#[test]
+fn scatter_window_reopens_only_after_result_settles() {
+    let mut vm = test_vm();
+    vm.recruit_ledger.open(1, 0, "(+ 1 2)", "worker");
+    assert_eq!(vm.recruit_ledger.pending_on("worker"), 1);
+    let result = crate::sexp::eval_sexp(&mut vm, "(+ 1 2)");
+    let reply = crate::distgoal::sexp_recruit_result(1, 0, "worker", &result);
+    vm.process_chatter_msg(&reply);
+    assert_eq!(vm.recruit_ledger.pending_on("worker"), 0);
+    vm.process_chatter_msg(&reply);
+    assert_eq!(vm.recruit_ledger.pending_on("worker"), 0);
+}
+
+
+#[test]
+fn prime_search_kernel_matches_known_counts() {
+    let mut vm = test_vm();
+    eval(&mut vm, include_str!("../../experiments/compute/prime-count.fs"));
+    for (start, end, expected) in [(2, 2, 0), (10, 0, 0), (0, 2, 0), (0, 10, 4), (10, 100, 21), (0, 1000, 168)] {
+        let result = crate::sexp::eval_sexp(&mut vm, &format!("(COUNT-PRIMES {start} {end})"));
+        assert!(matches!(crate::sexp::read_result(&result),
+            Some(crate::sexp::ResultView::Ok { value, .. }) if value == vec![expected]), "{result}");
+    }
+}
+
 
 #[test]
 fn compute_primitive_faults_are_structured_failures() {
@@ -2821,4 +3046,28 @@ fn compute_primitive_faults_are_structured_failures() {
     let result = vm.execute_sandbox("-9223372036854775808 -1 MOD");
     assert!(result.success);
     assert_eq!(result.stack_snapshot, vec![0]);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_scatter_pipeline_respects_capacity_and_other_jobs() {
+    use std::time::{Duration, Instant};
+    let mut vm = test_vm();
+    let task = crate::native::Task { arrival: 100, service: 80, customers: 1000, seed: 42 };
+    let part = crate::sexp::parse(&task.expression()).unwrap();
+    let ordinary = crate::sexp::parse("(+ 1 2)").unwrap();
+    vm.native.peers.insert("worker".into(), (Instant::now(), 3));
+    vm.recruit_ledger.open(99, 0, &task.expression(), "worker");
+    assert!(vm.scatter_window_available(&part, "worker", 0, 2));
+    assert!(!vm.scatter_window_available(&part, "worker", 100, 1));
+    assert!(!vm.scatter_window_available(&ordinary, "worker", 100, 2));
+    vm.recruit_ledger.open(100, 0, &task.expression(), "worker");
+    assert!(!vm.scatter_window_available(&part, "worker", 100, 2));
+    let reply = crate::distgoal::sexp_recruit_result(99, 0, "worker", &crate::native::envelope(&task));
+    vm.process_chatter_msg(&reply);
+    assert!(vm.scatter_window_available(&part, "worker", 0, 2));
+    vm.native.peers.insert("worker".into(), (Instant::now(), 1));
+    assert!(!vm.scatter_window_available(&part, "worker", 100, 2));
+    vm.native.peers.insert("worker".into(), (Instant::now() - Duration::from_secs(6), 3));
+    assert!(!vm.scatter_window_available(&part, "worker", 100, 2));
 }

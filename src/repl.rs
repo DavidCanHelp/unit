@@ -75,8 +75,15 @@ impl VM {
             }
         });
 
+        let mut last_duties = std::time::Instant::now();
         loop {
-            match rx.recv_timeout(REPL_TICK) {
+            // Native completions need prompt progress; ecological time keeps
+            // its original cadence, so enabling a kernel does not accelerate life.
+            #[cfg(not(target_arch = "wasm32"))]
+            let wait = if self.native.enabled { Duration::from_millis(5) } else { REPL_TICK };
+            #[cfg(target_arch = "wasm32")]
+            let wait = REPL_TICK;
+            match rx.recv_timeout(wait) {
                 Ok(line) => {
                     self.interpret_line(&line);
                     if !self.running {
@@ -84,6 +91,7 @@ impl VM {
                     }
                     if !self.compiling {
                         self.repl_tick();
+                        last_duties = std::time::Instant::now();
                     }
                     if self.compiling {
                         let _ = write!(stdout, "  ");
@@ -98,7 +106,12 @@ impl VM {
                 // half-compiled word must not be observed by spawn/snapshot.)
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if !self.compiling {
-                        self.repl_tick();
+                        #[cfg(not(target_arch = "wasm32"))]
+                        self.poll_native_mesh();
+                        if last_duties.elapsed() >= REPL_TICK {
+                            self.repl_tick();
+                            last_duties = std::time::Instant::now();
+                        }
                         // Tick-driven output (e.g. "parallel #N complete:")
                         // leaves the cursor mid-line with no prompt, which
                         // reads as a hang. Redraw it. (Characters typed but

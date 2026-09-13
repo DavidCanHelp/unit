@@ -106,7 +106,11 @@ word's action).
 | `RECRUIT"` | send `"<peer> <s-expr>"` as a recruit round-trip |
 | `RECRUITS` | show outstanding and collected recruit round-trips |
 | `RECRUITS-SEXP` | machine-readable slot status — one parseable `(recruit-slot :id … :state pending\|unplaced\|ok\|err …)` per line (the stable surface for harnesses/tooling) |
-| `PARALLEL"` | run `"(parallel (e1) (e2) ...)"` under local resource pressure, print collected results |
+| `PARALLEL\"` | run `(parallel ...)` under resource pressure, or opt-in `(scatter ...)` for independent CPU work with bounded peer-window refill; print ordered results |
+| `QUEUE-SIM` | `( arrival service customers seed -- total-wait max-wait departure )` versioned native queue simulation; bounded, energy-metered, native only |
+| `NATIVE-ON` | enable this unit's bounded native recruit admission; disabled inside the sandbox |
+| `NATIVE-OFF` | refuse new native recruits; finish accepted work |
+| `NATIVE-STATUS` | show kernel/version, admission, outstanding/capacity, accepted/busy counts and high-water |
 
 ## Genetic Programming
 

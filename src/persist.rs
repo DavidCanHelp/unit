@@ -427,15 +427,21 @@ pub fn deserialize_snapshot(data: &[u8]) -> Option<VmSnapshot> {
 // File system operations
 // ---------------------------------------------------------------------------
 
+/// Override the state root for isolated experiments or separately managed units.
+#[cfg(not(target_arch = "wasm32"))]
+fn state_root() -> String {
+    std::env::var("UNIT_STATE_DIR").unwrap_or_else(|_|
+        format!("{}/.unit", std::env::var("HOME").unwrap_or_else(|_| ".".into())))
+}
+
 /// Returns the filesystem path to this node's state directory.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn state_dir(node_id: &NodeId) -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let id_hex = node_id
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect::<String>();
-    format!("{}/.unit/{}", home, id_hex)
+    format!("{}/{}", state_root(), id_hex)
 }
 
 /// Writes VM state to the node's state directory on disk.
@@ -510,13 +516,12 @@ pub fn delete_state(node_id: &NodeId) -> Result<(), String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn node_id_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     // Use port-specific node-id file when UNIT_PORT is set, so multiple
     // units on the same machine automatically get different identities.
     if let Ok(port) = std::env::var("UNIT_PORT") {
-        format!("{}/.unit/node-id-{}", home, port)
+        format!("{}/node-id-{}", state_root(), port)
     } else {
-        format!("{}/.unit/node-id", home)
+        format!("{}/node-id", state_root())
     }
 }
 
@@ -539,8 +544,7 @@ pub fn load_node_id() -> Option<NodeId> {
 /// Save the node ID so it persists across restarts.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_node_id(id: &NodeId) -> Result<(), String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let dir = format!("{}/.unit", home);
+    let dir = state_root();
     std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {}", e))?;
     let hex: String = id.iter().map(|b| format!("{:02x}", b)).collect();
     std::fs::write(node_id_path(), hex).map_err(|e| format!("write: {}", e))

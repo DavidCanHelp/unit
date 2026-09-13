@@ -228,6 +228,8 @@ impl VM {
     pub(crate) fn tick_dist_goals(&mut self) {
         let _t_tick = metrics::Timer::new("mesh.tick");
         self.dist_engine.advance_tick();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_native();
 
         // Process incoming S-expression messages for sub-results.
         if let Some(ref m) = self.mesh {
@@ -316,7 +318,9 @@ impl VM {
             Ok(sexp) => match crate::distgoal::parallel_parts(&sexp) {
                 Some(parts) => {
                     let budget_kb = crate::resources::measure_mem_budget_kb();
-                    let child = self.run_parallel(&parts, measure, budget_kb);
+                    let child = if crate::sexp::msg_type(&sexp) == Some("scatter") {
+                        self.run_parallel_mode(&parts, measure, budget_kb, true)
+                    } else { self.run_parallel(&parts, measure, budget_kb) };
                     let complete = self
                         .parallel_jobs
                         .get(&child)
@@ -378,6 +382,17 @@ impl VM {
         let gid = sexp.get_key(":id")?.as_number()? as u64;
         let seq = sexp.get_key(":seq")?.as_number()? as usize;
         let env = sexp.get_key(":result")?.clone();
+        // Native success must identify the exact immutable task we retained.
+        if env.get_key(":ok").and_then(crate::sexp::Sexp::as_number) == Some(1) {
+            if let Some(task) = self.recruit_ledger.pending_any_instruction(gid, seq)
+                .and_then(|s| crate::sexp::parse(s).ok())
+                .and_then(|s| crate::native::Task::parse(&s).ok())
+            {
+                if env.get_key(":task").and_then(crate::sexp::Sexp::as_str) != Some(task.id().as_str()) {
+                    return None;
+                }
+            }
+        }
         // Record decodable single-result replies in the ledger (generic
         // recruits). A nested parallel-result doesn't decode into a flat
         // ResultView, but its ledger slot MUST still settle — left open, it
@@ -536,14 +551,8 @@ impl VM {
         if dead.is_empty() {
             return reports;
         }
-        let candidates: Vec<crate::transport::Candidate> = live_peers
-            .iter()
-            .map(|(_, headroom, addr)| crate::transport::Candidate {
-                headroom_pct: *headroom,
-                addr: *addr,
-            })
-            .collect();
         for (gid, seq, instr) in dead {
+            let candidates = self.recruit_candidates(&instr, live_peers, None);
             // Terminal bound first: a slot that has burned its attempt cap
             // is abandoned fail-closed, and the failure flows upstream.
             if self.recruit_ledger.attempts(gid, seq) >= distgoal::MAX_SLOT_ATTEMPTS {
@@ -583,6 +592,26 @@ impl VM {
             }
         }
         reports
+    }
+
+    fn recruit_candidates(&self, instr: &str, peers: &[(String, u8, std::net::SocketAddr)], exclude: Option<&str>)
+        -> Vec<crate::transport::Candidate>
+    {
+        let _ = instr;
+        peers.iter().filter(|(id, _, _)| exclude != Some(id.as_str()))
+            .filter_map(|(id, headroom, addr)| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if crate::sexp::parse(instr).ok().is_some_and(|s| crate::sexp::msg_type(&s) == Some("native")) {
+                    let (at, free) = self.native.peers.get(id)?;
+                    if at.elapsed() >= std::time::Duration::from_secs(5) || *free == 0 { return None; }
+                    // For a native kernel the placement weight is free reserved
+                    // slots, not a fabricated host memory observation.
+                    return Some(crate::transport::Candidate { headroom_pct: (*free * 100 / 3) as u8, addr: *addr });
+                }
+                #[cfg(target_arch = "wasm32")]
+                let _ = id;
+                Some(crate::transport::Candidate { headroom_pct: *headroom, addr: *addr })
+            }).collect()
     }
 
     /// SUPERVISION (job-timeout, alive-but-wedged). Re-recruit every OPEN slot
@@ -625,14 +654,7 @@ impl VM {
                 continue;
             }
             // Same placement rule as gossip-death, minus the wedged holder.
-            let candidates: Vec<crate::transport::Candidate> = live_peers
-                .iter()
-                .filter(|(hex, _, _)| *hex != wedged)
-                .map(|(_, headroom, addr)| crate::transport::Candidate {
-                    headroom_pct: *headroom,
-                    addr: *addr,
-                })
-                .collect();
+            let candidates = self.recruit_candidates(&instr, live_peers, Some(&wedged));
             let chosen_addr =
                 match crate::transport::choose_destination(&candidates, &mut self.rng) {
                     Some(c) => c.addr,
@@ -907,16 +929,121 @@ impl VM {
     where
         M: FnMut() -> crate::resources::HostResources,
     {
+        self.run_parallel_mode(parts, measure, budget_kb, false)
+    }
+
+    fn scatter_peer_available(&self, part: &crate::sexp::Sexp, peer: &str, headroom: u8) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::sexp::msg_type(part) == Some("native") {
+            // A native slot is an explicit local reservation, advertised by
+            // NATIVE-ON. Memory-pressure placement remains for ordinary work.
+            return self.native_capable(part, peer);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (part, peer);
+        crate::resources::headroom_pct_sufficient(headroom)
+    }
+
+    /// A native pipeline hides reply latency; advertised capacity and all of
+    /// this recruiter's pending work bound speculation. Receiver admission is
+    /// still authoritative when advertisements race with other recruiters.
+    pub(crate) fn scatter_window_available(&self, part: &crate::sexp::Sexp, peer: &str, headroom: u8, native_window: usize) -> bool {
+        #[allow(unused_mut)]
+        let mut window = 1;
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::sexp::msg_type(part) == Some("native") {
+            window = self.native.peers.get(peer).map_or(0, |(_, free)| (*free).min(native_window));
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = native_window;
+        self.scatter_peer_available(part, peer, headroom)
+            && self.recruit_ledger.pending_on(peer) < window
+    }
+
+    /// Explicit independent work: ordinary parts use one pending request per
+    /// peer. The experiment can pipeline two native parts; the heterogeneous
+    /// host results do not justify changing the default.
+    /// The window is recruiter-local, not a claim about global worker capacity.
+    pub(crate) fn run_parallel_mode<M>(
+        &mut self,
+        parts: &[crate::sexp::Sexp],
+        measure: &mut M,
+        budget_kb: u64,
+        scatter: bool,
+    ) -> u64
+    where
+        M: FnMut() -> crate::resources::HostResources,
+    {
+        self.run_parallel_policy(parts, measure, budget_kb, scatter, true)
+    }
+
+    /// `refill = false` retains the initial scatter experiment as a baseline.
+    pub(crate) fn run_parallel_policy<M>(
+        &mut self,
+        parts: &[crate::sexp::Sexp],
+        measure: &mut M,
+        budget_kb: u64,
+        scatter: bool,
+        refill: bool,
+    ) -> u64
+    where
+        M: FnMut() -> crate::resources::HostResources,
+    {
+        self.run_parallel_window(parts, measure, budget_kb, scatter, refill, 1)
+    }
+
+    /// Explicit window parameter retains a same-binary experiment control.
+    pub(crate) fn run_parallel_window<M>(
+        &mut self, parts: &[crate::sexp::Sexp], measure: &mut M,
+        budget_kb: u64, scatter: bool, refill: bool, native_window: usize,
+    ) -> u64
+    where M: FnMut() -> crate::resources::HostResources,
+    {
         let goal_id = self.recruit_ledger.next_id();
-        let mut job = crate::distgoal::ParallelJob::new(goal_id, parts.len());
+        self.parallel_jobs.insert(goal_id, crate::distgoal::ParallelJob::new(goal_id, parts.len()));
+        let mut dispatched = 0;
+        if scatter {
+            let mut peers = self.mesh.as_ref().map(|m| m.peer_resource_view()).unwrap_or_default();
+            // Shuffle ties: multiple recruiters should not always choose the same peer.
+            for i in (1..peers.len()).rev() {
+                peers.swap(i, self.rng.next_usize(i + 1));
+            }
+            // Round-robin passes avoid filling one peer before another. Keep
+            // at least one local task, and never speculate beyond two requests.
+            for _ in 0..native_window.clamp(1, 2) {
+                for (id, _, headroom, _) in &peers {
+                    if dispatched >= parts.len().saturating_sub(1) { break; }
+                    let peer = crate::mesh::id_to_hex(id);
+                    if self.scatter_window_available(&parts[dispatched], &peer, *headroom, native_window.min(2)) {
+                        self.send_recruit(&peer, goal_id, dispatched, &parts[dispatched].to_string());
+                        dispatched += 1;
+                    }
+                }
+            }
+        }
         // Committed-work tally: memory (kB) THIS call has decided to run locally
         // but that measure() may not yet reflect (RSS lag, swap absorption,
         // loadavg averaging). Per-call scratch — it resets here and never
         // persists across calls or ticks, so it cannot double-count against a
         // later measure() that catches up.
         let mut committed_kb: u64 = 0;
-        for (seq, part) in parts.iter().enumerate() {
+        for (seq, part) in parts.iter().enumerate().skip(dispatched) {
             let part_str = part.to_string();
+            if scatter && refill && seq > dispatched {
+                // Only collect replies here. Executing arbitrary inbound work
+                // recursively would let other jobs monopolize this scheduler.
+                let replies = self.mesh.as_ref().map(|m| m.recv_recruit_results()).unwrap_or_default();
+                for reply in replies { self.process_chatter_msg(&reply); }
+                let peers = self.mesh.as_ref().map(|m| m.peer_resource_view()).unwrap_or_default();
+                if let Some(peer) = peers.iter()
+                    .map(|(id, _, h, _)| (crate::mesh::id_to_hex(id), *h))
+                    .find(|(peer, h)| self.scatter_window_available(part, peer, *h, native_window.min(2)))
+                    .map(|(peer, _)| peer)
+                {
+                    self.send_recruit(&peer, goal_id, seq, &part_str);
+                    continue;
+                }
+            }
             let obs = measure();
             // Add the committed tally on the same (combined RAM+swap) memory
             // axis as obs.utilization. budget_kb == 0 means the budget is
@@ -930,11 +1057,12 @@ impl VM {
             };
             let has_headroom = obs.is_available()
                 && (obs.utilization + committed_fraction) < crate::resources::CEILING_UTILIZATION;
-            if has_headroom {
+            if has_headroom || crate::sexp::msg_type(part) == Some("native") {
+                // Native kernels use a bounded explicit CPU reservation.
                 // Headroom (observed + committed): run locally, then ADD this
                 // part's estimated cost to the tally before deciding the next.
                 let envelope = crate::sexp::eval_sexp(self, &part_str);
-                job.set(seq, envelope);
+                self.parallel_jobs.get_mut(&goal_id).unwrap().set(seq, envelope);
                 committed_kb = committed_kb.saturating_add(
                     crate::distgoal::part_cost_mb(part).saturating_mul(1024),
                 );
@@ -959,7 +1087,6 @@ impl VM {
                 self.recruit_ledger.open(goal_id, seq, &part_str, "");
             }
         }
-        self.parallel_jobs.insert(goal_id, job);
         goal_id
     }
 
@@ -995,7 +1122,9 @@ impl VM {
         let saved_pos = self.input_pos;
         let mut measure = crate::resources::HostResources::measure;
         let budget_kb = crate::resources::measure_mem_budget_kb();
-        let goal_id = self.run_parallel(&parts, &mut measure, budget_kb);
+        let goal_id = if crate::sexp::msg_type(&sexp) == Some("scatter") {
+            self.run_parallel_mode(&parts, &mut measure, budget_kb, true)
+        } else { self.run_parallel(&parts, &mut measure, budget_kb) };
         self.input_buffer = saved_buf;
         self.input_pos = saved_pos;
         if let Some(result) = self.parallel_result(goal_id) {
@@ -1009,6 +1138,8 @@ impl VM {
         let _t_msg = metrics::Timer::new("chatter.process");
         if let Some(sexp) = crate::sexp::try_parse_mesh_msg(msg) {
             match crate::sexp::msg_type(&sexp) {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        Some("native-cap" | "recruit-busy") => self.native_message(&sexp),
                         Some("death-cry") => {
                             // A peer died; inherit its immune memory. The
                             // reader trust-gates to SOL-* words and
@@ -1114,6 +1245,11 @@ impl VM {
                                 .and_then(|s| s.as_number())
                                 .unwrap_or(0)
                                 .clamp(0, energy::BOUNTY_ACCEPT_CAP);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if crate::sexp::parse(&instr).ok().is_some_and(|s| crate::sexp::msg_type(&s) == Some("native")) {
+                                self.accept_native(goal_id, seq, &instr, &from, bounty);
+                                return;
+                            }
                             if !instr.is_empty() {
                                 // Live measure so a recruited (parallel ...)
                                 // re-applies the ceiling decision at this level.

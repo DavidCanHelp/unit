@@ -605,6 +605,15 @@ pub fn eval_sexp(vm: &mut crate::vm::VM, input: &str) -> Sexp {
         Ok(p) => p,
         Err(e) => return msg_result(EvalOutcome::Err { kind: "parse", msg: &e.0 }),
     };
+    if msg_type(&parsed) == Some("native") {
+        return match crate::native::Task::parse(&parsed) {
+            #[cfg(not(target_arch = "wasm32"))]
+            Ok(task) => vm.local_native(&task),
+            #[cfg(target_arch = "wasm32")]
+            Ok(_) => crate::native::error("native execution unavailable on wasm"),
+            Err(e) => crate::native::error(&e),
+        };
+    }
     let forth = to_forth(&parsed);
     let result = vm.execute_sandbox(&forth);
 

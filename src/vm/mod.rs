@@ -296,6 +296,10 @@ pub(crate) const P_MARK_BANG: usize = 507;
 pub(crate) const P_SENSE: usize = 508;
 pub(crate) const P_GIVE: usize = 509;
 pub(crate) const P_RECRUITS_SEXP: usize = 510;
+pub(crate) const P_QUEUE_SIM: usize = 511;
+pub(crate) const P_NATIVE_ON: usize = 512;
+pub(crate) const P_NATIVE_OFF: usize = 513;
+pub(crate) const P_NATIVE_STATUS: usize = 514;
 // Internal runtime primitives (not directly user-visible).
 pub(crate) const P_DO_RT: usize = 100;
 pub(crate) const P_LOOP_RT: usize = 101;
@@ -326,6 +330,7 @@ pub enum Fault {
     UnknownWord,
     DivisionByZero,
     InvalidAddress,
+    NativeExecution,
 }
 
 impl Fault {
@@ -337,6 +342,7 @@ impl Fault {
             Fault::UnknownWord => "unknown word",
             Fault::DivisionByZero => "division by zero",
             Fault::InvalidAddress => "invalid address",
+            Fault::NativeExecution => "native execution failed",
         }
     }
 }
@@ -399,6 +405,8 @@ pub struct VM {
     pub execution_timeout: u64,
     /// When true, automatically claim and execute incoming tasks.
     pub auto_claim: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub native: crate::native::runtime::State,
     /// Stored code strings for compiled GOAL{ ... } (indexed by Literal).
     pub code_strings: Vec<String>,
     // --- Sandbox / Security ---
@@ -520,6 +528,8 @@ impl VM {
             fault: None,
             execution_timeout: 10,
             auto_claim: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            native: crate::native::runtime::State::default(),
             code_strings: Vec::new(),
             sandbox_active: false,
             shell_enabled: false,
@@ -572,6 +582,19 @@ impl VM {
     // -----------------------------------------------------------------------
     // Primitive registration
     // -----------------------------------------------------------------------
+    /// Old persisted dictionaries predate these capabilities. Append missing
+    /// builtins without shifting instruction indices or replacing evolved words.
+    pub(crate) fn install_native_primitives(&mut self) {
+        for (name, id) in [("QUEUE-SIM", P_QUEUE_SIM), ("NATIVE-ON", P_NATIVE_ON),
+            ("NATIVE-OFF", P_NATIVE_OFF), ("NATIVE-STATUS", P_NATIVE_STATUS)]
+        {
+            if self.find_word(name).is_none() {
+                self.dictionary.push(Entry { name: name.into(), immediate: false,
+                    hidden: false, body: vec![Instruction::Primitive(id)] });
+            }
+        }
+    }
+
     pub(crate) fn register_primitives(&mut self) {
         let prims: &[(&str, usize, bool)] = &[
             ("DUP", P_DUP, false),
@@ -856,6 +879,10 @@ impl VM {
             ("MARK!", P_MARK_BANG, false),
             ("SENSE", P_SENSE, false),
             ("GIVE", P_GIVE, false),
+            ("QUEUE-SIM", P_QUEUE_SIM, false),
+            ("NATIVE-ON", P_NATIVE_ON, false),
+            ("NATIVE-OFF", P_NATIVE_OFF, false),
+            ("NATIVE-STATUS", P_NATIVE_STATUS, false),
             // Task decomposition
             ("SUBTASK{", P_SUBTASK, true),
             ("FORK", P_FORK, false),
@@ -1843,6 +1870,36 @@ impl VM {
             P_MARK_BANG => self.prim_mark_bang(),
             P_SENSE => self.prim_sense(),
             P_GIVE => self.prim_give(),
+            P_QUEUE_SIM => {
+                let seed = self.pop(); let customers = self.pop();
+                let service = self.pop(); let arrival = self.pop();
+                let task = crate::native::Task { arrival: arrival as u64, service: service as u64,
+                    customers: customers as u64, seed: seed as u64 };
+                #[cfg(not(target_arch = "wasm32"))]
+                let env = self.local_native(&task);
+                #[cfg(target_arch = "wasm32")]
+                let env = crate::native::error("native execution unavailable on wasm");
+                #[cfg(target_arch = "wasm32")]
+                let _ = task;
+                if let Some(crate::sexp::ResultView::Ok { value, .. }) = crate::sexp::read_result(&env) {
+                    self.stack.extend(value.into_iter().rev());
+                } else {
+                    self.fault.get_or_insert(Fault::NativeExecution);
+                    self.emit_str(&format!("{env}\n"));
+                }
+            }
+            P_NATIVE_STATUS => {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.print_native_status();
+                #[cfg(target_arch = "wasm32")]
+                self.emit_str("native unavailable on wasm\n");
+            }
+            P_NATIVE_ON | P_NATIVE_OFF => {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.native_control(id == P_NATIVE_ON);
+                #[cfg(target_arch = "wasm32")]
+                self.emit_str("native admission unavailable on wasm\n");
+            }
             // Task decomposition
             P_SUBTASK => self.prim_subtask(),
             P_FORK => self.prim_fork(),

@@ -724,6 +724,20 @@ impl RecruitLedger {
             .collect()
     }
 
+    pub fn pending_any_instruction(&self, goal: u64, seq: usize) -> Option<&str> {
+        self.entries.get(&(goal, seq)).filter(|s| s.result.is_none()).map(|s| s.instr.as_str())
+    }
+
+    pub fn pending_instruction(&self, goal: u64, seq: usize, peer: &str) -> Option<String> {
+        self.entries.get(&(goal, seq)).filter(|s| s.result.is_none() && s.peer == peer)
+            .map(|s| s.instr.clone())
+    }
+
+    /// Outstanding assignments known to this recruiter (not global peer load).
+    pub fn pending_on(&self, peer: &str) -> usize {
+        self.entries.values().filter(|s| s.peer == peer && s.result.is_none()).count()
+    }
+
     /// Number of recruit requests opened (outstanding + collected). Lets a
     /// caller observe recruit emission — e.g. that a saturated mesh emits none.
     pub fn len(&self) -> usize {
@@ -885,7 +899,7 @@ pub enum RecruitOutcome {
 /// split would underflow — each sub-part must stand alone.
 pub fn parallel_parts(sexp: &crate::sexp::Sexp) -> Option<Vec<crate::sexp::Sexp>> {
     let items = sexp.as_list()?;
-    if items.first()?.as_atom()? != "parallel" {
+    if !matches!(items.first()?.as_atom()?, "parallel" | "scatter") {
         return None;
     }
     Some(items[1..].to_vec())

@@ -303,6 +303,20 @@ The five-concern kernel is ~9,000 lines. The whole organism is ~35,000. Both are
 - [docs/validation.md](docs/validation.md) — the adversarial harnesses: Docker wedge drills S1–S8 (partitions, blackholes, cgroup pressure, netem) and the long-lived evolution soak
 - [docs/self-replication.md](docs/self-replication.md) — resource-aware self-replication: the 80% ceiling, emergent local rule, confirm-before-release transport, sufficient-first placement (v0.29)
 
+## Useful computation experiments
+
+The [compute investigation](docs/design/useful-computation.md) tests explicit
+CPU work distribution, bounded peer-window refill, and failure reporting.
+[Measured results](experiments/compute/results.md) show when scatter helps and
+why native kernels remain the larger opportunity. The experiment is opt-in;
+existing `(parallel ...)` behavior is unchanged.
+
+The [native computation capability](experiments/native/README.md) keeps Forth as
+the programming interface and uses the existing recruiter/supervisor for a
+versioned queue-simulation kernel. Run `unit --bench-native` for serial, local
+thread-pool, and mesh comparisons, or `just native-drill 1` for the existing Docker
+REPL/netem process extended with bounded admission and worker-failure tests.
+
 ## Binary Sizes
 
 | Target | Size |

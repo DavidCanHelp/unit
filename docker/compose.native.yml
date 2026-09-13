@@ -1,0 +1,37 @@
+# Reuses the existing FIFO-injected unit REPL and netem drill infrastructure.
+# Separate Compose project/image/log paths keep existing drills untouched.
+x-native: &native
+  image: unit-native-drill:latest
+  cap_add: [NET_ADMIN]
+  init: true
+  mem_limit: 256m
+  memswap_limit: 256m
+  volumes:
+    - ./native-logs:/logs
+  environment: &env
+    UNIT_PORT: "4200"
+    UNIT_RECRUIT_TIMEOUT_SECS: "1"
+    DRILL_NETEM: ${DRILL_NETEM:-0}
+services:
+  root:
+    <<: *native
+    hostname: root
+    environment:
+      <<: *env
+      DRILL_NAME: root
+  mid:
+    depends_on: [root]
+    <<: *native
+    hostname: mid
+    environment:
+      <<: *env
+      DRILL_NAME: mid
+      UNIT_PEERS: root:4200
+  leaf1:
+    depends_on: [root, mid]
+    <<: *native
+    hostname: leaf1
+    environment:
+      <<: *env
+      DRILL_NAME: leaf1
+      UNIT_PEERS: root:4200,mid:4200

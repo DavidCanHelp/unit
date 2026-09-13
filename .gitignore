@@ -4,3 +4,5 @@ web/unit.wasm
 .claude/
 .DS_Store
 docker/drill-logs*
+
+docker/native-logs/

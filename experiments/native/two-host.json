@@ -1,0 +1,31 @@
+{
+  "date": "2026-09-13",
+  "scope": "Mac issuer plus separate dev-server cloud VM; two hosts, not three; direct UDP, no netem",
+  "issuer": {
+    "machine": "Mac15,12",
+    "architecture": "arm64",
+    "cpus": 8
+  },
+  "peer": {
+    "alias": "dev-server",
+    "architecture": "x86_64",
+    "cpus": 2,
+    "model": "DO-Premium-Intel",
+    "rustc": "1.88.0"
+  },
+  "build": "cargo build --release on each architecture from this working source",
+  "isolation": "fresh UNIT_STATE_DIR and temporary remote source/build; ordinary NATIVE-ON unit; no persistent service installation",
+  "limitations": [
+    "heterogeneous hardware and compiler versions",
+    "shared cloud CPU performance not controlled",
+    "three repeats are exploratory",
+    "no third host supplied",
+    "no physical-host failure drill performed"
+  ],
+  "outcome": {
+    "window2": "36 correct observations; slower than local serial at all sizes",
+    "window1": "two incomplete attempts, including one with a fresh worker; both hit the 30-second benchmark deadline",
+    "fresh_worker_status": "pending 0, accepted 6, high-water 1, busy 0; issuer pending task 7",
+    "cleanup": "both experimental workers stopped; temporary source/build/state directory removed; experiment UDP sockets gone"
+  }
+}

@@ -78,3 +78,8 @@ clean:
 drill netem="0":
     docker build -f docker/Dockerfile -t unit-drill:latest .
     UNIT_RECRUIT_TIMEOUT_SECS=2 DRILL_NETEM={{netem}} bash docker/drill.sh
+
+# Same unit REPL/FIFO/netem harness, exercising versioned native computation.
+native-drill netem="0":
+    docker build -f docker/Dockerfile -t unit-native-drill:latest .
+    DRILL_NETEM={{netem}} python3 docker/native-drill.py

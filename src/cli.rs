@@ -32,6 +32,8 @@ pub(crate) fn print_help() {
     println!("  --trust LEVEL              Set trust: all, mesh, family, none");
     println!("  --serve [PORT]             Start HTTP bridge on 127.0.0.1 (default :9898)");
     println!("                             (requires: cargo build --features http)");
+    println!("  --bench-native             Native sweep: serial/threads/mesh. Optional --peers");
+    println!("                             uses existing NATIVE-ON units; default spawns two.");
     println!("  --bench [SIZES]            Run headless timing bench at the given");
     println!("                             populations (comma-separated, default");
     println!("                             10,100,1000,10000) and exit. Reports both");
@@ -63,6 +65,7 @@ pub(crate) struct CliArgs {
     pub(crate) serve_port: Option<u16>,
     /// None = no bench, Some(sizes) = run bench at those populations.
     pub(crate) bench_pops: Option<Vec<usize>>,
+    pub(crate) bench_native: bool,
     /// None = all-to-all (legacy); Some(k) = bounded random gossip with k peers.
     pub(crate) gossip_k: Option<usize>,
     /// None = no multi-unit run; Some(n) = spawn n units in-process and demo.
@@ -86,6 +89,7 @@ pub(crate) fn parse_args() -> Option<CliArgs> {
         quiet: false,
         serve_port: None,
         bench_pops: None,
+        bench_native: false,
         gossip_k: None,
         multi_unit_n: None,
         bench_two_tier: None,
@@ -140,6 +144,7 @@ pub(crate) fn parse_args() -> Option<CliArgs> {
                 };
                 cli.serve_port = Some(port);
             }
+            "--bench-native" => cli.bench_native = true,
             "--bench" => {
                 // Optional SIZES (comma-separated). If next arg parses as a
                 // comma-separated list of usize, consume it; otherwise default.

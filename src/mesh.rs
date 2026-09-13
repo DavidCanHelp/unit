@@ -1575,6 +1575,39 @@ impl MeshNode {
     }
 
     /// Drain pending inbound S-expression messages.
+    /// Drain result envelopes only, preserving unrelated work in arrival order.
+    /// Lets a busy recruiter replenish its bounded window without recursively
+    /// executing arbitrary requests from the mesh.
+    pub fn recv_recruit_results(&self) -> Vec<String> {
+        let mut st = self.state.lock().unwrap();
+        let mut results = Vec::new();
+        st.sexp_inbox.retain(|msg| {
+            let is_result = crate::sexp::try_parse_mesh_msg(msg)
+                .is_some_and(|s| crate::sexp::msg_type(&s) == Some("recruit-result"));
+            if is_result { results.push(msg.clone()); }
+            !is_result
+        });
+        results
+    }
+
+    /// Fast native progress leaves ordinary chatter to the normal organism tick.
+    pub fn recv_native_messages(&self) -> Vec<String> {
+        let mut st = self.state.lock().unwrap();
+        let mut out = Vec::new();
+        st.sexp_inbox.retain(|msg| {
+            let native = crate::sexp::try_parse_mesh_msg(msg).is_some_and(|s| {
+                matches!(crate::sexp::msg_type(&s), Some("native-cap" | "recruit-busy" | "recruit-result"))
+                    || (crate::sexp::msg_type(&s) == Some("recruit")
+                        && s.get_key(":instr").and_then(crate::sexp::Sexp::as_str)
+                            .and_then(|s| crate::sexp::parse(s).ok())
+                            .is_some_and(|s| crate::sexp::msg_type(&s) == Some("native")))
+            });
+            if native { out.push(msg.clone()); }
+            !native
+        });
+        out
+    }
+
     pub fn recv_sexp_messages(&self) -> Vec<String> {
         let mut st = self.state.lock().unwrap();
         st.sexp_inbox.drain(..).collect()
@@ -3733,4 +3766,22 @@ mod tests {
         drop(st);
         node.shutdown();
     }
+}
+
+#[cfg(test)]
+#[test]
+fn recruit_result_drain_preserves_unrelated_inbox_order() {
+    let node = MeshNode::start(0, vec![]).unwrap();
+    {
+        let mut state = node.state.lock().unwrap();
+        state.sexp_inbox.extend([
+            "(recruit :id 1)".to_string(),
+            "(recruit-result :id 2)".to_string(),
+            "(signal :value 3)".to_string(),
+            "(recruit-result :id 4)".to_string(),
+        ]);
+    }
+    assert_eq!(node.recv_recruit_results(), vec!["(recruit-result :id 2)", "(recruit-result :id 4)"]);
+    assert_eq!(node.recv_sexp_messages(), vec!["(recruit :id 1)", "(signal :value 3)"]);
+    node.shutdown();
 }

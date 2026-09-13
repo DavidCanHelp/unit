@@ -466,6 +466,7 @@ impl VM {
 
     pub(crate) fn restore_snapshot(&mut self, snap: persist::VmSnapshot) {
         self.dictionary = snap.dictionary;
+        self.install_native_primitives();
         self.memory = snap.memory;
         self.here = snap.here;
         self.fitness = snap.fitness;

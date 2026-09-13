@@ -92,6 +92,32 @@ jobs:
           path: docker/drill-logs-S*
           if-no-files-found: ignore
 
+  native-compute-drill:
+    runs-on: ubuntu-latest
+    needs: [drill-image]
+    strategy:
+      fail-fast: false
+      matrix:
+        netem: ["0", "1"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: drill-image
+          path: /tmp
+      - run: gunzip -c /tmp/unit-drill.tar.gz | docker load
+      - run: docker tag unit-drill:latest unit-native-drill:latest
+      - name: Native computation through ordinary units
+        run: DRILL_NETEM=${{ matrix.netem }} python3 docker/native-drill.py
+      - if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: native-compute-netem-${{ matrix.netem }}
+          path: |
+            docker/native-logs
+            experiments/native/*.csv
+            experiments/native/drill*.json
+
   go-build:
     runs-on: ubuntu-latest
     steps:

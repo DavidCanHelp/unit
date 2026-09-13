@@ -18,6 +18,7 @@ pub mod evolve;
 
 // --- Distributed goal computation ---
 pub mod distgoal;
+pub mod native;
 
 // --- Challenge registry (immune system) ---
 pub mod challenges;
@@ -130,6 +131,8 @@ mod words;
 #[cfg(not(target_arch = "wasm32"))]
 mod bench;
 #[cfg(not(target_arch = "wasm32"))]
+mod native_bench;
+#[cfg(not(target_arch = "wasm32"))]
 mod node;
 mod repl;
 mod cli;
@@ -148,6 +151,10 @@ fn main() {
     // produce all zeros.
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if cli.bench_native {
+            if let Err(e) = native_bench::run(cli.peers.as_deref()) { eprintln!("{e}"); std::process::exit(1); }
+            return;
+        }
         if let Some(ref pops) = cli.bench_pops {
             let mut vm = VM::new();
             vm.silent = true;
@@ -174,6 +181,7 @@ fn main() {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = cli.bench_pops;
+        let _ = cli.bench_native;
         let _ = cli.multi_unit_n;
         let _ = cli.bench_two_tier;
     }
@@ -360,6 +368,7 @@ fn main() {
         if let Some(data) = persist::load_state(&id) {
             if let Some(snap) = persist::deserialize_snapshot(&data) {
                 vm.dictionary = snap.dictionary;
+                vm.install_native_primitives();
                 vm.memory = snap.memory;
                 vm.here = snap.here;
                 vm.fitness = snap.fitness;

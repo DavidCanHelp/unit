@@ -1,0 +1,24 @@
+{
+  "passed": [
+    "36 native benchmark runs checked, with serial/thread/three-container modes",
+    "unsupported kernel version is an explicit failure",
+    "two recruiters finish all 18 admitted-or-retried tasks",
+    "worker queue never exceeds three outstanding tasks",
+    "full worker explicitly returned busy",
+    "replayed deterministic tasks have identical numerical results",
+    "paused worker is re-recruited by the existing supervisor",
+    "late worker reply leaves settled result unchanged",
+    "the resumed unit is still an organism, not cancelled work",
+    "killed worker task is recovered with the same result",
+    "Forth remains responsive and definable after worker failure"
+  ],
+  "wedge_recovery_seconds": 1.9579698748420924,
+  "worker_status": "(native-status :enabled 1 :kernel queue-sim :version 1 :pending 0 :capacity 3 :accepted 47 :high-water 3 :busy 134)",
+  "netem": "0",
+  "qdiscs": {
+    "root": "qdisc noqueue 0: root refcnt 2",
+    "mid": "qdisc noqueue 0: root refcnt 2",
+    "leaf1": "qdisc noqueue 0: root refcnt 2"
+  },
+  "scope": "three Docker containers on one Docker host; existing REPL, gossip, recruitment and supervision"
+}
