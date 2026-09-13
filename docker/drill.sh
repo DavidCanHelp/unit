@@ -297,11 +297,26 @@ $COMPOSE unpause tnode >/dev/null 2>&1
 echo "        (accepted=$ACCEPTED landed=$LANDED)"
 [ "$NOLOSS" -eq 0 ]
 check "S6 no release without a landed copy (accepted <= landed)" $?
-# Receiver self-consistency, race-free: the Nth landing line itself reports
-# the post-landing count, so the LAST one must read exactly 20 + landed.
-LAST_HOSTING=$(grep -oE 'landed a unit — now hosting [0-9]+' "$LOGS/rnode.log" | tail -1 | grep -oE '[0-9]+$')
-[ -n "$LAST_HOSTING" ] && [ "$LAST_HOSTING" -eq $(( 20 + LANDED )) ]
-check "S6 receiver count consistent: last landing reports 20+landed units" $?
+# Receiver self-consistency, race-free: every field from ONE chronicle
+# line, so a landing that arrives between two samples cannot skew it.
+# (The previous form compared the receiver's last landing line to a
+# sender-side count sampled earlier; the sender keeps shedding, and a
+# fourth landing between the two samples failed a true receiver.)
+# The chronicle line is emitted every 5 ticks, so let it catch up with
+# the landing the sender already counted (bounded wait).
+for _ in $(seq 1 20); do
+    R_IN_NOW=$(grep '(node-status ' "$LOGS/rnode.log" | tail -1 | grep -oE ':in [0-9]+' | awk '{print $2}')
+    [ "${R_IN_NOW:-0}" -ge "$LANDED" ] && break
+    sleep 1
+done
+R_STATUS=$(grep '(node-status ' "$LOGS/rnode.log" | tail -1)
+R_UNITS=$(echo "$R_STATUS" | grep -oE ':units [0-9]+' | awk '{print $2}')
+R_IN=$(echo "$R_STATUS" | grep -oE ':in [0-9]+' | awk '{print $2}')
+R_OUT=$(echo "$R_STATUS" | grep -oE ':out [0-9]+' | awk '{print $2}')
+R_DEATHS=$(echo "$R_STATUS" | grep -oE ':deaths [0-9]+' | awk '{print $2}')
+R_BIRTHS=$(echo "$R_STATUS" | grep -oE ':births [0-9]+' | awk '{print $2}')
+[ -n "$R_UNITS" ] && [ "$R_UNITS" -eq $(( 20 + ${R_IN:-0} - ${R_OUT:-0} - ${R_DEATHS:-0} + ${R_BIRTHS:-0} )) ] && [ "${R_IN:-0}" -ge "$LANDED" ]
+check "S6 receiver self-consistent: units == 20 + in − out − deaths + births (${R_UNITS:-?} == 20 + ${R_IN:-0} − ${R_OUT:-0} − ${R_DEATHS:-0} + ${R_BIRTHS:-0}; in ≥ sender-landed $LANDED)" $?
 snap_logs S6
 down
 }

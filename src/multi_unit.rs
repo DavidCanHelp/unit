@@ -911,12 +911,29 @@ impl MultiUnitNode {
         true
     }
 
-    /// True iff THIS coordinate is mislocated: it is over the ceiling — local
-    /// `has_headroom()` is false. The honest trigger is local resource
-    /// pressure; there is no separate mislocation score. A coordinate with
-    /// local headroom is content and never tries to relocate its units.
+    /// Committed demand as a fraction of the budget: hosted units at
+    /// saturated cost. The same question famine, abundance, and admission
+    /// ask; 0 when the budget is unknown.
+    pub fn committed_fraction(&self, local: &crate::resources::HostResources) -> f64 {
+        if local.mem_total_kb == 0 {
+            return 0.0;
+        }
+        (self.host.units.len() as u64 * crate::resources::SATURATED_UNIT_COST_KB) as f64
+            / local.mem_total_kb as f64
+    }
+
+    /// True iff THIS coordinate is mislocated: over the ceiling by either
+    /// question — the MEASUREMENT (local `has_headroom()` is false) or the
+    /// COMMITMENT (hosted units at saturated cost ≥ the ceiling). Famine
+    /// asks the committed question; if emigration asked only the measured
+    /// one, a boot-overcommitted node would starve its units in place
+    /// while a peer with room sat idle — S6 on a fast host: one "no peer
+    /// with sufficient headroom" line, then famine, never a transport.
+    /// Emigration is the cheaper escape and must see the same pressure.
     pub fn is_mislocated(&self, local: &crate::resources::HostResources) -> bool {
         crate::transport::is_mislocated(local)
+            || (local.valid
+                && self.committed_fraction(local) >= crate::resources::CEILING_UTILIZATION)
     }
 
     /// Two-tier destination from this node's own gossiped resource view. This
@@ -1028,12 +1045,7 @@ impl MultiUnitNode {
         // commitment, famine engages at tick 0 of an overcommit and the
         // population shrinks BEFORE memory approaches the wall — the race
         // against the OOM-killer stops being run at all.
-        let committed_fraction = if local.mem_total_kb > 0 {
-            (self.host.units.len() as u64 * crate::resources::SATURATED_UNIT_COST_KB) as f64
-                / local.mem_total_kb as f64
-        } else {
-            0.0
-        };
+        let committed_fraction = self.committed_fraction(local);
         // Famine has two arms with two different questions:
         //   CHRONIC — "can this budget feed this many units?" — answered by
         //   COMMITTED demand alone. Dead units' memory returns to the OS
@@ -1604,6 +1616,22 @@ mod bridge_tests {
             a.choose_destination().is_none(),
             "no peer advertises sufficient room"
         );
+    }
+
+    #[test]
+    fn overcommitted_node_is_mislocated_before_memory_says_so() {
+        // Two units committing ~87% of a 1500 KiB budget while the
+        // measurement reads 10%: famine already sees this; emigration must
+        // too, or the node starves its units in place with room next door.
+        let a = MultiUnitNode::new(8, None, vec![]).unwrap();
+        let mut a = a;
+        a.spawn_n(2);
+        assert!(a.is_mislocated(&overcommitted_reading()), "committed overcommit → mislocated");
+        // The tick reports it and, with no peers, finds no destination —
+        // famine proceeds, but the escape was tried first.
+        let report = a.tick(&overcommitted_reading(), never_transport);
+        assert!(report.mislocated);
+        assert!(matches!(report.transport, Some(TickTransport::NoDestination)));
     }
 
     #[test]

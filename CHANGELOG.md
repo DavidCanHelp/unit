@@ -11,6 +11,19 @@
   as a result — `(MISSING-KERNEL 123)` used to return success with
   value 123. Found by ChatGPT Astra 6 during its useful-computation
   investigation; landed here on its own.
+- **Emigration asks the committed question too.** Placement judged
+  "mislocated" by the measurement alone while famine judged by
+  commitment, so a boot-overcommitted node on a fast host never
+  crossed the measured ceiling, logged one "no peer with sufficient
+  headroom", and starved its units in place with a roomy peer idle
+  (S6 failed deterministically on an 8-CPU Docker host; CI's slower
+  runner happened to cross the line). A node is now mislocated by
+  either question, so the cheaper escape is tried before famine.
+- `drill.sh` S6's receiver check is race-free: every field from one
+  chronicle line (`units == 20 + in − out − deaths + births`), after a
+  bounded wait for the chronicle to reflect the sender's count. The
+  previous form compared a receiver line to a sender count sampled
+  earlier and failed on a fourth landing between samples.
 - Signed division uses wrapping arithmetic (`MIN / -1` no longer panics
   the worker), matching the policy addition and multiplication already
   follow.
