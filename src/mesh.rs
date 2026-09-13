@@ -435,6 +435,14 @@ pub(crate) struct MeshState {
     /// heartbeat also goes to them, so a healed partition re-merges within
     /// one heartbeat interval.
     pub(crate) seed_addrs: Vec<SocketAddr>,
+    /// Seed names that did not resolve at boot. A slow DNS at startup
+    /// (containers coming up in parallel, a resolver a second behind)
+    /// must not isolate a node forever: these are retried on every
+    /// heartbeat until they resolve, then join `seed_addrs` and the peer
+    /// table exactly as a boot-time seed would have. S1 and S6 both lost
+    /// runs to a seed dropped at boot — the node then bred alone with an
+    /// idle neighbor it never learned of.
+    pub(crate) pending_seeds: Vec<String>,
 }
 
 /// A word definition received from a peer.
@@ -669,6 +677,7 @@ impl MeshNode {
                 .filter(|a| !is_self_addr(a, local_port))
                 .copied()
                 .collect(),
+            pending_seeds: Vec::new(),
         }));
 
         // Add seed peers as tentative entries so the first heartbeat reaches them.
@@ -1017,6 +1026,18 @@ impl MeshNode {
     }
 
     /// Shut down the mesh (stops network thread).
+    /// Seeds that failed to resolve at boot: retried on every heartbeat
+    /// until they resolve (see `MeshState::pending_seeds`).
+    pub fn defer_seeds(&self, names: Vec<String>) {
+        let mut st = self.state.lock().unwrap();
+        for n in names {
+            if !st.pending_seeds.contains(&n) {
+                st.log_event(format!("seed {} unresolved at boot — will retry", n));
+                st.pending_seeds.push(n);
+            }
+        }
+    }
+
     pub fn shutdown(&self) {
         if let Ok(mut st) = self.state.lock() {
             st.running = false;
@@ -1875,6 +1896,61 @@ fn network_thread(socket: UdpSocket, state: Arc<Mutex<MeshState>>, my_id: NodeId
 /// with an EMPTY table (both sides of a partition past PEER_TIMEOUT), the
 /// seeds alone keep the beat going — the property whose absence made a
 /// healed partition permanent.
+/// Retry boot-failed seed names (DNS outside the lock — a slow resolver
+/// must not stall every thread that touches mesh state). Each name that
+/// now resolves becomes a durable seed target and a tentative peer entry,
+/// exactly as a boot-time seed would have. Returns the newly resolved
+/// addresses.
+fn retry_pending_seeds(state: &Arc<Mutex<MeshState>>) -> Vec<SocketAddr> {
+    let (pending, my_port) = {
+        let st = state.lock().unwrap();
+        if st.pending_seeds.is_empty() {
+            return Vec::new();
+        }
+        (st.pending_seeds.clone(), st.port)
+    };
+    let mut resolved: Vec<(String, SocketAddr)> = Vec::new();
+    for name in &pending {
+        use std::net::ToSocketAddrs;
+        if let Some(addr) = name.to_socket_addrs().ok().and_then(|mut a| a.next()) {
+            resolved.push((name.clone(), addr));
+        }
+    }
+    if resolved.is_empty() {
+        return Vec::new();
+    }
+    let mut st = state.lock().unwrap();
+    let mut out = Vec::new();
+    for (name, addr) in resolved {
+        st.pending_seeds.retain(|n| n != &name);
+        if is_self_addr(&addr, my_port) {
+            continue;
+        }
+        if !st.seed_addrs.contains(&addr) {
+            st.seed_addrs.push(addr);
+        }
+        let pseudo_id = addr_to_pseudo_id(&addr);
+        if st.peers.get(&pseudo_id).is_none() {
+            st.peers.insert(
+                pseudo_id,
+                PeerInfo {
+                    addr,
+                    id: pseudo_id,
+                    load: 0,
+                    capacity: 0,
+                    peer_count: 0,
+                    fitness: 0,
+                    headroom: 0,
+                    last_seen: Instant::now(),
+                },
+            );
+        }
+        st.log_event(format!("seed {} resolved late to {}", name, addr));
+        out.push(addr);
+    }
+    out
+}
+
 fn merge_seed_targets(
     mut delivery: Vec<SocketAddr>,
     seeds: &[SocketAddr],
@@ -1892,6 +1968,7 @@ fn send_heartbeat(socket: &UdpSocket, state: &Arc<Mutex<MeshState>>, my_id: &Nod
     // Applied below only while auto_headroom holds; an explicit set_headroom
     // (multi-unit host, tests) takes authority and is never stomped.
     let measured = crate::resources::HostResources::measure().advertised_headroom_pct();
+    retry_pending_seeds(state);
     let mut st = state.lock().unwrap();
     if st.auto_headroom {
         st.headroom = measured;
@@ -3640,5 +3717,20 @@ mod tests {
         );
         // No seeds (a pure-discovery node): unchanged.
         assert_eq!(merge_seed_targets(vec![table_peer], &[]), vec![table_peer]);
+    }
+
+    #[test]
+    fn unresolved_seeds_are_retried_not_dropped() {
+        let node = MeshNode::start(0, vec![]).unwrap();
+        // One name that can never resolve, one that resolves without DNS.
+        node.defer_seeds(vec!["not a host".into(), "127.0.0.1:4299".into()]);
+        let newly = retry_pending_seeds(&node.state);
+        assert_eq!(newly, vec!["127.0.0.1:4299".parse::<SocketAddr>().unwrap()]);
+        let st = node.state.lock().unwrap();
+        assert_eq!(st.pending_seeds, vec!["not a host".to_string()], "the bad one stays pending");
+        assert!(st.seed_addrs.contains(&"127.0.0.1:4299".parse().unwrap()), "durable seed target");
+        assert!(st.peers.iter().any(|p| p.addr == "127.0.0.1:4299".parse().unwrap()), "tentative peer");
+        drop(st);
+        node.shutdown();
     }
 }

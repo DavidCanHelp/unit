@@ -258,6 +258,7 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
     let port = cli.port.unwrap_or(0);
     // Reuse the same --peers parsing as the normal mesh path.
     let peers_str = cli.peers.clone().unwrap_or_default();
+    let mut unresolved_seeds: Vec<String> = Vec::new();
     let seed_peers: Vec<SocketAddr> = peers_str
         .split(',')
         .filter(|s| !s.is_empty())
@@ -265,7 +266,12 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
             let s = s.trim();
             s.parse().ok().or_else(|| {
                 use std::net::ToSocketAddrs;
-                s.to_socket_addrs().ok().and_then(|mut a| a.next())
+                let r = s.to_socket_addrs().ok().and_then(|mut a| a.next());
+                if r.is_none() {
+                    eprintln!("resolve {}: not yet resolvable — will retry each heartbeat", s);
+                    unresolved_seeds.push(s.to_string());
+                }
+                r
             })
         })
         .collect();
@@ -281,7 +287,12 @@ pub(crate) fn run_multi_unit_node(n: usize, cli: &CliArgs) {
         crate::resources::HostResources::measure().mem_total_kb,
     );
     let mut node = match MultiUnitNode::new(cap, Some(port), seed_peers) {
-        Ok(node) => node,
+        Ok(node) => {
+            if let Some(m) = &node.mesh {
+                m.defer_seeds(unresolved_seeds);
+            }
+            node
+        }
         Err(e) => {
             eprintln!("multi-unit: failed to start mesh: {}", e);
             std::process::exit(1);

@@ -24,6 +24,13 @@
   bounded wait for the chronicle to reflect the sender's count. The
   previous form compared a receiver line to a sender count sampled
   earlier and failed on a fourth landing between samples.
+- **A seed that fails to resolve at boot is retried, not dropped.**
+  Containers coming up in parallel resolve each other's names a second
+  apart; a node whose `--peers` lookup failed at boot stayed peerless
+  forever and bred alone beside an idle neighbor (S1 and S6 each lost
+  runs to it). Unresolved names are now retried on every heartbeat,
+  with DNS done outside the mesh lock, and join the seed targets and
+  peer table exactly as a boot-time seed would.
 - Signed division uses wrapping arithmetic (`MIN / -1` no longer panics
   the worker), matching the policy addition and multiplication already
   follow.

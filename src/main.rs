@@ -192,18 +192,23 @@ fn main() {
         .or_else(|| std::env::var("UNIT_PEERS").ok())
         .or_else(|| std::env::var("UNIT_SEEDS").ok())
         .unwrap_or_default();
+    let mut unresolved_seeds: Vec<String> = Vec::new();
     let seed_peers: Vec<SocketAddr> = peers_str
         .split(',')
         .filter(|s| !s.is_empty())
         .filter_map(|s| {
             let s = s.trim();
-            // Try direct parse first, then DNS resolution.
+            // Try direct parse first, then DNS resolution. A name that does
+            // not resolve yet is deferred, not dropped: the mesh retries it
+            // on every heartbeat (a resolver a second behind at boot must
+            // not isolate this node forever).
             s.parse().ok().or_else(|| {
                 use std::net::ToSocketAddrs;
                 match s.to_socket_addrs() {
                     Ok(mut addrs) => addrs.next(),
                     Err(e) => {
-                        eprintln!("resolve {}: {}", s, e);
+                        eprintln!("resolve {}: {} — will retry each heartbeat", s, e);
+                        unresolved_seeds.push(s.to_string());
                         None
                     }
                 }
@@ -245,6 +250,7 @@ fn main() {
                 if resumed && !cli.quiet {
                     eprintln!("resumed identity {}", mesh::id_to_hex(&id));
                 }
+                node.defer_seeds(std::mem::take(&mut unresolved_seeds));
                 vm.mesh = Some(node);
 
                 // Set external address for NAT traversal.
