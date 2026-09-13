@@ -489,8 +489,16 @@ echo "        (survivors=$SUM blackholed=$E5_UNITS total=$COLONY_TOTAL; deaths=$
 L4=$(nsf e4 in); L4=${L4:-0}
 DUP_BOUND=$(( 6 + (L4 + ${E5_IN:-0}) / 50 + 1 ))
 echo "        (duplication bound: $DUP_BOUND from $(( L4 + ${E5_IN:-0} )) landings)"
-[ "$COLONY_TOTAL" -le $(( EXPECTED + DUP_BOUND )) ] && [ "$COLONY_TOTAL" -ge $(( EXPECTED - 10 )) ]
-check "S8 conservation: metabolic ledger + documented loss/duplication only ($EXPECTED -10/+$DUP_BOUND)" $?
+# Loss side, derived: the blackhole's in-flight window (6) plus chronicle
+# cadence skew — a sender's `out` is counted the tick it releases, but the
+# receiver's `in` appears only on its next (node-status …) line, up to
+# RESOURCE_MEASURE_EVERY_TICKS (5) later; three senders shedding one unit
+# per tick can therefore be 15 units ahead of the receivers' ledgers at
+# any sampling instant. The old fixed -10 predated famine and births and
+# failed under netem by one unit on a docs-only commit.
+LOSS_BOUND=$(( 6 + 3 * 5 ))
+[ "$COLONY_TOTAL" -le $(( EXPECTED + DUP_BOUND )) ] && [ "$COLONY_TOTAL" -ge $(( EXPECTED - LOSS_BOUND )) ]
+check "S8 conservation: metabolic ledger + documented loss/duplication only ($EXPECTED -$LOSS_BOUND/+$DUP_BOUND)" $?
 snap_logs S8
 down
 }
